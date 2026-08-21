@@ -10,6 +10,9 @@ m3undle-lab migration specifically so se-lab's abstractions get validated agains
 products before either is fully committed to — see se-lab's `.ai_docs/roadmap.md` (Phase 1b) for
 the plan and current status.
 
+The proposed Family Librarian test profiles, scenario matrix, and implementation
+order are in [the integration-test design](docs/01-family-librarian-integration-test-design.md).
+
 se-lab is included as a git submodule at `se-lab/`. After cloning:
 
 ```
