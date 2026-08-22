@@ -31,11 +31,21 @@ cp se-lab/lab.env.example lab.env
 ./lab run --fresh --project-name family-librarian-lab-smoke
 ./lab status --project-name family-librarian-lab-smoke
 ./lab base down --project-name family-librarian-lab-smoke
+
+# Build once, then run each base/security case in its own fresh Compose project.
+./lab test --group base
 ```
 
 `--fresh` removes only volumes bearing the selected Compose project name, before
 starting that project. A successful `run` stores redacted Compose state, logs,
 and the `/health/live` and `/health/ready` results under `results/<run-id>/`.
+
+`./lab test --group base` discovers suites through se-lab. Each case receives a
+new Compose project, PostgreSQL volume, ClamAV volume, and Family Librarian
+storage volume; its results include the deployment artifacts plus a redacted API
+trace. `--keep` preserves those projects for investigation, and `--skip-build`
+uses an image built by an earlier `./lab build`. Use `--case SEC-02` to run one
+registered scenario while investigating a failure.
 
 se-lab is included as a git submodule at `se-lab/`. After cloning:
 
