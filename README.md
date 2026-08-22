@@ -13,6 +13,30 @@ the plan and current status.
 The proposed Family Librarian test profiles, scenario matrix, and implementation
 order are in [the integration-test design](docs/01-family-librarian-integration-test-design.md).
 
+## Base lifecycle (implementation-order step 1)
+
+The initial `base` profile starts only Family Librarian, PostgreSQL, and ClamAV.
+It builds Family Librarian from the local checkout named by
+`FAMILY_LIBRARIAN_SOURCE_DIR`; its Compose file lives in this repository so every
+run receives project-scoped networks and named volumes rather than sharing the
+product checkout's development stack.
+
+```bash
+python3.12 -m venv .venv  # or a newer supported Python
+.venv/bin/pip install -r se-lab/requirements.txt
+cp se-lab/lab.env.example lab.env
+# Add the FAMILY_LIBRARIAN_* values from lab.env.example to lab.env.
+
+./lab build
+./lab run --fresh --project-name family-librarian-lab-smoke
+./lab status --project-name family-librarian-lab-smoke
+./lab base down --project-name family-librarian-lab-smoke
+```
+
+`--fresh` removes only volumes bearing the selected Compose project name, before
+starting that project. A successful `run` stores redacted Compose state, logs,
+and the `/health/live` and `/health/ready` results under `results/<run-id>/`.
+
 se-lab is included as a git submodule at `se-lab/`. After cloning:
 
 ```

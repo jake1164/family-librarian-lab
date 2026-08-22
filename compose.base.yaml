@@ -1,0 +1,96 @@
+services:
+  postgres:
+    profiles: [base]
+    image: ${FAMILY_LIBRARIAN_POSTGRES_IMAGE:-postgres:17.6-alpine}
+    environment:
+      POSTGRES_DB: family_librarian
+      POSTGRES_USER: family_librarian
+      POSTGRES_PASSWORD: ${FAMILY_LIBRARIAN_POSTGRES_PASSWORD:?Set FAMILY_LIBRARIAN_POSTGRES_PASSWORD in lab.env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U family_librarian -d family_librarian"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  migrate:
+    profiles: [base]
+    build:
+      context: ${FAMILY_LIBRARIAN_SOURCE_DIR:?Set FAMILY_LIBRARIAN_SOURCE_DIR in lab.env}
+      target: final
+    image: ${FAMILY_LIBRARIAN_IMAGE:-family-librarian-lab:dev}
+    command: ["--migrate"]
+    environment:
+      ConnectionStrings__FamilyLibrarian: Host=postgres;Port=5432;Database=family_librarian;Username=family_librarian;Password=${FAMILY_LIBRARIAN_POSTGRES_PASSWORD:?Set FAMILY_LIBRARIAN_POSTGRES_PASSWORD in lab.env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  clamav:
+    profiles: [base]
+    platform: linux/amd64
+    image: ${FAMILY_LIBRARIAN_CLAMAV_IMAGE:-clamav/clamav:1.4}
+    environment:
+      CLAMD_CONF_StreamMaxLength: 600M
+      CLAMD_CONF_MaxFileSize: 600M
+      CLAMD_CONF_PCREMaxFileSize: 600M
+      CLAMD_CONF_MaxScanSize: 1000M
+      CLAMD_CONF_AlertExceedsMax: "yes"
+    healthcheck:
+      test: ["CMD", "clamdscan", "--ping", "1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 180s
+    volumes:
+      - clamav-data:/var/lib/clamav
+
+  family-librarian:
+    profiles: [base]
+    build:
+      context: ${FAMILY_LIBRARIAN_SOURCE_DIR:?Set FAMILY_LIBRARIAN_SOURCE_DIR in lab.env}
+      target: final
+    image: ${FAMILY_LIBRARIAN_IMAGE:-family-librarian-lab:dev}
+    ports:
+      - "${FAMILY_LIBRARIAN_HOST_PORT:-18080}:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__FamilyLibrarian: Host=postgres;Port=5432;Database=family_librarian;Username=family_librarian;Password=${FAMILY_LIBRARIAN_POSTGRES_PASSWORD:?Set FAMILY_LIBRARIAN_POSTGRES_PASSWORD in lab.env}
+      MetadataProviders__OpenLibrary__ContactEmail: ${FAMILY_LIBRARIAN_OPENLIBRARY_CONTACT_EMAIL:-}
+      MetadataProviders__OpenLibrary__RequestsPerSecond: ${FAMILY_LIBRARIAN_OPENLIBRARY_REQUESTS_PER_SECOND:-1}
+      MetadataProviders__GoogleBooks__Enabled: ${FAMILY_LIBRARIAN_GOOGLE_BOOKS_ENABLED:-false}
+      MetadataProviders__GoogleBooks__ApiKey: ${FAMILY_LIBRARIAN_GOOGLE_BOOKS_API_KEY:-}
+      ADMIN_EMAIL: ${FAMILY_LIBRARIAN_ADMIN_EMAIL:?Set FAMILY_LIBRARIAN_ADMIN_EMAIL in lab.env}
+      ADMIN_PASSWORD: ${FAMILY_LIBRARIAN_ADMIN_PASSWORD:?Set FAMILY_LIBRARIAN_ADMIN_PASSWORD in lab.env}
+      Invitations__LifetimeDays: ${FAMILY_LIBRARIAN_INVITATIONS_LIFETIME_DAYS:-7}
+      Invitations__RedemptionAttemptsPerMinute: ${FAMILY_LIBRARIAN_INVITATIONS_REDEMPTION_ATTEMPTS_PER_MINUTE:-10}
+      Storage__RootPath: /data/family-librarian
+      ClamAv__Host: clamav
+      ClamAv__Port: 3310
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && head -n 1 <&3 | grep -q " 200 "'
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    volumes:
+      - family-librarian-data:/data/family-librarian
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  clamav-data:
+  family-librarian-data:
