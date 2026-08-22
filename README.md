@@ -22,8 +22,11 @@ run receives project-scoped networks and named volumes rather than sharing the
 product checkout's development stack.
 
 ```bash
-python3.12 -m venv .venv  # or a newer supported Python
-.venv/bin/pip install -r se-lab/requirements.txt
+# First-time environment setup (venv + dependencies) is se-lab's job, not
+# duplicated here. See se-lab/README.md's Quick Start for the manual venv
+# steps, or run `se-lab/scripts/setup_vm.sh --product-name family-librarian
+# --env-prefix FAMILY_LIBRARIAN` on a fresh host (also runs a preflight check).
+
 cp se-lab/lab.env.example lab.env
 # Add the FAMILY_LIBRARIAN_* values from lab.env.example to lab.env.
 
