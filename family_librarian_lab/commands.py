@@ -33,7 +33,14 @@ LAB_ENV_FILE = REPO_ROOT / "lab.env"
 RESULTS_ROOT = REPO_ROOT / "results"
 TESTS_ROOT = REPO_ROOT / "tests"
 PROFILE = "base"
-ALL_PROFILES = (PROFILE, clients.CWA_PROFILE, clients.ABS_PROFILE)
+ALL_PROFILES = (
+    PROFILE,
+    clients.CWA_PROFILE,
+    clients.ABS_PROFILE,
+    clients.CWA_SFTP_PROFILE_KEY,
+    clients.CWA_SFTP_PROFILE_PASSWORD,
+)
+SFTP_KEY_DIR = REPO_ROOT / "runtime" / "sftp-test-key"
 DEFAULT_HOST_PORT = 18080
 DEFAULT_REPO_URL = "git@github.com:jake1164/family-librarian.git"
 _SECRET_NAMES = (
@@ -57,8 +64,9 @@ def _configure_up(parser: argparse.ArgumentParser) -> None:
         nargs="+",
         metavar="CLIENT",
         default=[],
-        choices=[clients.CWA_PROFILE, clients.ABS_PROFILE],
-        help="Extra destination(s) to bring up and wire alongside the base profile (cwa-local, abs)",
+        choices=[clients.CWA_PROFILE, clients.ABS_PROFILE, clients.CWA_SFTP_PROFILE_KEY, clients.CWA_SFTP_PROFILE_PASSWORD],
+        help="Extra destination(s) to bring up and wire alongside the base profile "
+        "(cwa-local, abs, cwa-sftp-key, cwa-sftp-password)",
     )
 
 
@@ -115,6 +123,14 @@ def _load_lab_env() -> dict[str, str]:
     # _checkout_source(). Overrides any stale FAMILY_LIBRARIAN_SOURCE_DIR line
     # left in lab.env.
     values["FAMILY_LIBRARIAN_SOURCE_DIR"] = str(lab_common.repo_dir())
+    # Idempotent (skips regeneration if already present) and cheap enough to run
+    # on every command, the same way as the checkout refresh above -- keeps the
+    # cwa-sftp-key bind-mount path always valid regardless of which profile a
+    # given command actually ends up using, matching the "harmless when unused"
+    # pattern already established for the always-mounted cwa-ingest volume.
+    clients.ensure_sftp_test_keypair(SFTP_KEY_DIR)
+    values["FAMILY_LIBRARIAN_SFTP_KEY_DIR"] = str(SFTP_KEY_DIR)
+    values.setdefault("FAMILY_LIBRARIAN_SFTP_PASSWORD", clients.CWA_SFTP_DEFAULT_PASSWORD)
     return values
 
 
@@ -179,21 +195,43 @@ def _client_host_base(values: dict[str, str], default_port: int, env_key: str) -
 
 def _wire_destinations(
     values: dict[str, str], profiles: Sequence[str], api: FamilyLibrarianApi
-) -> tuple["clients.CwaClient | None", "clients.AbsClient | None"]:
+) -> tuple["clients.CwaClient | None", "clients.AbsClient | None", "dict[str, object] | None"]:
     """Configure Family Librarian to point at whichever extra destinations this
     scenario/deployment brought up -- the same call, used by both `up` (manual
-    testing) and the cwa-local/abs suites' scenario setup (automated testing),
-    so both paths exercise the identical wiring rather than two hand-maintained
-    copies of it."""
+    testing) and the cwa-local/abs/cwa-sftp-* suites' scenario setup (automated
+    testing), so both paths exercise the identical wiring rather than two
+    hand-maintained copies of it."""
     cwa_client: clients.CwaClient | None = None
     abs_client: clients.AbsClient | None = None
+    sftp_wiring: dict[str, object] | None = None
 
     if clients.CWA_PROFILE in profiles:
         cwa_client = clients.CwaClient(
             host_base_url=_client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
         )
-        api.configure_cwa(
+        api.configure_cwa_local(
             local_ingest_path=clients.CWA_INGEST_CONTAINER_PATH,
+            opds_base_url=clients.CWA_INTERNAL_URL,
+            opds_username=clients.CWA_DEFAULT_USERNAME,
+            opds_password=clients.CWA_DEFAULT_PASSWORD,
+        )
+    elif clients.CWA_SFTP_PROFILE_KEY in profiles or clients.CWA_SFTP_PROFILE_PASSWORD in profiles:
+        is_key_mode = clients.CWA_SFTP_PROFILE_KEY in profiles
+        service = clients.CWA_SFTP_SERVICE_KEY if is_key_mode else clients.CWA_SFTP_SERVICE_PASSWORD
+        if is_key_mode:
+            credential, _ = clients.ensure_sftp_test_keypair(SFTP_KEY_DIR)
+        else:
+            credential = values["FAMILY_LIBRARIAN_SFTP_PASSWORD"]
+        cwa_client = clients.CwaClient(
+            host_base_url=_client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
+        )
+        sftp_wiring = api.configure_cwa_sftp(
+            sftp_host=service,
+            sftp_port=clients.CWA_SFTP_PORT,
+            sftp_username=clients.CWA_SFTP_USERNAME,
+            sftp_ingest_path=clients.CWA_SFTP_INGEST_PATH,
+            auth_mode="PrivateKey" if is_key_mode else "Password",
+            credential=credential,
             opds_base_url=clients.CWA_INTERNAL_URL,
             opds_username=clients.CWA_DEFAULT_USERNAME,
             opds_password=clients.CWA_DEFAULT_PASSWORD,
@@ -208,7 +246,7 @@ def _wire_destinations(
             base_url=clients.ABS_INTERNAL_URL, library_id=library_id, folder_id=folder_id, api_token=token
         )
 
-    return cwa_client, abs_client
+    return cwa_client, abs_client, sftp_wiring
 
 
 def _probe(url: str) -> dict[str, object]:
@@ -359,6 +397,7 @@ class _BaseScenario:
         self.readiness_passed = False
         self.cwa_client: clients.CwaClient | None = None
         self.abs_client: clients.AbsClient | None = None
+        self.cwa_sftp_wiring: dict[str, object] | None = None
         self._result_directory: Path | None = None
 
     def __enter__(self) -> "_BaseScenario":
@@ -375,7 +414,9 @@ class _BaseScenario:
             self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
         )
         self.api = api
-        self.cwa_client, self.abs_client = _wire_destinations(self._values, self._profiles, api)
+        self.cwa_client, self.abs_client, self.cwa_sftp_wiring = _wire_destinations(
+            self._values, self._profiles, api
+        )
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
@@ -436,13 +477,19 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
 
     api = FamilyLibrarianApi(_host_base(values))
     api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
-    cwa_client, abs_client = _wire_destinations(values, profiles, api)
+    cwa_client, abs_client, sftp_wiring = _wire_destinations(values, profiles, api)
 
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
     if cwa_client is not None:
         print(
-            f"  CWA:  {cwa_client.host_base_url}  (user: {clients.CWA_DEFAULT_USERNAME} / "
+            f"  CWA:  {cwa_client.host_base_url}  (OPDS user: {clients.CWA_DEFAULT_USERNAME} / "
             f"password: {clients.CWA_DEFAULT_PASSWORD}) -- already wired into Family Librarian",
+            flush=True,
+        )
+    if sftp_wiring is not None:
+        print(
+            "  CWA ingest transport: SFTP, trusted and enabled during this 'up' "
+            "(see the trust probe in the run's own output above for detail).",
             flush=True,
         )
     if abs_client is not None:
@@ -500,12 +547,16 @@ def _select_suites(suites: list[Suite], *, case: str | None) -> list[Suite]:
 
 def _profiles_for(suite: Suite) -> tuple[str, ...]:
     """Derive the extra destination profile a suite's own declared group
-    needs, so `--group cwa-local`/`--group abs` each bring up exactly the
-    destination they test."""
-    if suite.group == clients.CWA_PROFILE:
-        return (clients.CWA_PROFILE,)
-    if suite.group == clients.ABS_PROFILE:
-        return (clients.ABS_PROFILE,)
+    needs, so `--group cwa-local`/`--group abs`/`--group cwa-sftp-key`/
+    `--group cwa-sftp-password` each bring up exactly the destination they
+    test."""
+    if suite.group in (
+        clients.CWA_PROFILE,
+        clients.ABS_PROFILE,
+        clients.CWA_SFTP_PROFILE_KEY,
+        clients.CWA_SFTP_PROFILE_PASSWORD,
+    ):
+        return (suite.group,)
     return ()
 
 

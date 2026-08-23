@@ -19,8 +19,10 @@ from __future__ import annotations
 import base64
 import json
 import re
+import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -35,6 +37,28 @@ CWA_DEFAULT_PASSWORD = "admin123"
 # CWA ships this account by default -- unrelated to any real deployment's
 # credentials, and every scenario run is a fresh, disposable CWA instance.
 CWA_INGEST_CONTAINER_PATH = "/cwa-ingest"
+
+# The SFTP sidecar is the only writer exposed to Family Librarian in these two
+# profiles -- CWA itself sees the same backing `cwa-ingest` volume it already
+# uses for cwa-local (mounted into the sftp container at the chrooted upload
+# subdir), so a file that arrives via SFTP becomes visible in CWA's OPDS
+# catalog exactly the way CWA-L-02 already proves for a local-filesystem
+# write. Two services, not one profile-conditional one: atmoz/sftp's user
+# credentials are baked into its startup command, which Compose has no way to
+# vary per active profile within a single service definition.
+CWA_SFTP_SERVICE_KEY = "sftp-key"
+CWA_SFTP_SERVICE_PASSWORD = "sftp-password"
+CWA_SFTP_PROFILE_KEY = "cwa-sftp-key"
+CWA_SFTP_PROFILE_PASSWORD = "cwa-sftp-password"
+CWA_SFTP_DEFAULT_IMAGE = "atmoz/sftp:alpine"
+CWA_SFTP_USERNAME = "cwaftp"
+CWA_SFTP_INGEST_PATH = "/upload"
+CWA_SFTP_PORT = 22
+CWA_SFTP_DEFAULT_PASSWORD = "family-librarian-lab-sftp-only"
+# Matches CWA's own PUID/PGID above -- same "Access is denied" class of bug
+# already found and fixed for the local-ingest profile; the sftp sidecar and
+# CWA both write/read the same shared volume and must agree on ownership.
+CWA_SFTP_UID_GID = 1654
 
 ABS_SERVICE = "abs"
 ABS_PROFILE = "abs"
@@ -129,6 +153,31 @@ def _parse_first_matching_book_id(atom_xml: str, title: str, author: str | None)
             if match:
                 return match.group(1)
     return None
+
+
+def ensure_sftp_test_keypair(directory: Path) -> tuple[str, Path]:
+    """Idempotently generates a disposable ed25519 keypair used only to
+    authenticate the lab's own probe/upload to the throwaway cwa-sftp-key
+    sidecar -- never a real deployment's credential, and safe to leave on
+    disk across runs since every SFTP server it talks to is itself a fresh,
+    disposable container. Returns (private_key_pem_text, public_key_directory)
+    -- the directory is what compose.base.yaml bind-mounts at
+    /home/cwaftp/.ssh/keys, atmoz/sftp's documented "any *.pub file here is an
+    authorized key" location."""
+    directory.mkdir(parents=True, exist_ok=True)
+    private_path = directory / "id_ed25519"
+    public_path = directory / "id_ed25519.pub"
+    if not private_path.exists():
+        subprocess.run(
+            [
+                "ssh-keygen", "-t", "ed25519", "-N", "", "-C", "family-librarian-lab-sftp-test",
+                "-f", str(private_path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        public_path.chmod(0o644)
+    return private_path.read_text(encoding="utf-8"), directory
 
 
 @dataclass(slots=True)

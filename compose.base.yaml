@@ -96,7 +96,7 @@ services:
         condition: service_healthy
 
   cwa:
-    profiles: [cwa-local]
+    profiles: [cwa-local, cwa-sftp-key, cwa-sftp-password]
     image: ${FAMILY_LIBRARIAN_CWA_IMAGE:-crocodilestick/calibre-web-automated:latest}
     environment:
       # Matches family-librarian's own non-root app user (the .NET base
@@ -124,6 +124,38 @@ services:
       - abs-config:/config
       - abs-metadata:/metadata
       - abs-audiobooks:/audiobooks
+
+  # Both sftp-* services write into the SAME cwa-ingest volume `cwa` already
+  # mounts at /cwa-book-ingest for cwa-local -- a file that arrives via SFTP
+  # becomes visible to CWA's importer no differently than one written
+  # directly, matching the design doc's "CWA sees the same backing ingest
+  # volume" topology. Only one of these two profiles is active per run, so
+  # the shared chroot upload subdir is never written by both at once. No host
+  # port: Family Librarian reaches these over the Compose network by service
+  # name, and there is no manual-testing need to reach them from the host.
+  sftp-key:
+    profiles: [cwa-sftp-key]
+    image: ${FAMILY_LIBRARIAN_SFTP_IMAGE:-atmoz/sftp:alpine}
+    volumes:
+      - cwa-ingest:/home/cwaftp/upload
+      - ${FAMILY_LIBRARIAN_SFTP_KEY_DIR:?Set FAMILY_LIBRARIAN_SFTP_KEY_DIR in lab.env}:/home/cwaftp/.ssh/keys:ro
+      # atmoz/sftp only chowns a home subdirectory when IT creates it; a
+      # pre-existing Docker-volume mount point at the same path (cwa-ingest,
+      # shared with `cwa`) stays root-owned, so writes fail "Permission
+      # denied" without this (confirmed for real against a live container).
+      - ./docker/sftp/fix-ingest-permissions.sh:/etc/sftp.d/fix-ingest-permissions.sh:ro
+    # Empty password field disables password auth for this user, relying
+    # solely on the mounted public key -- atmoz/sftp's documented syntax for
+    # key-only accounts. uid:gid match CWA's own PUID/PGID (see `cwa` above).
+    command: cwaftp::1654:1654:upload
+
+  sftp-password:
+    profiles: [cwa-sftp-password]
+    image: ${FAMILY_LIBRARIAN_SFTP_IMAGE:-atmoz/sftp:alpine}
+    volumes:
+      - cwa-ingest:/home/cwaftp/upload
+      - ./docker/sftp/fix-ingest-permissions.sh:/etc/sftp.d/fix-ingest-permissions.sh:ro
+    command: cwaftp:${FAMILY_LIBRARIAN_SFTP_PASSWORD:?Set FAMILY_LIBRARIAN_SFTP_PASSWORD in lab.env}:1654:1654:upload
 
 volumes:
   postgres-data:

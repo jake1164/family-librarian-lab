@@ -119,7 +119,7 @@ class FamilyLibrarianApi:
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
 
-    def configure_cwa(
+    def configure_cwa_local(
         self,
         *,
         local_ingest_path: str,
@@ -152,6 +152,102 @@ class FamilyLibrarianApi:
         )
         _require_status(enabled, 200, "CWA enable")
         return _object(enabled.body, "CWA settings")
+
+    def configure_cwa_sftp(
+        self,
+        *,
+        sftp_host: str,
+        sftp_port: int,
+        sftp_username: str,
+        sftp_ingest_path: str,
+        auth_mode: str,
+        credential: str,
+        opds_base_url: str,
+        opds_username: str,
+        opds_password: str,
+    ) -> dict[str, Any]:
+        """Configures CWA's SFTP transport and drives the same trust-on-
+        first-test flow an administrator would (design doc CWA-S-01): probe
+        with no trusted fingerprint yet (expect a rejection carrying the
+        server's observed fingerprint, no file transferred), trust it, then
+        probe again (expect a real connect plus a temporary write-and-remove
+        probe on the remote ingest path). Returns both probe responses plus
+        the final enabled settings so a case can assert on the trust flow
+        itself, not just the end-to-end publish it enables."""
+        settings = self._request(
+            "PUT",
+            "/api/v1/admin/publishing/cwa/",
+            json_body={
+                "transportMode": "Sftp",
+                "localIngestPath": None,
+                "sftpHost": sftp_host,
+                "sftpPort": sftp_port,
+                "sftpUsername": sftp_username,
+                "sftpIngestPath": sftp_ingest_path,
+                "sftpAuthenticationMode": auth_mode,
+                "opdsBaseUrl": opds_base_url,
+                "opdsUsername": opds_username,
+            },
+        )
+        _require_status(settings, 200, "CWA SFTP settings")
+
+        secret_path = "sftp-key" if auth_mode == "PrivateKey" else "sftp-password"
+        secret = self._request(
+            "PUT", f"/api/v1/admin/publishing/cwa/{secret_path}", json_body={"value": credential}
+        )
+        _require_status(secret, 200, "CWA SFTP credential")
+
+        opds_password_response = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/opds-password", json_body={"value": opds_password}
+        )
+        _require_status(opds_password_response, 200, "CWA OPDS password")
+
+        def probe(trusted_fingerprint: str | None) -> dict[str, Any]:
+            response = self._request(
+                "POST",
+                "/api/v1/admin/publishing/cwa/test-ingest",
+                json_body={
+                    "transportMode": "Sftp",
+                    "localIngestPath": None,
+                    "sftpHost": sftp_host,
+                    "sftpPort": sftp_port,
+                    "sftpUsername": sftp_username,
+                    "sftpIngestPath": sftp_ingest_path,
+                    "sftpAuthenticationMode": auth_mode,
+                    "sftpPrivateKey": credential if auth_mode == "PrivateKey" else None,
+                    "sftpPassphrase": None,
+                    "sftpPassword": credential if auth_mode == "Password" else None,
+                    "trustedSftpHostKeyFingerprint": trusted_fingerprint,
+                },
+            )
+            _require_status(response, 200, "CWA SFTP ingest probe")
+            return _object(response.body, "CWA SFTP ingest probe")
+
+        untrusted_probe = probe(None)
+        fingerprint = untrusted_probe.get("sftpHostKeyFingerprint")
+        if not untrusted_probe.get("requiresSftpHostKeyTrust") or not isinstance(fingerprint, str):
+            raise AssertionError(
+                "Expected the first SFTP probe to reject an untrusted host key and report its "
+                f"fingerprint; got {untrusted_probe!r}."
+            )
+
+        trust = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/sftp-host-key", json_body={"fingerprint": fingerprint}
+        )
+        _require_status(trust, 200, "CWA SFTP host-key trust")
+
+        trusted_probe = probe(fingerprint)
+        if not trusted_probe.get("succeeded"):
+            raise AssertionError(f"SFTP ingest probe failed after trusting its host key: {trusted_probe!r}")
+
+        enabled = self._request("PUT", "/api/v1/admin/publishing/cwa/enabled", json_body={"enabled": True})
+        _require_status(enabled, 200, "CWA enable")
+
+        return {
+            "settings": _object(enabled.body, "CWA settings"),
+            "untrusted_probe": untrusted_probe,
+            "trusted_probe": trusted_probe,
+        }
 
     def configure_audiobookshelf(
         self,
