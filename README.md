@@ -91,9 +91,36 @@ is configured. Both images are pinned in `compose.base.yaml`
 convention as this project's other pinned dependency images.
 
 This intentionally covers only the happy path for each destination — the full CWA/ABS
-scenario matrix (SFTP, restarts, interruptions, negative cases, `AUTO-*`, `SEC-*`, the
+scenario matrix (restarts, interruptions, negative cases, `AUTO-*`, `SEC-*`, the
 `CWA-C-*` correctness tests) stays as documented, larger follow-on work in
 [the design doc](docs/01-family-librarian-integration-test-design.md).
+
+## CWA over SFTP
+
+`cwa-sftp-key` and `cwa-sftp-password` are Compose profiles on top of `base`, adding an
+[atmoz/sftp](https://github.com/atmoz/sftp) sidecar in front of the same `cwa` service
+`cwa-local` uses, exercising CWA's remote-ingest transport instead of the local
+bind-mounted one. Only one of the two profiles is active per run; `configure_cwa_sftp`
+in `family_librarian_lab/api.py` drives Family Librarian's real trust-on-first-test SSH
+host-key flow (probe untrusted, trust the observed fingerprint, probe again) the same
+way an admin would through the UI:
+
+```bash
+./lab up --profile cwa-sftp-key
+./lab up --profile cwa-sftp-password
+./lab base down
+
+./lab run --group cwa-sftp-key
+./lab run --group cwa-sftp-password
+```
+
+`cwa-sftp-key` covers both CWA-S-01 (trust-on-first-test) and CWA-S-02 (remote happy
+path); `cwa-sftp-password` re-runs CWA-S-02 under the alternative auth mode. Key-mode
+authentication uses a disposable host-local test keypair generated automatically under
+`runtime/` (gitignored, not real deployment material); password mode uses
+`FAMILY_LIBRARIAN_SFTP_PASSWORD` from `lab.env`. The remaining CWA-S-* scenarios
+(host-key mismatch, credential rotation, independent-catalog-outage, and the rest of
+the design doc's matrix) are not yet implemented.
 
 se-lab is included as a git submodule at `se-lab/`. After cloning:
 
