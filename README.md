@@ -16,10 +16,11 @@ order are in [the integration-test design](docs/01-family-librarian-integration-
 ## Base lifecycle (implementation-order step 1)
 
 The initial `base` profile starts only Family Librarian, PostgreSQL, and ClamAV.
-It builds Family Librarian from the local checkout named by
-`FAMILY_LIBRARIAN_SOURCE_DIR`; its Compose file lives in this repository so every
-run receives project-scoped networks and named volumes rather than sharing the
-product checkout's development stack.
+The lab is self-contained: `build`/`up`/`run` check Family Librarian's source out
+to `repos/family-librarian` themselves (mirroring m3undle-lab-public), so there
+is no separate, externally-managed checkout to point at. Its Compose file lives
+in this repository so every run receives project-scoped networks and named
+volumes rather than sharing the product checkout's development stack.
 
 ```bash
 # First-time environment setup (venv + dependencies) is se-lab's job, not
@@ -30,25 +31,34 @@ product checkout's development stack.
 cp se-lab/lab.env.example lab.env
 # Add the FAMILY_LIBRARIAN_* values from lab.env.example to lab.env.
 
-./lab build
-./lab run --fresh --project-name family-librarian-lab-smoke
-./lab status --project-name family-librarian-lab-smoke
-./lab base down --project-name family-librarian-lab-smoke
+./lab up mybranch     # check out, build, deploy, and leave running for manual testing
+./lab status
+./lab base down        # note: base down, not the generic `down` -- see below
 
-# Build once, then run each base/security case in its own fresh Compose project.
-./lab test --group base
+# Run each base/security case in its own fresh, isolated Compose project.
+./lab run --group base
 ```
 
-`--fresh` removes only volumes bearing the selected Compose project name, before
-starting that project. A successful `run` stores redacted Compose state, logs,
-and the `/health/live` and `/health/ready` results under `results/<run-id>/`.
+`up [target]`/`build [target]` resolve `target` as a tag first, then a branch
+(same convention as m3undle-lab-public), and default to refreshing whatever
+branch is already checked out in `repos/family-librarian` if no target is
+given. Because the checkout is lab-managed and fetches from GitHub, a branch
+under local, uncommitted development needs to be pushed before `./lab up
+<branch>` can see it -- same workflow as m3undle-lab-public.
 
-`./lab test --group base` discovers suites through se-lab. Each case receives a
+se-lab's generic top-level `down` only knows how to tear down a
+`docker-config/docker-compose.yaml`-based stack, which this lab doesn't use
+(its Compose file is profile-gated and lives at the repo root) -- use
+`./lab base down` to tear down what `./lab up` started; it defaults to the
+same standard project name `up` uses, so no `--project-name` is needed for
+the common case.
+
+`./lab run --group base` discovers suites through se-lab. Each case receives a
 new Compose project, PostgreSQL volume, ClamAV volume, and Family Librarian
 storage volume; its results include the deployment artifacts plus a redacted API
 trace. `--keep` preserves those projects for investigation, and `--skip-build`
-uses an image built by an earlier `./lab build`. Use `--case SEC-02` to run one
-registered scenario while investigating a failure.
+uses an image built by an earlier `./lab build`/`./lab up`. Use `--case SEC-02`
+to run one registered scenario while investigating a failure.
 
 se-lab is included as a git submodule at `se-lab/`. After cloning:
 

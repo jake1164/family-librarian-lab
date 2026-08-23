@@ -16,13 +16,11 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
-from agent import registry
-from agent.results import RunContext
-from agent.suites import Suite, discover_suites, run_suite, suites_in_group
+from agent import common as lab_common, registry
+from agent.suites import Suite, discover_suites, run_suites, suites_in_group
 
 from family_librarian_lab.api import FamilyLibrarianApi
 
@@ -34,26 +32,55 @@ RESULTS_ROOT = REPO_ROOT / "results"
 TESTS_ROOT = REPO_ROOT / "tests"
 PROFILE = "base"
 DEFAULT_HOST_PORT = 18080
+DEFAULT_REPO_URL = "git@github.com:jake1164/family-librarian.git"
 _SECRET_NAMES = (
     "FAMILY_LIBRARIAN_POSTGRES_PASSWORD",
     "FAMILY_LIBRARIAN_ADMIN_PASSWORD",
 )
 
 
-def _configure_run(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--fresh", action="store_true", help="Remove this run's Compose volumes before starting")
-    parser.add_argument("--project-name", default=None, help="Compose project name (default: a unique run name)")
+def _configure_checkout_target(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help="Source branch or tag to check out (default: refresh the current checkout's branch)",
+    )
 
 
 def _configure_project(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--project-name", default=None, help="Compose project name (default: FAMILY_LIBRARIAN_PROJECT_NAME)")
+    parser.add_argument("--project-name", default=None, help="Compose project name (default: the lab's standard project name)")
 
 
-def _configure_test(parser: argparse.ArgumentParser) -> None:
+def _configure_run(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--group", default="base", help="Suite group to run (default: base; use all for every suite)")
     parser.add_argument("--case", default=None, help="Run one registered case id (for example SEC-02)")
     parser.add_argument("--keep", action="store_true", help="Keep each failed/successful scenario project for investigation")
     parser.add_argument("--skip-build", action="store_true", help="Use the existing Family Librarian image without rebuilding it")
+
+
+def _repo_url() -> str:
+    """Plugin-level default: this plugin only ever tests Family Librarian, so it
+    can just know that -- FAMILY_LIBRARIAN_REPO_URL in lab.env becomes an
+    optional fork/mirror override rather than a required setting."""
+    return lab_common.resolve_setting("FAMILY_LIBRARIAN_REPO_URL", default=DEFAULT_REPO_URL) or DEFAULT_REPO_URL
+
+
+def _checkout_source(target: str | None) -> Path:
+    """Land Family Librarian's source at repo_dir() -- a second, lab-managed
+    clone separate from any manual dev checkout, same convention
+    m3undle-lab-public already uses -- rather than requiring
+    FAMILY_LIBRARIAN_SOURCE_DIR to point at an externally-managed one."""
+    repo_url = _repo_url()
+    lab_common.ensure_repo_checkout(repo_url)
+    if target:
+        kind, ref = lab_common.resolve_build_target(target, repo_url)
+        if kind == "tag":
+            lab_common.git_prepare_tag(ref)
+        else:
+            lab_common.git_prepare_branch(ref)
+    else:
+        lab_common.git_refresh_current_branch()
+    return lab_common.repo_dir()
 
 
 def _load_lab_env() -> dict[str, str]:
@@ -69,6 +96,10 @@ def _load_lab_env() -> dict[str, str]:
         if not separator or not key:
             raise SystemExit(f"Invalid lab.env line: {line!r}")
         values[key] = value
+    # Always the lab-managed checkout, not a manually-set external path -- see
+    # _checkout_source(). Overrides any stale FAMILY_LIBRARIAN_SOURCE_DIR line
+    # left in lab.env.
+    values["FAMILY_LIBRARIAN_SOURCE_DIR"] = str(lab_common.repo_dir())
     return values
 
 
@@ -77,7 +108,7 @@ def _project_name(values: dict[str, str], requested: str | None, *, unique: bool
     if not candidate and unique:
         candidate = "family-librarian-lab-" + datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     if not candidate:
-        raise SystemExit("Specify --project-name or set FAMILY_LIBRARIAN_PROJECT_NAME in lab.env.")
+        candidate = lab_common.project_name()
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", candidate):
         raise SystemExit("Compose project names may contain lowercase letters, digits, hyphens, and underscores only.")
     return candidate
@@ -292,28 +323,30 @@ class _BaseScenarioFactory:
         return _BaseScenario(self._values, test_id, keep=self._keep)
 
 
-@registry.command("build", help="Build the Family Librarian base-profile image")
+@registry.command("build", help="Check out and build Family Librarian's base-profile image", configure=_configure_checkout_target)
 def handle_build(args: argparse.Namespace, config: object) -> int:
+    _checkout_source(args.target)
     values = _load_lab_env()
-    project_name = _project_name(values, None, unique=False)
+    project_name = lab_common.project_name()
     _run_or_exit(values, project_name, "build", "family-librarian", "migrate")
     return 0
 
 
-@registry.command("run", help="Start the isolated base profile and record readiness", configure=_configure_run)
-def handle_run(args: argparse.Namespace, config: object) -> int:
+@registry.command(
+    "up",
+    help="Check out, build, and deploy Family Librarian's base profile, and leave it running for manual testing",
+    configure=_configure_checkout_target,
+)
+def handle_up(args: argparse.Namespace, config: object) -> int:
+    _checkout_source(args.target)
     values = _load_lab_env()
-    project_name = _project_name(values, args.project_name, unique=True)
-    if args.fresh:
-        _run_or_exit(values, project_name, "down", "--volumes", "--remove-orphans")
+    project_name = lab_common.project_name()
     _run_or_exit(values, project_name, "up", "--build", "--wait", "--remove-orphans")
     checks, passed = _readiness(values, project_name)
-    result_path = _capture_result(values, project_name, checks, "pass" if passed else "fail")
-    print(f"Base result captured: {result_path}", flush=True)
     if not passed:
         print(json.dumps(checks, indent=2), file=sys.stderr)
-        return 1
-    print(f"Base profile ready: {project_name}", flush=True)
+        raise SystemExit("Base profile failed readiness checks after 'up'.")
+    print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
     return 0
 
 
@@ -341,32 +374,42 @@ def handle_down(args: argparse.Namespace, config: object) -> int:
     return 0
 
 
-@registry.command("test", help="Run black-box integration suites against fresh base-profile projects", configure=_configure_test)
-def handle_test(args: argparse.Namespace, config: object) -> int:
-    values = _load_lab_env()
-    suites = suites_in_group(discover_suites(TESTS_ROOT), args.group)
-    if args.case:
-        selected_suites: list[Suite] = []
-        for candidate in suites:
-            selected_cases = [case for case in candidate.cases if case.test_id == args.case]
-            if selected_cases:
-                selected_suites.append(
-                    Suite(
-                        name=candidate.name,
-                        group=candidate.group,
-                        order=candidate.order,
-                        cases=selected_cases,
-                        setup_fn=candidate.setup_fn,
-                        teardown_fn=candidate.teardown_fn,
-                    )
+def _select_suites(suites: list[Suite], *, case: str | None) -> list[Suite]:
+    if not case:
+        return suites
+    selected: list[Suite] = []
+    for candidate in suites:
+        matching = [c for c in candidate.cases if c.test_id == case]
+        if matching:
+            selected.append(
+                Suite(
+                    name=candidate.name,
+                    group=candidate.group,
+                    order=candidate.order,
+                    cases=matching,
+                    setup_fn=candidate.setup_fn,
+                    teardown_fn=candidate.teardown_fn,
                 )
-        suites = selected_suites
+            )
+    return selected
+
+
+@registry.command(
+    "run",
+    help="Run black-box integration suites against fresh, isolated base-profile projects",
+    configure=_configure_run,
+)
+def handle_run(args: argparse.Namespace, config: object) -> int:
+    suites = _select_suites(suites_in_group(discover_suites(TESTS_ROOT), args.group), case=args.case)
     if not suites:
         selector = f" and case {args.case!r}" if args.case else ""
         raise SystemExit(f"No suites found for group {args.group!r}{selector}.")
 
     if not args.skip_build:
-        build_project = _project_name(values, None, unique=False)
+        _checkout_source(None)
+    values = _load_lab_env()
+    if not args.skip_build:
+        build_project = lab_common.project_name()
         _run_or_exit(values, build_project, "build", "family-librarian", "migrate")
 
     selector = args.case.lower() if args.case else args.group
@@ -374,36 +417,29 @@ def handle_test(args: argparse.Namespace, config: object) -> int:
     run_directory = RESULTS_ROOT / run_id
     run_directory.mkdir(parents=True, exist_ok=False)
     factory = _BaseScenarioFactory(values, keep=args.keep)
-    suite_reports: list[dict[str, Any]] = []
-    failed = False
 
-    for selected in suites:
-        context = RunContext(selected.name)
-        suite_result = run_suite(selected, context, scenario_factory=factory)
-        context.print_summary()
-        result_path = run_directory / f"results-{selected.name}.json"
-        context.write_json(result_path)
-        report = {
-            "suite": selected.name,
-            "expected": suite_result.expected,
-            "actual": suite_result.actual,
-            "setup_ok": suite_result.setup_ok,
-            "setup_error": suite_result.setup_error,
-            "drifted": suite_result.drifted,
-            "result": result_path.name,
-        }
-        suite_reports.append(report)
-        failed = failed or context.exit_code() != 0 or suite_result.drifted or not suite_result.setup_ok
+    summary = run_suites(suites, results_dir=run_directory, scenario_factory=factory)
 
-    summary = {
+    report = {
         "run_id": run_id,
         "profile": PROFILE,
         "group": args.group,
         "case": args.case,
-        "outcome": "fail" if failed else "pass",
-        "suites": suite_reports,
+        "outcome": "fail" if summary.failed else "pass",
+        "suites": [
+            {
+                "suite": result.suite_name,
+                "expected": result.expected,
+                "actual": result.actual,
+                "setup_ok": result.setup_ok,
+                "setup_error": result.setup_error,
+                "drifted": result.drifted,
+                "result": f"results-{result.suite_name}.json",
+            }
+            for result in summary.results
+        ],
     }
     summary_path = run_directory / "results-suite-run.json"
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Suite result captured: {summary_path}", flush=True)
-    return 1 if failed else 0
+    return 1 if summary.failed else 0
