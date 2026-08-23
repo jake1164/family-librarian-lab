@@ -16,12 +16,14 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 from agent import common as lab_common, registry
 from agent.suites import Suite, discover_suites, run_suites, suites_in_group
 
+from family_librarian_lab import clients
 from family_librarian_lab.api import FamilyLibrarianApi
 
 
@@ -31,6 +33,7 @@ LAB_ENV_FILE = REPO_ROOT / "lab.env"
 RESULTS_ROOT = REPO_ROOT / "results"
 TESTS_ROOT = REPO_ROOT / "tests"
 PROFILE = "base"
+ALL_PROFILES = (PROFILE, clients.CWA_PROFILE, clients.ABS_PROFILE)
 DEFAULT_HOST_PORT = 18080
 DEFAULT_REPO_URL = "git@github.com:jake1164/family-librarian.git"
 _SECRET_NAMES = (
@@ -44,6 +47,18 @@ def _configure_checkout_target(parser: argparse.ArgumentParser) -> None:
         "target",
         nargs="?",
         help="Source branch or tag to check out (default: refresh the current checkout's branch)",
+    )
+
+
+def _configure_up(parser: argparse.ArgumentParser) -> None:
+    _configure_checkout_target(parser)
+    parser.add_argument(
+        "--profile",
+        nargs="+",
+        metavar="CLIENT",
+        default=[],
+        choices=[clients.CWA_PROFILE, clients.ABS_PROFILE],
+        help="Extra destination(s) to bring up and wire alongside the base profile (cwa-local, abs)",
     )
 
 
@@ -114,7 +129,13 @@ def _project_name(values: dict[str, str], requested: str | None, *, unique: bool
     return candidate
 
 
-def _compose(values: dict[str, str], project_name: str, *arguments: str, capture: bool = False) -> subprocess.CompletedProcess[str]:
+def _compose(
+    values: dict[str, str],
+    project_name: str,
+    *arguments: str,
+    profiles: Sequence[str] = (PROFILE,),
+    capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.update(values)
     command = [
@@ -126,28 +147,68 @@ def _compose(values: dict[str, str], project_name: str, *arguments: str, capture
         project_name,
         "--file",
         str(COMPOSE_FILE),
-        "--profile",
-        PROFILE,
-        *arguments,
     ]
+    for profile in profiles:
+        command += ["--profile", profile]
+    command += list(arguments)
     return subprocess.run(command, env=environment, text=True, capture_output=capture, check=False)
 
 
-def _run_or_exit(values: dict[str, str], project_name: str, *arguments: str) -> None:
-    result = _compose(values, project_name, *arguments)
+def _run_or_exit(
+    values: dict[str, str], project_name: str, *arguments: str, profiles: Sequence[str] = (PROFILE,)
+) -> None:
+    result = _compose(values, project_name, *arguments, profiles=profiles)
     if result.returncode:
         raise SystemExit(result.returncode)
 
 
 def _host_base(values: dict[str, str]) -> str:
-    port = values.get("FAMILY_LIBRARIAN_HOST_PORT", str(DEFAULT_HOST_PORT))
+    return _client_host_base(values, DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_HOST_PORT")
+
+
+def _client_host_base(values: dict[str, str], default_port: int, env_key: str) -> str:
+    port = values.get(env_key, str(default_port))
     try:
         numeric_port = int(port)
     except ValueError as error:
-        raise SystemExit("FAMILY_LIBRARIAN_HOST_PORT must be a valid TCP port.") from error
+        raise SystemExit(f"{env_key} must be a valid TCP port.") from error
     if not 1 <= numeric_port <= 65535:
-        raise SystemExit("FAMILY_LIBRARIAN_HOST_PORT must be between 1 and 65535.")
+        raise SystemExit(f"{env_key} must be between 1 and 65535.")
     return f"http://127.0.0.1:{numeric_port}"
+
+
+def _wire_destinations(
+    values: dict[str, str], profiles: Sequence[str], api: FamilyLibrarianApi
+) -> tuple["clients.CwaClient | None", "clients.AbsClient | None"]:
+    """Configure Family Librarian to point at whichever extra destinations this
+    scenario/deployment brought up -- the same call, used by both `up` (manual
+    testing) and the cwa-local/abs suites' scenario setup (automated testing),
+    so both paths exercise the identical wiring rather than two hand-maintained
+    copies of it."""
+    cwa_client: clients.CwaClient | None = None
+    abs_client: clients.AbsClient | None = None
+
+    if clients.CWA_PROFILE in profiles:
+        cwa_client = clients.CwaClient(
+            host_base_url=_client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
+        )
+        api.configure_cwa(
+            local_ingest_path=clients.CWA_INGEST_CONTAINER_PATH,
+            opds_base_url=clients.CWA_INTERNAL_URL,
+            opds_username=clients.CWA_DEFAULT_USERNAME,
+            opds_password=clients.CWA_DEFAULT_PASSWORD,
+        )
+
+    if clients.ABS_PROFILE in profiles:
+        abs_client = clients.AbsClient(
+            host_base_url=_client_host_base(values, clients.ABS_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ABS_HOST_PORT")
+        )
+        token, library_id, folder_id = abs_client.ensure_bootstrapped()
+        api.configure_audiobookshelf(
+            base_url=clients.ABS_INTERNAL_URL, library_id=library_id, folder_id=folder_id, api_token=token
+        )
+
+    return cwa_client, abs_client
 
 
 def _probe(url: str) -> dict[str, object]:
@@ -173,9 +234,9 @@ def _capture_result(values: dict[str, str], project_name: str, checks: dict[str,
     run_directory = RESULTS_ROOT / run_id
     run_directory.mkdir(parents=True, exist_ok=False)
 
-    ps = _compose(values, project_name, "ps", "--all", "--format", "json", capture=True)
-    config = _compose(values, project_name, "config", "--no-interpolate", capture=True)
-    logs = _compose(values, project_name, "logs", "--no-color", capture=True)
+    ps = _compose(values, project_name, "ps", "--all", "--format", "json", profiles=ALL_PROFILES, capture=True)
+    config = _compose(values, project_name, "config", "--no-interpolate", profiles=ALL_PROFILES, capture=True)
+    logs = _compose(values, project_name, "logs", "--no-color", profiles=ALL_PROFILES, capture=True)
 
     (run_directory / "compose-ps.json").write_text(_redact(ps.stdout, values), encoding="utf-8")
     (run_directory / "compose-config.yaml").write_text(_redact(config.stdout, values), encoding="utf-8")
@@ -208,7 +269,7 @@ def _capture_result(values: dict[str, str], project_name: str, checks: dict[str,
 
 
 def _compose_service_health(values: dict[str, str], project_name: str) -> tuple[dict[str, object], bool]:
-    result = _compose(values, project_name, "ps", "--all", "--format", "json", capture=True)
+    result = _compose(values, project_name, "ps", "--all", "--format", "json", profiles=ALL_PROFILES, capture=True)
     services: dict[str, object] = {}
     for line in result.stdout.splitlines():
         try:
@@ -242,12 +303,22 @@ def _compose_service_health(values: dict[str, str], project_name: str) -> tuple[
 
 
 def _readiness(values: dict[str, str], project_name: str) -> tuple[dict[str, object], bool]:
+    """Destination checks (cwa/abs) are auto-detected from which containers
+    this project actually has -- not from a caller-supplied profile list -- so
+    `status`, which has no other record of what a given project brought up,
+    reports correctly without special-casing."""
     base = _host_base(values)
     checks: dict[str, object] = {
         "live": _probe(f"{base}/health/live"),
         "ready": _probe(f"{base}/health/ready"),
     }
     services, services_ready = _compose_service_health(values, project_name)
+    if clients.CWA_SERVICE in services:
+        cwa_url = _client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
+        checks["cwa"] = {"url": cwa_url, "ok": clients.CwaClient(host_base_url=cwa_url).ready()}
+    if clients.ABS_SERVICE in services:
+        abs_url = _client_host_base(values, clients.ABS_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ABS_HOST_PORT")
+        checks["abs"] = {"url": abs_url, "ok": clients.AbsClient(host_base_url=abs_url).ready()}
     checks["compose_services"] = services
     passed = (
         all(bool(item.get("ok")) for name, item in checks.items() if name != "compose_services" and isinstance(item, dict))
@@ -268,21 +339,31 @@ def _wait_for_clamav(values: dict[str, str], project_name: str, timeout_seconds:
 
 
 class _BaseScenario:
-    """One fresh, disposable Compose project backing one suite case."""
+    """One fresh, disposable Compose project backing one suite case.
 
-    def __init__(self, values: dict[str, str], test_id: str, *, keep: bool) -> None:
+    `profiles` are the extra destination profiles (cwa-local, abs) this
+    scenario needs beyond `base` -- teardown always requests ALL_PROFILES
+    regardless, so a scenario that did bring up an extra destination never
+    leaves it as an undiscovered, profile-filtered-out orphan (the same class
+    of bug already found and fixed once this session in `clients down`).
+    """
+
+    def __init__(self, values: dict[str, str], test_id: str, *, keep: bool, profiles: Sequence[str] = ()) -> None:
         self._values = values
         self._test_id = test_id
         self._keep = keep
+        self._profiles = (PROFILE, *profiles)
         suffix = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
         self.project_name = f"family-librarian-lab-{test_id.lower()}-{suffix}"
         self.api: FamilyLibrarianApi | None = None
         self.readiness_passed = False
+        self.cwa_client: clients.CwaClient | None = None
+        self.abs_client: clients.AbsClient | None = None
         self._result_directory: Path | None = None
 
     def __enter__(self) -> "_BaseScenario":
-        _run_or_exit(self._values, self.project_name, "down", "--volumes", "--remove-orphans")
-        _run_or_exit(self._values, self.project_name, "up", "--wait", "--remove-orphans")
+        _run_or_exit(self._values, self.project_name, "down", "--volumes", "--remove-orphans", profiles=ALL_PROFILES)
+        _run_or_exit(self._values, self.project_name, "up", "--wait", "--remove-orphans", profiles=self._profiles)
         checks, self.readiness_passed = _readiness(self._values, self.project_name)
         outcome = "pass" if self.readiness_passed else "fail"
         self._result_directory = _capture_result(self._values, self.project_name, checks, outcome).parent
@@ -294,6 +375,7 @@ class _BaseScenario:
             self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
         )
         self.api = api
+        self.cwa_client, self.abs_client = _wire_destinations(self._values, self._profiles, api)
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
@@ -301,26 +383,30 @@ class _BaseScenario:
             trace_path = self._result_directory / "api-trace.json"
             trace_path.write_text(json.dumps(self.api.trace, indent=2) + "\n", encoding="utf-8")
         if not self._keep:
-            result = _compose(self._values, self.project_name, "down", "--volumes", "--remove-orphans", capture=True)
+            result = _compose(
+                self._values, self.project_name, "down", "--volumes", "--remove-orphans",
+                profiles=ALL_PROFILES, capture=True,
+            )
             if result.returncode:
                 print(_redact(result.stderr, self._values), file=sys.stderr, end="")
         return False
 
     def stop_clamav(self) -> None:
-        _run_or_exit(self._values, self.project_name, "stop", "clamav")
+        _run_or_exit(self._values, self.project_name, "stop", "clamav", profiles=self._profiles)
 
     def start_clamav(self) -> None:
-        _run_or_exit(self._values, self.project_name, "up", "--wait", "clamav")
+        _run_or_exit(self._values, self.project_name, "up", "--wait", "clamav", profiles=self._profiles)
         _wait_for_clamav(self._values, self.project_name)
 
 
 class _BaseScenarioFactory:
-    def __init__(self, values: dict[str, str], *, keep: bool) -> None:
+    def __init__(self, values: dict[str, str], *, keep: bool, profiles: Sequence[str] = ()) -> None:
         self._values = values
         self._keep = keep
+        self._profiles = profiles
 
     def __call__(self, test_id: str) -> _BaseScenario:
-        return _BaseScenario(self._values, test_id, keep=self._keep)
+        return _BaseScenario(self._values, test_id, keep=self._keep, profiles=self._profiles)
 
 
 @registry.command("build", help="Check out and build Family Librarian's base-profile image", configure=_configure_checkout_target)
@@ -335,18 +421,36 @@ def handle_build(args: argparse.Namespace, config: object) -> int:
 @registry.command(
     "up",
     help="Check out, build, and deploy Family Librarian's base profile, and leave it running for manual testing",
-    configure=_configure_checkout_target,
+    configure=_configure_up,
 )
 def handle_up(args: argparse.Namespace, config: object) -> int:
     _checkout_source(args.target)
     values = _load_lab_env()
     project_name = lab_common.project_name()
-    _run_or_exit(values, project_name, "up", "--build", "--wait", "--remove-orphans")
+    profiles = (PROFILE, *args.profile)
+    _run_or_exit(values, project_name, "up", "--build", "--wait", "--remove-orphans", profiles=profiles)
     checks, passed = _readiness(values, project_name)
     if not passed:
         print(json.dumps(checks, indent=2), file=sys.stderr)
         raise SystemExit("Base profile failed readiness checks after 'up'.")
+
+    api = FamilyLibrarianApi(_host_base(values))
+    api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+    cwa_client, abs_client = _wire_destinations(values, profiles, api)
+
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
+    if cwa_client is not None:
+        print(
+            f"  CWA:  {cwa_client.host_base_url}  (user: {clients.CWA_DEFAULT_USERNAME} / "
+            f"password: {clients.CWA_DEFAULT_PASSWORD}) -- already wired into Family Librarian",
+            flush=True,
+        )
+    if abs_client is not None:
+        print(
+            f"  Audiobookshelf: {abs_client.host_base_url}  (user: {clients.ABS_DEFAULT_USERNAME} / "
+            f"password: {clients.ABS_DEFAULT_PASSWORD}) -- already wired into Family Librarian",
+            flush=True,
+        )
     return 0
 
 
@@ -354,7 +458,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
 def handle_status(args: argparse.Namespace, config: object) -> int:
     values = _load_lab_env()
     project_name = _project_name(values, args.project_name, unique=False)
-    ps = _compose(values, project_name, "ps", "--all", "--format", "json", capture=True)
+    ps = _compose(values, project_name, "ps", "--all", "--format", "json", profiles=ALL_PROFILES, capture=True)
     if ps.stdout:
         print(ps.stdout, end="" if ps.stdout.endswith("\n") else "\n")
     if ps.returncode:
@@ -369,7 +473,7 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
 def handle_down(args: argparse.Namespace, config: object) -> int:
     values = _load_lab_env()
     project_name = _project_name(values, args.project_name, unique=False)
-    _run_or_exit(values, project_name, "down", "--remove-orphans")
+    _run_or_exit(values, project_name, "down", "--remove-orphans", profiles=ALL_PROFILES)
     print(f"Base profile stopped: {project_name}", flush=True)
     return 0
 
@@ -394,6 +498,36 @@ def _select_suites(suites: list[Suite], *, case: str | None) -> list[Suite]:
     return selected
 
 
+def _profiles_for(suite: Suite) -> tuple[str, ...]:
+    """Derive the extra destination profile a suite's own declared group
+    needs, so `--group cwa-local`/`--group abs` each bring up exactly the
+    destination they test."""
+    if suite.group == clients.CWA_PROFILE:
+        return (clients.CWA_PROFILE,)
+    if suite.group == clients.ABS_PROFILE:
+        return (clients.ABS_PROFILE,)
+    return ()
+
+
+def _group_suites_by_profile(suites: list[Suite]) -> list[tuple[tuple[str, ...], list[Suite]]]:
+    """Buckets a mixed selection (e.g. `--group all`) by which extra profile
+    each suite's own group needs, preserving selection order within each
+    bucket. Each bucket gets its own scenario factory -- sharing one factory
+    (and its bundled destination wiring) across every suite in a mixed run
+    would enable CWA/ABS for suites that specifically assert no destination
+    is configured (confirmed for real: base-security's SEC-01/SEC-02 failed
+    exactly this way under a single blanket-profile factory)."""
+    buckets: dict[tuple[str, ...], list[Suite]] = {}
+    order: list[tuple[str, ...]] = []
+    for target in suites:
+        key = _profiles_for(target)
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(target)
+    return [(key, buckets[key]) for key in order]
+
+
 @registry.command(
     "run",
     help="Run black-box integration suites against fresh, isolated base-profile projects",
@@ -416,16 +550,21 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
     run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}-suites-{selector}"
     run_directory = RESULTS_ROOT / run_id
     run_directory.mkdir(parents=True, exist_ok=False)
-    factory = _BaseScenarioFactory(values, keep=args.keep)
 
-    summary = run_suites(suites, results_dir=run_directory, scenario_factory=factory)
+    all_results = []
+    failed = False
+    for profiles, group_suites in _group_suites_by_profile(suites):
+        factory = _BaseScenarioFactory(values, keep=args.keep, profiles=profiles)
+        summary = run_suites(group_suites, results_dir=run_directory, scenario_factory=factory)
+        all_results.extend(summary.results)
+        failed = failed or summary.failed
 
     report = {
         "run_id": run_id,
         "profile": PROFILE,
         "group": args.group,
         "case": args.case,
-        "outcome": "fail" if summary.failed else "pass",
+        "outcome": "fail" if failed else "pass",
         "suites": [
             {
                 "suite": result.suite_name,
@@ -436,10 +575,10 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
                 "drifted": result.drifted,
                 "result": f"results-{result.suite_name}.json",
             }
-            for result in summary.results
+            for result in all_results
         ],
     }
     summary_path = run_directory / "results-suite-run.json"
     summary_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Suite result captured: {summary_path}", flush=True)
-    return 1 if summary.failed else 0
+    return 1 if failed else 0

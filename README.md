@@ -60,6 +60,41 @@ trace. `--keep` preserves those projects for investigation, and `--skip-build`
 uses an image built by an earlier `./lab build`/`./lab up`. Use `--case SEC-02`
 to run one registered scenario while investigating a failure.
 
+## CWA and Audiobookshelf destinations
+
+`cwa-local` and `abs` are Compose profiles on top of `base`, adding real
+[Calibre-Web-Automated](https://github.com/crocodilestick/calibre-web-automated) and
+[Audiobookshelf](https://github.com/advplyr/audiobookshelf) containers. The same wiring
+code (`_wire_destinations` in `family_librarian_lab/commands.py`) configures Family
+Librarian to point at whichever of them is up, whether you're clicking around manually
+or running the automated suites — one code path, not two hand-maintained copies of it:
+
+```bash
+# Manual testing: bring up base + CWA (or + Audiobookshelf, or both), already
+# wired into Family Librarian -- nothing left to configure by hand.
+./lab up --profile cwa-local
+./lab up --profile abs
+./lab base down
+
+# Automated testing: one real case per destination (CWA-L-02, ABS-02 from the
+# design doc), each in its own fresh, isolated project exactly like the base
+# suites -- CWA/ABS come up and tear down with it.
+./lab run --group cwa-local
+./lab run --group abs
+```
+
+CWA ships a working default admin account (`admin` / `admin123`) — no bootstrap needed.
+Audiobookshelf needs a first-run root user and a library pointed at its `/audiobooks`
+folder; `AbsClient.ensure_bootstrapped()` does that idempotently before Family Librarian
+is configured. Both images are pinned in `compose.base.yaml`
+(`FAMILY_LIBRARIAN_CWA_IMAGE`/`FAMILY_LIBRARIAN_ABS_IMAGE` override them), same
+convention as this project's other pinned dependency images.
+
+This intentionally covers only the happy path for each destination — the full CWA/ABS
+scenario matrix (SFTP, restarts, interruptions, negative cases, `AUTO-*`, `SEC-*`, the
+`CWA-C-*` correctness tests) stays as documented, larger follow-on work in
+[the design doc](docs/01-family-librarian-integration-test-design.md).
+
 se-lab is included as a git submodule at `se-lab/`. After cloning:
 
 ```

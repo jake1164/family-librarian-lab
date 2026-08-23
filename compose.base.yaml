@@ -82,6 +82,11 @@ services:
       start_period: 5s
     volumes:
       - family-librarian-data:/data/family-librarian
+      # Always mounted, even when neither client profile is active: harmless
+      # (an unused, unread volume) and keeps this one image usable for
+      # cwa-local without a separate compose file, matching what --profile
+      # brings up.
+      - cwa-ingest:/cwa-ingest
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,7 +95,43 @@ services:
       clamav:
         condition: service_healthy
 
+  cwa:
+    profiles: [cwa-local]
+    image: ${FAMILY_LIBRARIAN_CWA_IMAGE:-crocodilestick/calibre-web-automated:latest}
+    environment:
+      # Matches family-librarian's own non-root app user (the .NET base
+      # image's built-in $APP_UID) so both containers can write into the
+      # shared cwa-ingest volume -- a mismatch here fails LocalCwaIngestTransport
+      # with "Access to the path ... is denied." (confirmed for real).
+      PUID: 1654
+      PGID: 1654
+      TZ: Etc/UTC
+    ports:
+      - "${FAMILY_LIBRARIAN_CWA_HOST_PORT:-18083}:8083"
+    volumes:
+      - cwa-config:/config
+      - cwa-library:/calibre-library
+      # Same named volume family-librarian writes into above -- this is the
+      # shared ingest transport CWA-L-02 exercises, not two separate copies.
+      - cwa-ingest:/cwa-book-ingest
+
+  abs:
+    profiles: [abs]
+    image: ${FAMILY_LIBRARIAN_ABS_IMAGE:-advplyr/audiobookshelf:latest}
+    ports:
+      - "${FAMILY_LIBRARIAN_ABS_HOST_PORT:-18378}:80"
+    volumes:
+      - abs-config:/config
+      - abs-metadata:/metadata
+      - abs-audiobooks:/audiobooks
+
 volumes:
   postgres-data:
   clamav-data:
   family-librarian-data:
+  cwa-ingest:
+  cwa-config:
+  cwa-library:
+  abs-config:
+  abs-metadata:
+  abs-audiobooks:

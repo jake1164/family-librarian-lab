@@ -63,29 +63,49 @@ class FamilyLibrarianApi:
         _require_status(response, 200, "publishing queue")
         return _object(response.body, "publishing queue")
 
+    def recheck_delivery(self, delivery_id: str) -> None:
+        """Audiobookshelf deliveries have no background verification hosted
+        service (unlike CWA's CwaVerificationHostedService) -- a delivery
+        left Verifying after its one synchronous check stays there until
+        this is called explicitly."""
+        response = self._request("POST", f"/api/v1/admin/publishing/deliveries/{delivery_id}/recheck")
+        _require_status(response, 204, "delivery recheck")
+
     def create_demo_ebook_request(self) -> tuple[str, str]:
+        return self.create_demo_request("Ebook")
+
+    def create_demo_audiobook_request(self) -> tuple[str, str]:
+        return self.create_demo_request("Audiobook")
+
+    def create_demo_request(self, media_type: str) -> tuple[str, str]:
         work = self._request("POST", "/api/v1/catalog/candidates/demo/the-hobbit/resolve", data=b"")
         _require_status(work, (200, 201), "demo catalog work resolution")
         work_id = _object(work.body, "catalog work")["id"]
         created = self._request(
             "POST",
             "/api/v1/requests/",
-            json_body={"workId": work_id, "formats": ["Ebook"], "note": None, "confirmDuplicate": True},
+            json_body={"workId": work_id, "formats": [media_type], "note": None, "confirmDuplicate": True},
         )
-        _require_status(created, 201, "ebook request creation")
+        _require_status(created, 201, f"{media_type.lower()} request creation")
         request = _object(created.body, "created request")
         formats = request.get("formats")
         if not isinstance(formats, list):
             raise AssertionError("Created request did not contain formats.")
         format_id = next(
-            (item.get("formatId") for item in formats if isinstance(item, dict) and item.get("mediaType") == "Ebook"),
+            (item.get("formatId") for item in formats if isinstance(item, dict) and item.get("mediaType") == media_type),
             None,
         )
         if not isinstance(format_id, str):
-            raise AssertionError("Created request did not contain an ebook format.")
+            raise AssertionError(f"Created request did not contain a {media_type} format.")
         return _required_string(request, "id", "created request"), format_id
 
     def upload_manual_epub(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
+        return self._upload_manual_file(request_id, format_id, content, filename)
+
+    def upload_manual_audio(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
+        return self._upload_manual_file(request_id, format_id, content, filename)
+
+    def _upload_manual_file(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
         boundary = f"----family-librarian-lab-{uuid.uuid4().hex}"
         payload = (
             f"--{boundary}\r\n"
@@ -98,6 +118,64 @@ class FamilyLibrarianApi:
             data=payload,
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
+
+    def configure_cwa(
+        self,
+        *,
+        local_ingest_path: str,
+        opds_base_url: str,
+        opds_username: str,
+        opds_password: str,
+    ) -> dict[str, Any]:
+        settings = self._request(
+            "PUT",
+            "/api/v1/admin/publishing/cwa/",
+            json_body={
+                "transportMode": "Local",
+                "localIngestPath": local_ingest_path,
+                "sftpHost": None,
+                "sftpPort": None,
+                "sftpUsername": None,
+                "sftpIngestPath": None,
+                "sftpAuthenticationMode": "PrivateKey",
+                "opdsBaseUrl": opds_base_url,
+                "opdsUsername": opds_username,
+            },
+        )
+        _require_status(settings, 200, "CWA settings")
+        password = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/opds-password", json_body={"value": opds_password}
+        )
+        _require_status(password, 200, "CWA OPDS password")
+        enabled = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/enabled", json_body={"enabled": True}
+        )
+        _require_status(enabled, 200, "CWA enable")
+        return _object(enabled.body, "CWA settings")
+
+    def configure_audiobookshelf(
+        self,
+        *,
+        base_url: str,
+        library_id: str,
+        folder_id: str,
+        api_token: str,
+    ) -> dict[str, Any]:
+        settings = self._request(
+            "PUT",
+            "/api/v1/admin/publishing/audiobookshelf/",
+            json_body={"baseUrl": base_url, "libraryId": library_id, "folderId": folder_id},
+        )
+        _require_status(settings, 200, "Audiobookshelf settings")
+        token = self._request(
+            "PUT", "/api/v1/admin/publishing/audiobookshelf/api-token", json_body={"value": api_token}
+        )
+        _require_status(token, 200, "Audiobookshelf API token")
+        enabled = self._request(
+            "PUT", "/api/v1/admin/publishing/audiobookshelf/enabled", json_body={"enabled": True}
+        )
+        _require_status(enabled, 200, "Audiobookshelf enable")
+        return _object(enabled.body, "Audiobookshelf settings")
 
     def _request(
         self,

@@ -27,6 +27,25 @@ def eicar_epub() -> bytes:
     return _build_epub(chapter_text=EICAR_TEST_STRING.decode("ascii"))
 
 
+def clean_audiobook() -> bytes:
+    """Return a deterministic, genuinely ffprobe-decodable MP3 (repeated
+    MPEG-1 Layer III frame headers -- silent, not intended for listening).
+
+    A bare ID3v2 tag or arbitrary bytes with a ".mp3" extension is not
+    enough: Audiobookshelf's own scanner runs ffprobe against the real
+    content and drops the file with "Invalid data found when processing
+    input" if it can't decode a stream (confirmed against a real
+    Audiobookshelf instance) -- matching
+    FamilyLibrarian.Infrastructure.Acquisition.SignatureFileTypeDetector's
+    own bare-MPEG-frame-sync magic-byte check on Family Librarian's side.
+    """
+    # MPEG-1 Layer III, 128kbps, 44100Hz, mono, no CRC, no padding.
+    frame_header = bytes([0xFF, 0xFB, 0x90, 0xC0])
+    frame_size = 417  # floor(144 * 128000 / 44100)
+    frame = frame_header + b"\x00" * (frame_size - len(frame_header))
+    return frame * 20  # ~0.5s -- enough for a duration ffprobe can report
+
+
 def _build_epub(*, chapter_text: str) -> bytes:
     output = BytesIO()
     with ZipFile(output, "w") as archive:
