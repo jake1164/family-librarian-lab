@@ -36,7 +36,7 @@ cp se-lab/lab.env.example lab.env
 ./lab base down        # note: base down, not the generic `down` -- see below
 
 # Run each base/security case in its own fresh, isolated Compose project.
-./lab run --group base
+./lab run --test-group base
 ```
 
 `up [target]`/`build [target]` resolve `target` as a tag first, then a branch
@@ -53,7 +53,7 @@ se-lab's generic top-level `down` only knows how to tear down a
 same standard project name `up` uses, so no `--project-name` is needed for
 the common case.
 
-`./lab run --group base` discovers suites through se-lab. Each case receives a
+`./lab run --test-group base` discovers suites through se-lab. Each case receives a
 new Compose project, PostgreSQL volume, ClamAV volume, and Family Librarian
 storage volume; its results include the deployment artifacts plus a redacted API
 trace. `--keep` preserves those projects for investigation, and `--skip-build`
@@ -79,8 +79,8 @@ or running the automated suites — one code path, not two hand-maintained copie
 # Automated testing: one real case per destination (CWA-L-02, ABS-02 from the
 # design doc), each in its own fresh, isolated project exactly like the base
 # suites -- CWA/ABS come up and tear down with it.
-./lab run --group cwa-local
-./lab run --group abs
+./lab run --test-group cwa-local
+./lab run --test-group abs
 ```
 
 CWA ships a working default admin account (`admin` / `admin123`) — no bootstrap needed.
@@ -110,8 +110,8 @@ way an admin would through the UI:
 ./lab up --profile cwa-sftp-password
 ./lab base down
 
-./lab run --group cwa-sftp-key
-./lab run --group cwa-sftp-password
+./lab run --test-group cwa-sftp-key
+./lab run --test-group cwa-sftp-password
 ```
 
 `cwa-sftp-key` covers both CWA-S-01 (trust-on-first-test) and CWA-S-02 (remote happy

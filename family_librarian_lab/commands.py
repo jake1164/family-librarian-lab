@@ -21,7 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 from agent import common as lab_common, registry
-from agent.suites import Suite, discover_suites, run_suites, suites_in_group
+from agent.suites import Suite, discover_suites, run_suites, select_suites
 
 from family_librarian_lab import clients
 from family_librarian_lab.api import FamilyLibrarianApi
@@ -75,10 +75,16 @@ def _configure_project(parser: argparse.ArgumentParser) -> None:
 
 
 def _configure_run(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--group", default="base", help="Suite group to run (default: base; use all for every suite)")
+    _configure_checkout_target(parser)
+    parser.add_argument("--test-group", default="base", help="Suite group to run (default: base; use all for every suite)")
     parser.add_argument("--case", default=None, help="Run one registered case id (for example SEC-02)")
     parser.add_argument("--keep", action="store_true", help="Keep each failed/successful scenario project for investigation")
     parser.add_argument("--skip-build", action="store_true", help="Use the existing Family Librarian image without rebuilding it")
+
+
+def _validate_run_options(args: argparse.Namespace) -> None:
+    if args.target and args.skip_build:
+        raise SystemExit("A source target and --skip-build are mutually exclusive.")
 
 
 def _repo_url() -> str:
@@ -551,31 +557,11 @@ def handle_down(args: argparse.Namespace, config: object) -> int:
     return 0
 
 
-def _select_suites(suites: list[Suite], *, case: str | None) -> list[Suite]:
-    if not case:
-        return suites
-    selected: list[Suite] = []
-    for candidate in suites:
-        matching = [c for c in candidate.cases if c.test_id == case]
-        if matching:
-            selected.append(
-                Suite(
-                    name=candidate.name,
-                    group=candidate.group,
-                    order=candidate.order,
-                    cases=matching,
-                    setup_fn=candidate.setup_fn,
-                    teardown_fn=candidate.teardown_fn,
-                )
-            )
-    return selected
-
-
 def _profiles_for(suite: Suite) -> tuple[str, ...]:
     """Derive the extra destination profile a suite's own declared group
-    needs, so `--group cwa-local`/`--group abs`/`--group cwa-sftp-key`/
-    `--group cwa-sftp-password` each bring up exactly the destination they
-    test."""
+    needs, so `--test-group cwa-local`/`--test-group abs`/
+    `--test-group cwa-sftp-key`/`--test-group cwa-sftp-password` each bring
+    up exactly the destination they test."""
     if suite.group in (
         clients.CWA_PROFILE,
         clients.ABS_PROFILE,
@@ -587,7 +573,7 @@ def _profiles_for(suite: Suite) -> tuple[str, ...]:
 
 
 def _group_suites_by_profile(suites: list[Suite]) -> list[tuple[tuple[str, ...], list[Suite]]]:
-    """Buckets a mixed selection (e.g. `--group all`) by which extra profile
+    """Buckets a mixed selection (e.g. `--test-group all`) by which extra profile
     each suite's own group needs, preserving selection order within each
     bucket. Each bucket gets its own scenario factory -- sharing one factory
     (and its bundled destination wiring) across every suite in a mixed run
@@ -611,19 +597,20 @@ def _group_suites_by_profile(suites: list[Suite]) -> list[tuple[tuple[str, ...],
     configure=_configure_run,
 )
 def handle_run(args: argparse.Namespace, config: object) -> int:
-    suites = _select_suites(suites_in_group(discover_suites(TESTS_ROOT), args.group), case=args.case)
+    _validate_run_options(args)
+    suites = select_suites(discover_suites(TESTS_ROOT), group=args.test_group, case=args.case)
     if not suites:
         selector = f" and case {args.case!r}" if args.case else ""
-        raise SystemExit(f"No suites found for group {args.group!r}{selector}.")
+        raise SystemExit(f"No suites found for group {args.test_group!r}{selector}.")
 
     if not args.skip_build:
-        _checkout_source(None)
+        _checkout_source(args.target)
     values = _load_lab_env()
     if not args.skip_build:
         build_project = lab_common.project_name()
         _run_or_exit(values, build_project, "build", "family-librarian", "migrate")
 
-    selector = args.case.lower() if args.case else args.group
+    selector = args.case.lower() if args.case else args.test_group
     run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}-suites-{selector}"
     run_directory = RESULTS_ROOT / run_id
     run_directory.mkdir(parents=True, exist_ok=False)
@@ -639,7 +626,7 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
     report = {
         "run_id": run_id,
         "profile": PROFILE,
-        "group": args.group,
+        "group": args.test_group,
         "case": args.case,
         "outcome": "fail" if failed else "pass",
         "suites": [
