@@ -173,15 +173,34 @@ def _compose(
     for profile in profiles:
         command += ["--profile", profile]
     command += list(arguments)
-    if not capture:
-        # About to hand a subprocess the real terminal (no capture) -- it
-        # can't coordinate with a live dashboard's in-place redraw, and
-        # every scenario in this lab runs one of these per case. Same fix
-        # as se-lab's own common.run()/run_capture(); this call bypasses
-        # those (its own project-name/profile plumbing), so it needs the
-        # same clear explicitly.
-        lab_common.clear_active_dashboard()
-    return subprocess.run(command, env=environment, text=True, capture_output=capture, check=False)
+    if capture:
+        return subprocess.run(command, env=environment, text=True, capture_output=True, check=False)
+
+    # Not asked to capture -- normally this inherits the real terminal
+    # directly (the right behavior for `up`/`build`/`status`, run
+    # interactively with no dashboard around). But every scenario `run`
+    # drives brings up a fresh Compose stack via this same function, and a
+    # dashboard is active for the whole run then: letting docker compose's
+    # own multi-line progress spinner print raw doesn't corrupt the
+    # dashboard's redraw math (clear_active_dashboard() below already
+    # prevents that) but it does mean the dashboard scrolls away with
+    # everything else instead of staying pinned to the bottom -- exactly
+    # what "no capture" is for outside a dashboard, and exactly what a
+    # dashboard can't tolerate. Same principle as se-lab's own
+    # common.run(): capture and suppress while a dashboard owns the
+    # screen, surfaced only on failure so debugging isn't harder than
+    # before. This call bypasses common.run() entirely (its own project-
+    # name/profile plumbing), so it needs the same handling explicitly.
+    lab_common.clear_active_dashboard()
+    if lab_common.active_dashboard() is not None:
+        result = subprocess.run(command, env=environment, text=True, capture_output=True, check=False)
+        if result.returncode and (result.stdout or result.stderr):
+            if result.stdout:
+                sys.stdout.write(result.stdout)
+            if result.stderr:
+                sys.stderr.write(result.stderr)
+        return result
+    return subprocess.run(command, env=environment, text=True, capture_output=False, check=False)
 
 
 def _run_or_exit(
