@@ -71,6 +71,40 @@ class FamilyLibrarianApi:
         response = self._request("POST", f"/api/v1/admin/publishing/deliveries/{delivery_id}/recheck")
         _require_status(response, 204, "delivery recheck")
 
+    def recheck_library_import(self, library_import_id: str) -> None:
+        response = self._request("POST", f"/api/v1/admin/publishing/library-imports/{library_import_id}/recheck")
+        _require_status(response, 204, "library-import recheck")
+
+    def cwa_settings(self) -> dict[str, Any]:
+        response = self._request("GET", "/api/v1/admin/publishing/cwa/")
+        _require_status(response, 200, "CWA settings")
+        return _object(response.body, "CWA settings")
+
+    def test_cwa_ingest(self, request: dict[str, object]) -> dict[str, Any]:
+        response = self._request("POST", "/api/v1/admin/publishing/cwa/test-ingest", json_body=request)
+        _require_status(response, 200, "CWA ingest probe")
+        return _object(response.body, "CWA ingest probe")
+
+    def test_cwa_opds(self, request: dict[str, object]) -> dict[str, Any]:
+        response = self._request("POST", "/api/v1/admin/publishing/cwa/test-opds", json_body=request)
+        _require_status(response, 200, "CWA OPDS probe")
+        return _object(response.body, "CWA OPDS probe")
+
+    def audiobookshelf_settings(self) -> dict[str, Any]:
+        response = self._request("GET", "/api/v1/admin/publishing/audiobookshelf/")
+        _require_status(response, 200, "Audiobookshelf settings")
+        return _object(response.body, "Audiobookshelf settings")
+
+    def test_audiobookshelf(self, request: dict[str, object]) -> dict[str, Any]:
+        response = self._request("POST", "/api/v1/admin/publishing/audiobookshelf/test", json_body=request)
+        _require_status(response, 200, "Audiobookshelf connection probe")
+        return _object(response.body, "Audiobookshelf connection probe")
+
+    def discover_audiobookshelf_libraries(self, request: dict[str, object]) -> dict[str, Any]:
+        response = self._request("POST", "/api/v1/admin/publishing/audiobookshelf/libraries", json_body=request)
+        _require_status(response, 200, "Audiobookshelf library discovery")
+        return _object(response.body, "Audiobookshelf library discovery")
+
     def create_demo_ebook_request(self) -> tuple[str, str]:
         return self.create_demo_request("Ebook")
 

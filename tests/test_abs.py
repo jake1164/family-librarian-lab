@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Callable
 
@@ -21,6 +22,50 @@ def _run(ctx, test_id: str, operation: Callable[[], dict[str, object]]) -> None:
         ctx.fail(test_id, f"Scenario failed unexpectedly: {error}")
     else:
         ctx.ok(test_id, "Scenario assertions passed.", detail)
+
+
+@SUITE.case("ABS-01")
+def discovery_and_configuration_do_not_leak_token(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("ABS-01") as scenario:
+            if scenario.abs_client is None:
+                raise AssertionError("Scenario did not bring up an Audiobookshelf destination.")
+
+            token, library_id, folder_id = scenario.abs_client.ensure_bootstrapped()
+            discovery = scenario.api.discover_audiobookshelf_libraries(
+                {"baseUrl": "http://abs:80", "apiToken": token}
+            )
+            libraries = discovery.get("libraries")
+            if not discovery.get("succeeded") or not isinstance(libraries, list):
+                raise AssertionError(f"Audiobookshelf library discovery failed: {discovery!r}")
+            matching_library = next((item for item in libraries if item.get("id") == library_id), None)
+            if not isinstance(matching_library, dict) or not any(
+                isinstance(folder, dict) and folder.get("id") == folder_id
+                for folder in matching_library.get("folders", [])
+            ):
+                raise AssertionError("Audiobookshelf discovery did not return the selected library and folder.")
+
+            probe = scenario.api.test_audiobookshelf(
+                {"baseUrl": "http://abs:80", "libraryId": library_id, "folderId": folder_id, "apiToken": token}
+            )
+            settings = scenario.api.audiobookshelf_settings()
+            if not probe.get("succeeded"):
+                raise AssertionError(f"Audiobookshelf connection probe did not succeed: {probe!r}")
+            if not settings.get("hasApiToken"):
+                raise AssertionError("Saved Audiobookshelf configuration does not retain an API token.")
+            for response in (discovery, probe, settings):
+                if token in json.dumps(response, sort_keys=True):
+                    raise AssertionError("Audiobookshelf API token leaked into an API response.")
+            if token in json.dumps(scenario.api.trace, sort_keys=True):
+                raise AssertionError("Audiobookshelf API token leaked into the captured API trace.")
+            return {
+                "library_id": library_id,
+                "folder_id": folder_id,
+                "discovered_libraries": len(libraries),
+                "token_redacted": True,
+            }
+
+    _run(ctx, "ABS-01", operation)
 
 
 @SUITE.case("ABS-02")

@@ -8,6 +8,7 @@ from typing import Callable
 from agent.suites import suite
 
 from family_librarian_lab.fixtures import clean_epub
+from family_librarian_lab import clients
 
 SUITE = suite("cwa-local", group="cwa-local", order=20)
 
@@ -21,6 +22,44 @@ def _run(ctx, test_id: str, operation: Callable[[], dict[str, object]]) -> None:
         ctx.fail(test_id, f"Scenario failed unexpectedly: {error}")
     else:
         ctx.ok(test_id, "Scenario assertions passed.", detail)
+
+
+@SUITE.case("CWA-L-01")
+def configuration_probes_are_independent(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("CWA-L-01") as scenario:
+            if scenario.cwa_client is None:
+                raise AssertionError("Scenario did not bring up a CWA destination.")
+
+            ingest = scenario.api.test_cwa_ingest(
+                {
+                    "transportMode": "Local",
+                    "localIngestPath": clients.CWA_INGEST_CONTAINER_PATH,
+                    "sftpHost": None,
+                    "sftpPort": None,
+                    "sftpUsername": None,
+                    "sftpIngestPath": None,
+                    "sftpAuthenticationMode": "PrivateKey",
+                    "sftpPrivateKey": None,
+                    "sftpPassphrase": None,
+                    "sftpPassword": None,
+                    "trustedSftpHostKeyFingerprint": None,
+                }
+            )
+            opds = scenario.api.test_cwa_opds(
+                {
+                    "opdsBaseUrl": clients.CWA_INTERNAL_URL,
+                    "opdsUsername": clients.CWA_DEFAULT_USERNAME,
+                    "opdsPassword": clients.CWA_DEFAULT_PASSWORD,
+                }
+            )
+            if not ingest.get("succeeded"):
+                raise AssertionError(f"CWA local-ingest probe did not succeed: {ingest!r}")
+            if not opds.get("succeeded"):
+                raise AssertionError(f"CWA OPDS probe did not succeed: {opds!r}")
+            return {"ingest_probe": ingest, "opds_probe": opds}
+
+    _run(ctx, "CWA-L-01", operation)
 
 
 @SUITE.case("CWA-L-02")

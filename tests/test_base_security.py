@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from agent.suites import suite
 
-from family_librarian_lab.fixtures import clean_epub, eicar_epub
+from family_librarian_lab.fixtures import clean_epub, eicar_epub, identity_mismatched_epub, invalid_epub
 
 
 SUITE = suite("base-security", group="base", order=10)
@@ -135,6 +135,46 @@ def scanner_unavailable_blocks_then_allows_retry(ctx, scenario_factory):
             return {"recovery_asset_id": recovery_asset_id}
 
     _run(ctx, "SEC-03", operation)
+
+
+@SUITE.case("SEC-04")
+def malformed_and_identity_mismatched_epubs_stay_out_of_trusted_storage(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("SEC-04") as scenario:
+            request_id, format_id = scenario.api.create_demo_ebook_request()
+            malformed = scenario.api.upload_manual_epub(request_id, format_id, invalid_epub(), "malformed.epub")
+            if malformed.status not in (200, 400):
+                raise AssertionError(f"Malformed EPUB returned unexpected HTTP {malformed.status}: {malformed.body!r}")
+            if malformed.status == 200 and isinstance(malformed.body, dict):
+                malformed_asset = _find_asset(scenario.api.list_assets(), malformed.body.get("mediaAssetId"))
+                if malformed_asset.get("storageState") == "Trusted":
+                    raise AssertionError("Malformed EPUB reached trusted storage.")
+
+            mismatched = scenario.api.upload_manual_epub(
+                request_id, format_id, identity_mismatched_epub(), "identity-mismatched.epub"
+            )
+            if mismatched.status != 200 or not isinstance(mismatched.body, dict):
+                raise AssertionError(f"Identity-mismatched EPUB did not reach security evaluation: {mismatched!r}")
+            mismatch_asset_id = mismatched.body.get("mediaAssetId")
+            mismatch_asset = _find_asset(scenario.api.list_assets(), mismatch_asset_id)
+            mismatch_evaluation = _require_evaluation(mismatch_asset)
+            if mismatch_asset.get("storageState") == "Trusted":
+                raise AssertionError("Identity-mismatched EPUB reached trusted storage.")
+            if mismatch_evaluation.get("status") not in ("Failed", "ReviewRequired"):
+                raise AssertionError(
+                    "Identity-mismatched EPUB did not fail or require review: "
+                    f"{mismatch_evaluation.get('status')!r}."
+                )
+            queue = scenario.api.publishing_queue()
+            if queue.get("libraryImports") or queue.get("deliveries"):
+                raise AssertionError("Rejected or identity-mismatched EPUB created a destination publication record.")
+            return {
+                "malformed_status": malformed.status,
+                "mismatched_asset_id": mismatch_asset_id,
+                "mismatched_evaluation": mismatch_evaluation.get("status"),
+            }
+
+    _run(ctx, "SEC-04", operation)
 
 
 def _find_asset(assets: list[dict[str, Any]], asset_id: object) -> dict[str, Any]:

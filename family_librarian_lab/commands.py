@@ -365,15 +365,17 @@ def _readiness(values: dict[str, str], project_name: str) -> tuple[dict[str, obj
     return checks, passed
 
 
-def _wait_for_clamav(values: dict[str, str], project_name: str, timeout_seconds: int = 360) -> None:
+def _wait_for_service(
+    values: dict[str, str], project_name: str, service_name: str, *, timeout_seconds: int = 360
+) -> None:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        services, healthy = _compose_service_health(values, project_name)
-        clamav = services.get("clamav")
-        if healthy and isinstance(clamav, dict) and clamav.get("health") == "healthy":
+        services, _ = _compose_service_health(values, project_name)
+        service = services.get(service_name)
+        if isinstance(service, dict) and service.get("state") == "running" and service.get("health") in ("healthy", ""):
             return
         time.sleep(2)
-    raise AssertionError("ClamAV did not become healthy within six minutes after restart.")
+    raise AssertionError(f"{service_name} did not become ready within six minutes after restart.")
 
 
 class _BaseScenario:
@@ -432,12 +434,28 @@ class _BaseScenario:
                 print(_redact(result.stderr, self._values), file=sys.stderr, end="")
         return False
 
+    def stop_service(self, service_name: str) -> None:
+        """Stop one service in this scenario's isolated Compose project.
+
+        Fault scenarios deliberately use Compose lifecycle operations rather
+        than mocks, so the same helper works for ClamAV, Family Librarian,
+        CWA, Audiobookshelf, and either SFTP sidecar.
+        """
+        _run_or_exit(self._values, self.project_name, "stop", service_name, profiles=self._profiles)
+
+    def start_service(self, service_name: str) -> None:
+        _run_or_exit(self._values, self.project_name, "up", "--wait", service_name, profiles=self._profiles)
+        _wait_for_service(self._values, self.project_name, service_name)
+
+    def restart_service(self, service_name: str) -> None:
+        self.stop_service(service_name)
+        self.start_service(service_name)
+
     def stop_clamav(self) -> None:
-        _run_or_exit(self._values, self.project_name, "stop", "clamav", profiles=self._profiles)
+        self.stop_service("clamav")
 
     def start_clamav(self) -> None:
-        _run_or_exit(self._values, self.project_name, "up", "--wait", "clamav", profiles=self._profiles)
-        _wait_for_clamav(self._values, self.project_name)
+        self.start_service("clamav")
 
 
 class _BaseScenarioFactory:
