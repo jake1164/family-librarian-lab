@@ -167,6 +167,14 @@ def _compose(
     for profile in profiles:
         command += ["--profile", profile]
     command += list(arguments)
+    if not capture:
+        # About to hand a subprocess the real terminal (no capture) -- it
+        # can't coordinate with a live dashboard's in-place redraw, and
+        # every scenario in this lab runs one of these per case. Same fix
+        # as se-lab's own common.run()/run_capture(); this call bypasses
+        # those (its own project-name/profile plumbing), so it needs the
+        # same clear explicitly.
+        lab_common.clear_active_dashboard()
     return subprocess.run(command, env=environment, text=True, capture_output=capture, check=False)
 
 
@@ -624,7 +632,7 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
     failed = False
     for profiles, group_suites in _group_suites_by_profile(suites):
         factory = _BaseScenarioFactory(values, keep=args.keep, profiles=profiles)
-        summary = run_suites(group_suites, results_dir=run_directory, scenario_factory=factory)
+        summary = run_suites(group_suites, results_dir=run_directory, label="Family Librarian Lab", scenario_factory=factory)
         all_results.extend(summary.results)
         failed = failed or summary.failed
 
