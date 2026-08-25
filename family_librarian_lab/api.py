@@ -53,6 +53,11 @@ class FamilyLibrarianApi:
         _require_status(response, 200, "admin requests")
         return _list_field(response.body, "requests", "admin requests")
 
+    def admin_request(self, request_id: str) -> dict[str, Any]:
+        response = self._request("GET", f"/api/v1/admin/requests/{request_id}")
+        _require_status(response, 200, "admin request")
+        return _object(response.body, "admin request")
+
     def list_assets(self) -> list[dict[str, Any]]:
         response = self._request("GET", "/api/v1/admin/media-assets/")
         _require_status(response, 200, "media assets")
@@ -126,9 +131,7 @@ class FamilyLibrarianApi:
         return self.create_demo_request("Audiobook")
 
     def create_demo_request(self, media_type: str) -> tuple[str, str]:
-        work = self._request("POST", "/api/v1/catalog/candidates/demo/the-hobbit/resolve", data=b"")
-        _require_status(work, (200, 201), "demo catalog work resolution")
-        work_id = _object(work.body, "catalog work")["id"]
+        work_id = self.resolve_demo_work()
         created = self._request(
             "POST",
             "/api/v1/requests/",
@@ -146,6 +149,16 @@ class FamilyLibrarianApi:
         if not isinstance(format_id, str):
             raise AssertionError(f"Created request did not contain a {media_type} format.")
         return _required_string(request, "id", "created request"), format_id
+
+    def resolve_demo_work(self) -> str:
+        work = self._request("POST", "/api/v1/catalog/candidates/demo/the-hobbit/resolve", data=b"")
+        _require_status(work, (200, 201), "demo catalog work resolution")
+        return _required_string(_object(work.body, "catalog work"), "id", "catalog work")
+
+    def fulfillment_options(self, work_id: str) -> dict[str, Any]:
+        response = self._request("GET", f"/api/v1/catalog/works/{work_id}/fulfillment-options")
+        _require_status(response, 200, "work fulfillment options")
+        return _object(response.body, "work fulfillment options")
 
     def upload_manual_epub(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
         return self._upload_manual_file(request_id, format_id, content, filename)

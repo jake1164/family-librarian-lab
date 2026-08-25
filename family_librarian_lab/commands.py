@@ -8,6 +8,7 @@ are product-lab responsibilities.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -15,7 +16,7 @@ import select
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Sequence
@@ -217,6 +218,7 @@ class _CwaIngestObserver:
     """
 
     process: subprocess.Popen[str]
+    observations: list[tuple[str, int]] = field(default_factory=list)
 
     def wait_until_ready(self) -> None:
         if self.process.stdout is None:
@@ -244,16 +246,39 @@ class _CwaIngestObserver:
 
         output = self.process.stdout.read() if self.process.stdout is not None else ""
 
-        observations: list[tuple[str, int]] = []
         for line in output.splitlines():
-            filename, separator, size = line.partition("\t")
-            if not separator:
+            self._record(line)
+        return self.observations
+
+    def wait_for_uploading(self, timeout_seconds: float) -> bool:
+        """Wait until the real SFTP transport has exposed its temporary
+        remote filename, proving an interruption targets an active transfer
+        rather than a before-connect or after-completion race."""
+        if self.process.stdout is None:
+            raise AssertionError("CWA ingest observer did not expose stdout.")
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([self.process.stdout], [], [], min(0.25, deadline - time.monotonic()))
+            if not ready:
                 continue
-            try:
-                observations.append((filename, int(size)))
-            except ValueError:
-                continue
-        return observations
+            line = self.process.stdout.readline()
+            if not line:
+                break
+            observation = self._record(line)
+            if observation is not None and observation[0].startswith(".") and observation[0].endswith(".uploading"):
+                return True
+        return False
+
+    def _record(self, line: str) -> tuple[str, int] | None:
+        filename, separator, size = line.strip().partition("\t")
+        if not separator:
+            return None
+        try:
+            observation = (filename, int(size))
+        except ValueError:
+            return None
+        self.observations.append(observation)
+        return observation
 
 
 def _run_or_exit(
@@ -529,6 +554,15 @@ class _BaseScenario:
         """
         _run_or_exit(self._values, self.project_name, "stop", service_name, profiles=self._profiles)
 
+    def kill_service(self, service_name: str) -> None:
+        """Abruptly terminate one disposable scenario service.
+
+        Unlike ``stop_service``, Compose does not give the process a graceful
+        shutdown window. Fault tests use this only when they need a genuine
+        in-flight transport disconnect.
+        """
+        _run_or_exit(self._values, self.project_name, "kill", service_name, profiles=self._profiles)
+
     def start_service(self, service_name: str) -> None:
         _run_or_exit(self._values, self.project_name, "up", "--wait", service_name, profiles=self._profiles)
         _wait_for_service(self._values, self.project_name, service_name)
@@ -589,6 +623,73 @@ done
         observer.wait_until_ready()
         return observer
 
+    def seed_cwa_ingest(self, content: bytes, filename: str) -> None:
+        """Place a fixture through CWA's own watched ingest path.
+
+        This is deliberately an exec into CWA's ingest mount, never a write to
+        its Calibre library or metadata database. CWA's watcher must still
+        import it and expose it through OPDS before a scenario can pass.
+        """
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.epub", filename):
+            raise ValueError("CWA seed filenames must be a simple .epub basename.")
+        command = [
+            "docker", "compose", "--env-file", str(LAB_ENV_FILE), "--project-name", self.project_name,
+            "--file", str(COMPOSE_FILE),
+        ]
+        for profile in self._profiles:
+            command += ["--profile", profile]
+        command += [
+            "exec", "-T", clients.CWA_SERVICE, "sh", "-c",
+            f"base64 -d > /cwa-book-ingest/{filename}",
+        ]
+        environment = os.environ.copy()
+        environment.update(self._values)
+        result = subprocess.run(
+            command,
+            env=environment,
+            input=base64.b64encode(content).decode("ascii"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            raise AssertionError(f"CWA ingest seed failed: {_redact(result.stderr, self._values).strip()}")
+
+    def cwa_ingest_filenames(self) -> list[str]:
+        """Read only the CWA-facing shared ingest mount for fault diagnostics.
+        Catalog visibility remains the success assertion for every CWA test."""
+        command = [
+            "docker", "compose", "--env-file", str(LAB_ENV_FILE), "--project-name", self.project_name,
+            "--file", str(COMPOSE_FILE),
+        ]
+        for profile in self._profiles:
+            command += ["--profile", profile]
+        command += [
+            "exec", "-T", clients.CWA_SERVICE, "sh", "-c",
+            "for path in /cwa-book-ingest/.*.uploading /cwa-book-ingest/*.epub; do [ -f \"$path\" ] && basename \"$path\"; done; exit 0",
+        ]
+        environment = os.environ.copy()
+        environment.update(self._values)
+        result = subprocess.run(command, env=environment, text=True, capture_output=True, check=False)
+        if result.returncode:
+            raise AssertionError(f"Could not inspect CWA ingest files: {_redact(result.stderr, self._values).strip()}")
+        return [line for line in result.stdout.splitlines() if line]
+
+    def wait_for_cwa_ingest_uploading(self, timeout_seconds: float) -> bool:
+        """Poll CWA's mount until the remote SFTP temporary file is visible.
+
+        This is deliberately a sequence of short, independent Compose execs
+        rather than a long-lived observer: Docker Desktop may detach stdin
+        from a `compose exec -T` child, which makes an stdin-controlled watcher
+        unsuitable for synchronizing a destructive transport fault.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if any(name.startswith(".") and name.endswith(".uploading") for name in self.cwa_ingest_filenames()):
+                return True
+            time.sleep(0.1)
+        return False
+
     def regenerate_sftp_host_keys(self, service_name: str) -> None:
         """Rotate a disposable atmoz/sftp sidecar's server host keys.
 
@@ -603,7 +704,11 @@ done
             service_name,
             "sh",
             "-c",
-            "rm -f /etc/ssh/ssh_host_*",
+            # atmoz/sftp's entrypoint generates RSA and ed25519 keys, but
+            # OpenSSH's default config may still list ECDSA as well. Recreate
+            # the complete host-key set before restart so the deliberate
+            # rotation does not turn into a sidecar bootstrap failure.
+            "rm -f /etc/ssh/ssh_host_* && ssh-keygen -A",
             profiles=self._profiles,
         )
         self.restart_service(service_name)

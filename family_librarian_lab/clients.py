@@ -78,21 +78,24 @@ def _http(
     *,
     method: str = "GET",
     json_body: object | None = None,
+    data: bytes | None = None,
+    headers: dict[str, str] | None = None,
     basic_auth: tuple[str, str] | None = None,
     bearer_token: str | None = None,
     timeout: float = 15.0,
 ) -> tuple[int, bytes]:
-    data = None
-    headers: dict[str, str] = {}
+    request_headers = dict(headers or {})
     if json_body is not None:
+        if data is not None:
+            raise ValueError("Specify either json_body or data, not both.")
         data = json.dumps(json_body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
+        request_headers["Content-Type"] = "application/json"
     if basic_auth is not None:
         raw = f"{basic_auth[0]}:{basic_auth[1]}".encode("utf-8")
-        headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("ascii")
+        request_headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("ascii")
     if bearer_token is not None:
-        headers["Authorization"] = f"Bearer {bearer_token}"
-    request = Request(url, data=data, headers=headers, method=method)
+        request_headers["Authorization"] = f"Bearer {bearer_token}"
+    request = Request(url, data=data, headers=request_headers, method=method)
     try:
         with urlopen(request, timeout=timeout) as response:  # local Compose URL supplied by the lab
             return response.status, response.read()
@@ -317,9 +320,66 @@ class AbsClient:
                 return None
             time.sleep(1.5)
 
+    def find_items(self, title: str, author: str | None) -> list[str]:
+        """Return every matching library item so idempotency tests can prove
+        that a publish reuses an ABS item instead of adding another one."""
+        assert self._token is not None and self._library_id is not None
+        status, body = _http(
+            f"{self.host_base_url}/api/libraries/{self._library_id}/items", bearer_token=self._token
+        )
+        if status != 200:
+            return []
+        return _find_matching_item_ids(json.loads(body), title, author)
+
+    def seed_item(self, content: bytes, filename: str, title: str, author: str) -> str:
+        """Seed one item through ABS's supported upload API, not its database
+        or managed-library filesystem. This intentionally mirrors Family
+        Librarian's real multipart contract for idempotency scenarios."""
+        token, library_id, folder_id = self.ensure_bootstrapped()
+        boundary = f"----family-librarian-lab-abs-{time.monotonic_ns()}"
+        fields = (
+            ("library", library_id),
+            ("folder", folder_id),
+            ("title", title),
+            ("author", author),
+        )
+        payload = bytearray()
+        for name, value in fields:
+            payload.extend(f"--{boundary}\r\n".encode("ascii"))
+            payload.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("ascii"))
+            payload.extend(value.encode("utf-8"))
+            payload.extend(b"\r\n")
+        payload.extend(f"--{boundary}\r\n".encode("ascii"))
+        payload.extend(
+            f'Content-Disposition: form-data; name="files"; filename="{filename}"\r\n'.encode("ascii")
+        )
+        payload.extend(b"Content-Type: application/octet-stream\r\n\r\n")
+        payload.extend(content)
+        payload.extend(f"\r\n--{boundary}--\r\n".encode("ascii"))
+        status, body = _http(
+            f"{self.host_base_url}/api/upload",
+            method="POST",
+            data=bytes(payload),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            bearer_token=token,
+            timeout=60,
+        )
+        if status < 200 or status >= 300:
+            raise AssertionError(f"Audiobookshelf seed upload returned HTTP {status}: {body!r}")
+        item_id = self.find_item(title, author, timeout_seconds=45, rescan=True)
+        if item_id is None:
+            raise AssertionError("Audiobookshelf did not expose the directly seeded item after a scan.")
+        return item_id
+
 
 def _find_matching_item_id(list_response: dict[str, Any], title: str, author: str | None) -> str | None:
+    matches = _find_matching_item_ids(list_response, title, author)
+    return matches[0] if matches else None
+
+
+def _find_matching_item_ids(list_response: dict[str, Any], title: str, author: str | None) -> list[str]:
     items = list_response.get("results") or list_response.get("items") or []
+    matches: list[str] = []
     for item in items:
         metadata = (item.get("media") or {}).get("metadata") or {}
         item_title = metadata.get("title") or ""
@@ -331,5 +391,5 @@ def _find_matching_item_id(list_response: dict[str, Any], title: str, author: st
                 continue
         item_id = item.get("id")
         if isinstance(item_id, str):
-            return item_id
-    return None
+            matches.append(item_id)
+    return matches

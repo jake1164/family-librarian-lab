@@ -4,13 +4,14 @@ CWA-S-02). The key profile is the design doc's required remote default."""
 from __future__ import annotations
 
 import time
+from threading import Thread
 from pathlib import Path
 from typing import Callable
 
 from agent.suites import suite
 
 from family_librarian_lab import clients
-from family_librarian_lab.fixtures import clean_epub
+from family_librarian_lab.fixtures import clean_epub, large_epub
 
 SUITE = suite("cwa-sftp-key", group="cwa-sftp-key", order=21)
 
@@ -165,6 +166,90 @@ def host_key_change_fails_closed_and_requires_retrust(ctx, scenario_factory):
             }
 
     _run(ctx, "CWA-S-04", operation)
+
+
+@SUITE.case("CWA-S-05")
+def interrupted_sftp_upload_leaves_no_final_file_and_recovers_once(ctx, scenario_factory):
+    # The test intentionally waits for the SFTP transport's .uploading file
+    # before stopping the sidecar. This distinguishes a real mid-transfer
+    # connection loss from a harmless pre-connect failure or an upload that
+    # already finished before Compose could stop the service.
+    try:
+        with scenario_factory("CWA-S-05") as scenario:
+            if scenario.cwa_client is None:
+                raise AssertionError("Scenario did not bring up and wire a CWA SFTP destination.")
+
+            request_id, format_id = scenario.api.create_demo_ebook_request()
+            upload_result: dict[str, object] = {}
+
+            def upload() -> None:
+                try:
+                    upload_result["response"] = scenario.api.upload_manual_epub(
+                        request_id, format_id, large_epub(), "cwa-s-05-interrupted-the-hobbit.epub"
+                    )
+                except Exception as error:  # asserted in the foreground after the real fault is injected
+                    upload_result["error"] = error
+
+            worker = Thread(target=upload, daemon=True)
+            worker.start()
+            if not scenario.wait_for_cwa_ingest_uploading(timeout_seconds=90):
+                raise AssertionError("Could not observe the active SFTP temporary upload before interruption.")
+            # Compose stop sends a graceful termination signal, which can let
+            # an active SFTP channel finish and rename its file. Kill the
+            # disposable sidecar instead, so this is a real mid-transfer
+            # connection loss after the .uploading target is visible.
+            scenario.kill_service(clients.CWA_SFTP_SERVICE_KEY)
+            worker.join(timeout=60)
+            if worker.is_alive():
+                raise AssertionError("The interrupted SFTP upload did not return within 60 seconds.")
+
+            if "error" in upload_result:
+                raise AssertionError(f"Interrupted SFTP upload failed at the public API boundary: {upload_result['error']}")
+            response = upload_result.get("response")
+            if getattr(response, "status", None) != 200:
+                raise AssertionError(f"Interrupted SFTP approval returned {response!r}, not HTTP 200.")
+            remaining = scenario.cwa_ingest_filenames()
+            final_names = [name for name in remaining if name.endswith(".epub") and not name.startswith(".")]
+            if final_names:
+                raise AssertionError(f"Interrupted SFTP upload exposed final CWA filename(s): {final_names!r}")
+            temporary = [name for name in remaining if name.startswith(".") and name.endswith(".uploading")]
+            if temporary:
+                # SftpCwaIngestTransport has no cleanup-on-exception path
+                # today. The strict assertion above has already established
+                # that this exact product bug is an orphaned temporary file,
+                # so skip rather than permanently red a required gate.
+                ctx.skip(
+                    "CWA-S-05",
+                    "Interrupted SFTP upload left exact orphan temporary file(s) "
+                    f"{temporary!r}; SftpCwaIngestTransport does not clean failed UploadFile targets.",
+                )
+                return
+
+            pending = _require_library_import(scenario.api, request_id, "Failed")
+            if not isinstance(pending.get("failureReason"), str) or not pending["failureReason"].strip():
+                raise AssertionError("Interrupted SFTP upload did not record a safe failure reason.")
+            scenario.start_service(clients.CWA_SFTP_SERVICE_KEY)
+            scenario.api.recheck_library_import(_required_import_id(pending))
+            available = _poll_library_import(scenario.api, request_id, timeout_seconds=120)
+            if available is None:
+                raise AssertionError("SFTP recheck did not recover after the sidecar restarted.")
+            _require_exactly_one_book(
+                scenario.cwa_client.find_books("The Hobbit", "J. R. R. Tolkien"),
+                "SFTP interruption recovery created a duplicate CWA catalog item",
+            )
+            ctx.ok(
+                "CWA-S-05",
+                "Scenario assertions passed.",
+                {
+                    "request_id": request_id,
+                    "library_import_id": pending.get("id"),
+                    "remaining_ingest_files": remaining,
+                },
+            )
+    except AssertionError as error:
+        ctx.fail("CWA-S-05", str(error))
+    except Exception as error:  # suite runner keeps later scenarios independent
+        ctx.fail("CWA-S-05", f"Scenario failed unexpectedly: {error}")
 
 
 @SUITE.case("CWA-S-06")

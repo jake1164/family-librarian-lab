@@ -297,6 +297,53 @@ def unavailable_destination_records_safe_failure_then_recovers_once(ctx, scenari
         ctx.fail("CWA-L-06", f"Scenario failed unexpectedly: {error}")
 
 
+@SUITE.case("CWA-L-07")
+def existing_cwa_item_is_reported_as_owned(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("CWA-L-07") as scenario:
+            if scenario.cwa_client is None:
+                raise AssertionError("Scenario did not bring up a CWA destination.")
+
+            # This goes only through CWA's watched ingest path. The CWA
+            # importer and OPDS catalog are still the authority for whether
+            # the seed exists; Family Librarian never receives this EPUB.
+            scenario.seed_cwa_ingest(clean_epub(), "cwa-l-07-owned-the-hobbit.epub")
+            book_ids = _poll_cwa_book_ids(scenario.cwa_client, timeout_seconds=90)
+            _require_exactly_one_book(book_ids, "CWA did not import exactly one seeded owned item")
+
+            work_id = scenario.api.resolve_demo_work()
+            options = scenario.api.fulfillment_options(work_id)
+            ebook_options = options.get("ebook")
+            if not isinstance(ebook_options, list):
+                raise AssertionError(f"Fulfillment options did not contain an ebook array: {options!r}")
+            owned = next(
+                (
+                    option
+                    for option in ebook_options
+                    if isinstance(option, dict)
+                    and option.get("providerId") == "cwa"
+                    and option.get("optionKind") == "Owned"
+                ),
+                None,
+            )
+            if not isinstance(owned, dict):
+                raise AssertionError(f"CWA-owned fulfillment option was absent: {options!r}")
+            if owned.get("providerResultId") != book_ids[0]:
+                raise AssertionError(
+                    "CWA-owned fulfillment option did not point to the catalog match: "
+                    f"expected {book_ids[0]!r}, got {owned.get('providerResultId')!r}."
+                )
+            expected_link = f"{clients.CWA_INTERNAL_URL}/book/{book_ids[0]}"
+            if owned.get("externalActionUri") != expected_link:
+                raise AssertionError(
+                    "CWA-owned fulfillment option did not expose the expected public CWA deep link: "
+                    f"{owned.get('externalActionUri')!r}."
+                )
+            return {"work_id": work_id, "opds_book_id": book_ids[0], "fulfillment_option": owned}
+
+    _run(ctx, "CWA-L-07", operation)
+
+
 def _find_library_import(queue: dict[str, object], request_id: str) -> dict[str, object] | None:
     return next(
         (item for item in queue.get("libraryImports", []) if item.get("requestId") == request_id), None

@@ -93,6 +93,15 @@ def clean_audiobook() -> bytes:
     return frame * 20  # ~0.5s -- enough for a duration ffprobe can report
 
 
+def malformed_audiobook() -> bytes:
+    """Return bytes that cannot pass Family Librarian's audio type gate.
+
+    Keeping this distinct from the valid MP3 fixture makes ABS-07 prove that
+    an explicitly rejected audio submission has no publishing side effect.
+    """
+    return b"This is deliberately not an MP3 or any other supported audio format."
+
+
 def multi_track_audiobook() -> tuple[tuple[str, bytes], ...]:
     """Return ordered, independently decodable tracks for bundle scenarios."""
     return (
