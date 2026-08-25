@@ -9,6 +9,7 @@ from typing import Callable
 
 from agent.suites import suite
 
+from family_librarian_lab import clients
 from family_librarian_lab.fixtures import clean_epub
 
 SUITE = suite("cwa-sftp-password", group="cwa-sftp-password", order=22)
@@ -61,6 +62,38 @@ def remote_happy_path(ctx, scenario_factory):
     _run(ctx, "CWA-S-02", operation)
 
 
+@SUITE.case("CWA-S-03")
+def password_authentication_rejects_wrong_password(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("CWA-S-03-PASSWORD") as scenario:
+            if scenario.cwa_client is None or scenario.cwa_sftp_wiring is None:
+                raise AssertionError("Scenario did not bring up and wire a CWA SFTP destination.")
+
+            settings = scenario.api.cwa_settings()
+            trusted_fingerprint = settings.get("sftpHostKeyFingerprint")
+            if not isinstance(trusted_fingerprint, str):
+                raise AssertionError("Configured CWA SFTP password profile did not retain its trusted host fingerprint.")
+            wrong_password = "family-librarian-lab-wrong-sftp-password"
+            rejected_probe = scenario.api.test_cwa_ingest(
+                _sftp_probe_request("Password", wrong_password, trusted_fingerprint)
+            )
+            if rejected_probe.get("succeeded") or rejected_probe.get("requiresSftpHostKeyTrust"):
+                raise AssertionError(
+                    "An incorrect SFTP password did not fail solely at authentication: "
+                    f"{rejected_probe!r}"
+                )
+
+            scenario.api.set_cwa_sftp_password(wrong_password)
+            request_id, format_id = scenario.api.create_demo_ebook_request()
+            upload = scenario.api.upload_manual_epub(
+                request_id, format_id, clean_epub(), "cwa-s-03-wrong-password-the-hobbit.epub"
+            )
+            import_status = _assert_no_available_import_or_catalog_item(scenario.api, scenario.cwa_client, request_id)
+            return {"request_id": request_id, "upload_status": upload.status, "library_import_status": import_status}
+
+    _run(ctx, "CWA-S-03", operation)
+
+
 def _poll_library_import(api, request_id: str, *, timeout_seconds: float) -> dict[str, object] | None:
     deadline = time.monotonic() + timeout_seconds
     while True:
@@ -72,4 +105,39 @@ def _poll_library_import(api, request_id: str, *, timeout_seconds: float) -> dic
             return library_import
         if time.monotonic() >= deadline:
             return None
+        time.sleep(2)
+
+
+def _sftp_probe_request(auth_mode: str, credential: str, trusted_fingerprint: str) -> dict[str, object]:
+    return {
+        "transportMode": "Sftp",
+        "localIngestPath": None,
+        "sftpHost": clients.CWA_SFTP_SERVICE_PASSWORD,
+        "sftpPort": clients.CWA_SFTP_PORT,
+        "sftpUsername": clients.CWA_SFTP_USERNAME,
+        "sftpIngestPath": clients.CWA_SFTP_INGEST_PATH,
+        "sftpAuthenticationMode": auth_mode,
+        "sftpPrivateKey": credential if auth_mode == "PrivateKey" else None,
+        "sftpPassphrase": None,
+        "sftpPassword": credential if auth_mode == "Password" else None,
+        "trustedSftpHostKeyFingerprint": trusted_fingerprint,
+    }
+
+
+def _assert_no_available_import_or_catalog_item(api, cwa_client, request_id: str) -> str | None:
+    deadline = time.monotonic() + 20
+    last_status: str | None = None
+    while True:
+        queue = api.publishing_queue()
+        library_import = next(
+            (item for item in queue.get("libraryImports", []) if item.get("requestId") == request_id), None
+        )
+        if isinstance(library_import, dict):
+            last_status = library_import.get("status")
+            if last_status == "Available":
+                raise AssertionError("Rejected SFTP authentication created an Available LibraryImport.")
+        if cwa_client.find_books("The Hobbit", "J. R. R. Tolkien"):
+            raise AssertionError("Rejected SFTP authentication created a CWA catalog item.")
+        if time.monotonic() >= deadline:
+            return last_status
         time.sleep(2)

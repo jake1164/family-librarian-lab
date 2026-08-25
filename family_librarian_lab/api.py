@@ -85,6 +85,20 @@ class FamilyLibrarianApi:
         _require_status(response, 200, "CWA ingest probe")
         return _object(response.body, "CWA ingest probe")
 
+    def set_cwa_sftp_private_key(self, private_key: str) -> dict[str, Any]:
+        response = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/sftp-key", json_body={"value": private_key}
+        )
+        _require_status(response, 200, "CWA SFTP private key")
+        return _object(response.body, "CWA settings")
+
+    def set_cwa_sftp_password(self, password: str) -> dict[str, Any]:
+        response = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/sftp-password", json_body={"value": password}
+        )
+        _require_status(response, 200, "CWA SFTP password")
+        return _object(response.body, "CWA settings")
+
     def test_cwa_opds(self, request: dict[str, object]) -> dict[str, Any]:
         response = self._request("POST", "/api/v1/admin/publishing/cwa/test-opds", json_body=request)
         _require_status(response, 200, "CWA OPDS probe")

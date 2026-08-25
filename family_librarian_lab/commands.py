@@ -11,9 +11,11 @@ import argparse
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Sequence
@@ -201,6 +203,57 @@ def _compose(
                 sys.stderr.write(result.stderr)
         return result
     return subprocess.run(command, env=environment, text=True, capture_output=False, check=False)
+
+
+@dataclass(slots=True)
+class _CwaIngestObserver:
+    """A read-only polling observer for the CWA-facing side of the shared
+    ingest volume.
+
+    CWA-L-04 needs to observe the transport boundary while the host writes,
+    without treating CWA's managed library or database as a test oracle.  The
+    observer runs inside the real CWA container and only lists/stat's the
+    shared ingest mount; it never writes to it.
+    """
+
+    process: subprocess.Popen[str]
+
+    def wait_until_ready(self) -> None:
+        if self.process.stdout is None:
+            raise AssertionError("CWA ingest observer did not expose stdout.")
+        ready, _, _ = select.select([self.process.stdout], [], [], 15)
+        if not ready:
+            self.stop()
+            raise AssertionError("CWA ingest observer did not start within 15 seconds.")
+        if self.process.stdout.readline().strip() != "__observer_ready__":
+            self.stop()
+            raise AssertionError("CWA ingest observer did not report its ready marker.")
+
+    def stop(self) -> list[tuple[str, int]]:
+        if self.process.poll() is None:
+            if self.process.stdin is None:
+                raise AssertionError("CWA ingest observer did not expose stdin.")
+            self.process.stdin.write("stop\n")
+            self.process.stdin.flush()
+            self.process.stdin.close()
+        try:
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=10)
+
+        output = self.process.stdout.read() if self.process.stdout is not None else ""
+
+        observations: list[tuple[str, int]] = []
+        for line in output.splitlines():
+            filename, separator, size = line.partition("\t")
+            if not separator:
+                continue
+            try:
+                observations.append((filename, int(size)))
+            except ValueError:
+                continue
+        return observations
 
 
 def _run_or_exit(
@@ -483,6 +536,77 @@ class _BaseScenario:
     def restart_service(self, service_name: str) -> None:
         self.stop_service(service_name)
         self.start_service(service_name)
+
+    def observe_cwa_ingest(self) -> _CwaIngestObserver:
+        """Poll CWA's read-only view of the shared ingest volume.
+
+        This deliberately observes only filenames and byte lengths.  CWA's
+        OPDS catalog remains the proof of a successful import.
+        """
+        command = [
+            "docker",
+            "compose",
+            "--env-file",
+            str(LAB_ENV_FILE),
+            "--project-name",
+            self.project_name,
+            "--file",
+            str(COMPOSE_FILE),
+        ]
+        for profile in self._profiles:
+            command += ["--profile", profile]
+        command += [
+            "exec",
+            "-T",
+            clients.CWA_SERVICE,
+            "sh",
+            "-c",
+            """
+(read -r _; exit 0) &
+stopper=$!
+printf '%s\\n' '__observer_ready__'
+while kill -0 "$stopper" 2>/dev/null; do
+  for path in /cwa-book-ingest/.*.uploading /cwa-book-ingest/*.epub; do
+    [ -f \"$path\" ] || continue
+    printf '%s\\t%s\\n' \"${path##*/}\" \"$(wc -c < \"$path\")\"
+  done
+  sleep 0.01
+done
+""",
+        ]
+        environment = os.environ.copy()
+        environment.update(self._values)
+        observer = _CwaIngestObserver(
+            subprocess.Popen(
+                command,
+                env=environment,
+                text=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        )
+        observer.wait_until_ready()
+        return observer
+
+    def regenerate_sftp_host_keys(self, service_name: str) -> None:
+        """Rotate a disposable atmoz/sftp sidecar's server host keys.
+
+        The service uses its real entrypoint to generate the replacement keys
+        on restart; only this throwaway scenario container is altered.
+        """
+        _run_or_exit(
+            self._values,
+            self.project_name,
+            "exec",
+            "-T",
+            service_name,
+            "sh",
+            "-c",
+            "rm -f /etc/ssh/ssh_host_*",
+            profiles=self._profiles,
+        )
+        self.restart_service(service_name)
 
     def reauthenticate(self) -> None:
         """Refresh the browser-session client after a host restart."""

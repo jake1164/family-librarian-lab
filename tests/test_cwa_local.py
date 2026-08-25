@@ -7,7 +7,7 @@ from typing import Callable
 
 from agent.suites import suite
 
-from family_librarian_lab.fixtures import clean_epub
+from family_librarian_lab.fixtures import clean_epub, large_epub
 from family_librarian_lab import clients
 
 SUITE = suite("cwa-local", group="cwa-local", order=20)
@@ -137,6 +137,60 @@ def asynchronous_verification_confirms_existing_handoff(ctx, scenario_factory):
             return {"request_id": request_id, "library_import_id": import_id, "opds_book_id": book_ids[0]}
 
     _run(ctx, "CWA-L-03", operation)
+
+
+@SUITE.case("CWA-L-04")
+def atomic_handoff_never_exposes_a_partial_ebook(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("CWA-L-04") as scenario:
+            if scenario.cwa_client is None:
+                raise AssertionError("Scenario did not bring up a CWA destination.")
+
+            # The observer runs in CWA's real container and can only list/stat
+            # the shared ingest mount. It does not inspect CWA's library or
+            # database; OPDS remains the success oracle below.
+            fixture = large_epub()
+            observer = scenario.observe_cwa_ingest()
+            try:
+                request_id, format_id = scenario.api.create_demo_ebook_request()
+                uploaded = scenario.api.upload_manual_epub(
+                    request_id, format_id, fixture, "cwa-l-04-large-the-hobbit.epub"
+                )
+                if uploaded.status != 200:
+                    raise AssertionError(f"Manual import returned HTTP {uploaded.status}: {uploaded.body!r}")
+            finally:
+                observations = observer.stop()
+
+            # Family Librarian generates the final target name. Any visible,
+            # non-dot EPUB is therefore a completed destination filename;
+            # seeing one below the fixture size would expose an in-flight
+            # ebook to CWA's watcher. Dot-uploading names are expected.
+            partial_final_names = [
+                filename
+                for filename, size in observations
+                if filename.endswith(".epub") and not filename.startswith(".") and size != len(fixture)
+            ]
+            if partial_final_names:
+                raise AssertionError(
+                    "The shared-ingest observer saw final ebook filename(s) before the full transfer "
+                    f"completed: {partial_final_names!r}."
+                )
+
+            library_import = _poll_library_import(scenario.api, request_id, timeout_seconds=120)
+            if library_import is None:
+                raise AssertionError("Large CWA handoff did not reach Available after the atomic transfer.")
+            _require_exactly_one_book(
+                scenario.cwa_client.find_books("The Hobbit", "J. R. R. Tolkien"),
+                "Atomic handoff created a partial or duplicate CWA catalog item",
+            )
+            return {
+                "request_id": request_id,
+                "library_import_id": library_import.get("id"),
+                "observer_samples": len(observations),
+                "partial_final_names": partial_final_names,
+            }
+
+    _run(ctx, "CWA-L-04", operation)
 
 
 @SUITE.case("CWA-L-05")
