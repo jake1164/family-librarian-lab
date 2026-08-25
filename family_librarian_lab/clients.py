@@ -120,23 +120,40 @@ class CwaClient:
         own OPDS search + acquisition-link parsing -- an independent check
         that the destination's own catalog shows the item, not just that
         Family Librarian's own status says so."""
+        matches = self.find_books(title, author)
+        return matches[0] if matches else None
+
+    def find_books(self, title: str, author: str | None) -> list[str]:
+        """Return every matching OPDS book id for duplicate assertions.
+
+        A local ingest write is not proof that CWA imported the file.  The
+        restart/recheck scenarios also need to prove that verifying an
+        existing handoff did not create a second catalog item, so preserve all
+        matching entries instead of collapsing the feed to its first result.
+        """
         import urllib.parse
 
         url = f"{self.host_base_url}/opds/search/{urllib.parse.quote(title)}"
         status, body = _http(url, basic_auth=(self.username, self.password))
         if status != 200:
-            return None
-        return _parse_first_matching_book_id(body.decode("utf-8", errors="replace"), title, author)
+            return []
+        return _parse_matching_book_ids(body.decode("utf-8", errors="replace"), title, author)
 
 
 def _parse_first_matching_book_id(atom_xml: str, title: str, author: str | None) -> str | None:
+    matches = _parse_matching_book_ids(atom_xml, title, author)
+    return matches[0] if matches else None
+
+
+def _parse_matching_book_ids(atom_xml: str, title: str, author: str | None) -> list[str]:
     import xml.etree.ElementTree as ET
 
     try:
         root = ET.fromstring(atom_xml)
     except ET.ParseError:
-        return None
+        return []
 
+    matches: list[str] = []
     ns = {"atom": "http://www.w3.org/2005/Atom"}
     for entry in root.findall("atom:entry", ns):
         entry_title = entry.findtext("atom:title", default="", namespaces=ns)
@@ -151,8 +168,9 @@ def _parse_first_matching_book_id(atom_xml: str, title: str, author: str | None)
             href = link.get("href")
             match = _BOOK_ID_PATTERN.search(href) if href else None
             if match:
-                return match.group(1)
-    return None
+                matches.append(match.group(1))
+                break
+    return matches
 
 
 def ensure_sftp_test_keypair(directory: Path) -> tuple[str, Path]:

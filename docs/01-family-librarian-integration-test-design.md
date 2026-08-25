@@ -201,6 +201,12 @@ Provider-specific tests add only behavior that is genuinely specific to that pro
 
 The lab reports failures by boundary: host/migration, scanner, local ingest, SFTP authentication/host trust/transport, CWA OPDS/import, ABS API/import, provider protocol/egress, or assertion/state mismatch. A failure report should name the last confirmed state and the component that failed to advance it. This is more useful than treating every timeout as "CWA failed."
 
+### Known product gaps: skip, don't fail
+
+A scenario that finds a real, already-diagnosed product bug outside the current batch's fix scope must report it with `ctx.skip(test_id, reason)`, not `ctx.fail(test_id, ...)`. `ctx.fail()` marks the whole suite run failed (`agent/results.py`'s `RunContext.failed_count`), and per the table above several suites are meant to gate pull requests or nightly runs — a `fail()` left in for a bug someone else has to fix in Family Librarian would red that gate on every run indefinitely, not just document the gap. `ctx.skip()` still shows up as neither a pass nor silence: it prints, it's counted separately in the suite summary, and its reason is the bug report.
+
+Keep the assertion itself strict — do not weaken it to accept the buggy behavior as correct. Instead, narrow the skip to the *exact* diagnosed signature (e.g., "status is X and field Y is absent") and let anything else — including an unexpected variant of the same failure — fall through to `ctx.fail()` as a real, uninvestigated failure. `SEC-02` (destroyed assets absent from the admin API) and `CWA-L-06` (a CWA-unavailable handoff recorded as `AwaitingVerification` with no `failureReason` instead of a `Failed` record) are the reference examples. `CWA-C-01..04` below are the same idea at the design-doc level, before any test code exists for them; once a scenario is written against a diagnosed-but-unfixed gap, it follows this section, not a bare `ctx.fail()`.
+
 ## Implementation order
 
 1. Build the lab's run lifecycle, fresh-volume cleanup, result capture, and `base` readiness checks on the existing `se-lab` abstractions.

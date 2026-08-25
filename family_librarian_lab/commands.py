@@ -484,6 +484,15 @@ class _BaseScenario:
         self.stop_service(service_name)
         self.start_service(service_name)
 
+    def reauthenticate(self) -> None:
+        """Refresh the browser-session client after a host restart."""
+        if self.api is None:
+            raise AssertionError("Scenario API client was not initialized.")
+        self.api.authenticate(
+            self._values["FAMILY_LIBRARIAN_ADMIN_EMAIL"],
+            self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
+        )
+
     def stop_clamav(self) -> None:
         self.stop_service("clamav")
 

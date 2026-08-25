@@ -28,8 +28,27 @@ def eicar_epub() -> bytes:
 
 
 def invalid_epub() -> bytes:
-    """Return bytes with an EPUB filename but no EPUB container structure."""
-    return b"This is deliberately not a ZIP or EPUB archive."
+    """Return a ZIP-shaped EPUB that fails structural EPUB validation.
+
+    The HTTP upload boundary rightly rejects arbitrary non-ZIP bytes before
+    they become a MediaAsset.  This fixture gets past that shallow signature
+    check so the real security pipeline records its scanner and validator
+    evidence before rejecting the malformed package.
+    """
+    output = BytesIO()
+    with ZipFile(output, "w") as archive:
+        _write(archive, "mimetype", b"application/epub+zip", ZIP_STORED)
+        _write(
+            archive,
+            "META-INF/container.xml",
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            b'<rootfiles><rootfile full-path="OEBPS/content.opf" '
+            b'media-type="application/oebps-package+xml"/></rootfiles></container>',
+            ZIP_DEFLATED,
+        )
+        _write(archive, "OEBPS/content.opf", b"This is deliberately not OPF XML.", ZIP_DEFLATED)
+    return output.getvalue()
 
 
 def identity_mismatched_epub() -> bytes:
