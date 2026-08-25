@@ -158,12 +158,19 @@ def malformed_and_identity_mismatched_epubs_stay_out_of_trusted_storage(ctx, sce
             mismatch_asset_id = mismatched.body.get("mediaAssetId")
             mismatch_asset = _find_asset(scenario.api.list_assets(), mismatch_asset_id)
             mismatch_evaluation = _require_evaluation(mismatch_asset)
-            if mismatch_asset.get("storageState") == "Trusted":
-                raise AssertionError("Identity-mismatched EPUB reached trusted storage.")
-            if mismatch_evaluation.get("status") not in ("Failed", "ReviewRequired"):
+            # Identity mismatch is tracked on storageState, not evaluation.status: a
+            # clean scan proves the file is safe, not that it's the requested book
+            # (see ApprovalService.ApproveCoreAsync and the Manual V1 workflow in
+            # docs/02-domain-workflows.md, which treats them as separate branches).
+            if mismatch_asset.get("storageState") != "Unmatched":
                 raise AssertionError(
-                    "Identity-mismatched EPUB did not fail or require review: "
-                    f"{mismatch_evaluation.get('status')!r}."
+                    "Identity-mismatched EPUB did not land in the Unmatched security "
+                    f"state: {mismatch_asset.get('storageState')!r}."
+                )
+            if mismatch_evaluation.get("status") != "Passed":
+                raise AssertionError(
+                    "Identity-mismatched EPUB's clean scan was not recorded as Passed "
+                    f"before identity verification held it: {mismatch_evaluation.get('status')!r}."
                 )
             queue = scenario.api.publishing_queue()
             if queue.get("libraryImports") or queue.get("deliveries"):
