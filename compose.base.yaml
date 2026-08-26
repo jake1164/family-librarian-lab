@@ -120,6 +120,24 @@ services:
     image: ${FAMILY_LIBRARIAN_ABS_IMAGE:-advplyr/audiobookshelf:latest}
     ports:
       - "${FAMILY_LIBRARIAN_ABS_HOST_PORT:-18378}:80"
+    # advplyr/audiobookshelf bakes no HEALTHCHECK into its image (confirmed:
+    # `docker inspect ... Config.Healthcheck` is null), unlike CWA's image.
+    # Without one, _wait_for_service()'s "state==running and health in
+    # (healthy, empty-string)" check accepts the container the instant the
+    # process starts -- not once the Node server inside is actually serving.
+    # ABS restarts in two distinct boot phases roughly 35s apart (confirmed
+    # via its own logs: two "=== Starting Server ===" blocks per restart);
+    # a request landing in that gap gets a raw connection reset (ABS-06's
+    # "[Errno 104] Connection reset by peer" failure, root-caused 2026-08-26).
+    # AbsClient.ready() (clients.py) already proves /healthcheck is the right
+    # endpoint -- reuse it here instead of guessing a new one. wget, not curl:
+    # confirmed present in the image, curl is not.
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
     volumes:
       - abs-config:/config
       - abs-metadata:/metadata
