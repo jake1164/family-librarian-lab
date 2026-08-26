@@ -127,7 +127,12 @@ def _load_lab_env() -> dict[str, str]:
         key, separator, value = text.partition("=")
         if not separator or not key:
             raise SystemExit(f"Invalid lab.env line: {line!r}")
-        values[key] = value
+        # Shell environment wins over lab.env, matching agent.common.resolve_setting()'s
+        # env > file > default precedence used everywhere else in se-lab -- a
+        # CI/non-interactive host that sets FAMILY_LIBRARIAN_* only via the process
+        # environment must not have that silently overridden by a stale lab.env line
+        # once _compose() merges this dict on top of os.environ.
+        values[key] = os.environ.get(key, value)
     # Always the lab-managed checkout, not a manually-set external path -- see
     # _checkout_source(). Overrides any stale FAMILY_LIBRARIAN_SOURCE_DIR line
     # left in lab.env.
@@ -139,7 +144,10 @@ def _load_lab_env() -> dict[str, str]:
     # pattern already established for the always-mounted cwa-ingest volume.
     clients.ensure_sftp_test_keypair(SFTP_KEY_DIR)
     values["FAMILY_LIBRARIAN_SFTP_KEY_DIR"] = str(SFTP_KEY_DIR)
-    values.setdefault("FAMILY_LIBRARIAN_SFTP_PASSWORD", clients.CWA_SFTP_DEFAULT_PASSWORD)
+    values.setdefault(
+        "FAMILY_LIBRARIAN_SFTP_PASSWORD",
+        os.environ.get("FAMILY_LIBRARIAN_SFTP_PASSWORD", clients.CWA_SFTP_DEFAULT_PASSWORD),
+    )
     return values
 
 
