@@ -135,14 +135,11 @@ section — before writing a new subprocess wrapper, env-file loader, `compose p
 selector, or status-report section in this repo. This lab was scaffolded ahead of that check and
 ended up hand-rolling several things se-lab already provides (or now provides); an audit found a
 real bug as a result (`_compose_service_health`'s JSON parsing only handled one of the two shapes
-Compose emits). That specific bug is fixed (`family_librarian_lab/commands.py`'s
-`_parse_compose_ps_json`), but it's a **temporary duplicate** of se-lab's own
-`agent.common.parse_compose_ps_json()` (added in se-lab commit `da67e45`) — this lab's se-lab pin
-predates that commit. Known follow-up work once the pin is bumped:
+Compose emits). That's fixed, and the se-lab pin is now current (`da67e45`), so
+`_compose_service_health` calls `agent.common.parse_compose_ps_json()` directly — no local
+duplicate. `handle_run`'s suite/case selection already goes through `agent.suites.select_suites()`
+too. Remaining known gaps:
 
-- Delete `_parse_compose_ps_json()` and call `agent.common.parse_compose_ps_json()` directly.
-- Replace `handle_test`'s hand-rolled case-narrowing loop with `agent.suites.select_suites()`
-  (unavailable at this lab's current pin; se-lab commit `0e58f0d`).
 - Route env/setting lookups through `agent.common.resolve_setting()` instead of this module's own
   `_load_lab_env()`, which silently ignores shell-environment overrides that `resolve_setting()`
   supports everywhere else.

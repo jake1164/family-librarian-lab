@@ -417,44 +417,10 @@ def _capture_result(values: dict[str, str], project_name: str, checks: dict[str,
     return result_path
 
 
-# TEMPORARY, pending a se-lab submodule pin bump (see se-lab/docs/design.md's
-# "Guardrail: Where New Lifecycle Code Belongs"): this duplicates
-# agent.common.parse_compose_ps_json(), added in se-lab commit da67e45,
-# specifically because this lab's own subprocess (running `docker compose -p
-# <ad-hoc per-scenario name> ps --format json` directly, not through
-# compose_command()'s fixed project_name()) can't reach it until the pin
-# bumps past that commit. The bug this fixes is real: the old version of
-# this function only handled one-JSON-object-per-line output and silently
-# treated a JSON-array response (some Compose versions emit that instead) as
-# zero services, which made every readiness check here report unhealthy
-# unconditionally. Delete this function and call
-# agent.common.parse_compose_ps_json(result.stdout) directly once the pin is
-# bumped -- don't let this duplicate linger past that.
-def _parse_compose_ps_json(output: str) -> list[dict[str, Any]]:
-    text = output.strip()
-    if not text:
-        return []
-    try:
-        parsed = json.loads(text)
-        return parsed if isinstance(parsed, list) else [parsed]
-    except json.JSONDecodeError:
-        pass
-    entries: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return entries
-
-
 def _compose_service_health(values: dict[str, str], project_name: str) -> tuple[dict[str, object], bool]:
     result = _compose(values, project_name, "ps", "--all", "--format", "json", profiles=ALL_PROFILES, capture=True)
     services: dict[str, object] = {}
-    for row in _parse_compose_ps_json(result.stdout):
+    for row in lab_common.parse_compose_ps_json(result.stdout):
         if not isinstance(row, dict):
             continue
         service = row.get("Service")
