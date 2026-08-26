@@ -8,22 +8,25 @@ are product-lab responsibilities.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
-from agent import registry
-from agent.results import RunContext
-from agent.suites import Suite, discover_suites, run_suite, suites_in_group
+from agent import common as lab_common, registry
+from agent.suites import Suite, discover_suites, run_suites, select_suites
 
+from family_librarian_lab import clients
 from family_librarian_lab.api import FamilyLibrarianApi
 
 
@@ -33,27 +36,83 @@ LAB_ENV_FILE = REPO_ROOT / "lab.env"
 RESULTS_ROOT = REPO_ROOT / "results"
 TESTS_ROOT = REPO_ROOT / "tests"
 PROFILE = "base"
+ALL_PROFILES = (
+    PROFILE,
+    clients.CWA_PROFILE,
+    clients.ABS_PROFILE,
+    clients.CWA_SFTP_PROFILE_KEY,
+    clients.CWA_SFTP_PROFILE_PASSWORD,
+)
+SFTP_KEY_DIR = REPO_ROOT / "runtime" / "sftp-test-key"
 DEFAULT_HOST_PORT = 18080
+DEFAULT_REPO_URL = "git@github.com:jake1164/family-librarian.git"
 _SECRET_NAMES = (
     "FAMILY_LIBRARIAN_POSTGRES_PASSWORD",
     "FAMILY_LIBRARIAN_ADMIN_PASSWORD",
 )
 
 
-def _configure_run(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--fresh", action="store_true", help="Remove this run's Compose volumes before starting")
-    parser.add_argument("--project-name", default=None, help="Compose project name (default: a unique run name)")
+def _configure_checkout_target(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help="Source branch or tag to check out (default: refresh the current checkout's branch)",
+    )
+
+
+def _configure_up(parser: argparse.ArgumentParser) -> None:
+    _configure_checkout_target(parser)
+    parser.add_argument(
+        "--profile",
+        nargs="+",
+        metavar="CLIENT",
+        default=[],
+        choices=[clients.CWA_PROFILE, clients.ABS_PROFILE, clients.CWA_SFTP_PROFILE_KEY, clients.CWA_SFTP_PROFILE_PASSWORD],
+        help="Extra destination(s) to bring up and wire alongside the base profile "
+        "(cwa-local, abs, cwa-sftp-key, cwa-sftp-password)",
+    )
 
 
 def _configure_project(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--project-name", default=None, help="Compose project name (default: FAMILY_LIBRARIAN_PROJECT_NAME)")
+    parser.add_argument("--project-name", default=None, help="Compose project name (default: the lab's standard project name)")
 
 
-def _configure_test(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--group", default="base", help="Suite group to run (default: base; use all for every suite)")
+def _configure_run(parser: argparse.ArgumentParser) -> None:
+    _configure_checkout_target(parser)
+    parser.add_argument("--test-group", default="base", help="Suite group to run (default: base; use all for every suite)")
     parser.add_argument("--case", default=None, help="Run one registered case id (for example SEC-02)")
     parser.add_argument("--keep", action="store_true", help="Keep each failed/successful scenario project for investigation")
     parser.add_argument("--skip-build", action="store_true", help="Use the existing Family Librarian image without rebuilding it")
+
+
+def _validate_run_options(args: argparse.Namespace) -> None:
+    if args.target and args.skip_build:
+        raise SystemExit("A source target and --skip-build are mutually exclusive.")
+
+
+def _repo_url() -> str:
+    """Plugin-level default: this plugin only ever tests Family Librarian, so it
+    can just know that -- FAMILY_LIBRARIAN_REPO_URL in lab.env becomes an
+    optional fork/mirror override rather than a required setting."""
+    return lab_common.resolve_setting("FAMILY_LIBRARIAN_REPO_URL", default=DEFAULT_REPO_URL) or DEFAULT_REPO_URL
+
+
+def _checkout_source(target: str | None) -> Path:
+    """Land Family Librarian's source at repo_dir() -- a second, lab-managed
+    clone separate from any manual dev checkout, same convention
+    m3undle-lab-public already uses -- rather than requiring
+    FAMILY_LIBRARIAN_SOURCE_DIR to point at an externally-managed one."""
+    repo_url = _repo_url()
+    lab_common.ensure_repo_checkout(repo_url)
+    if target:
+        kind, ref = lab_common.resolve_build_target(target, repo_url)
+        if kind == "tag":
+            lab_common.git_prepare_tag(ref)
+        else:
+            lab_common.git_prepare_branch(ref)
+    else:
+        lab_common.git_refresh_current_branch()
+    return lab_common.repo_dir()
 
 
 def _load_lab_env() -> dict[str, str]:
@@ -69,6 +128,18 @@ def _load_lab_env() -> dict[str, str]:
         if not separator or not key:
             raise SystemExit(f"Invalid lab.env line: {line!r}")
         values[key] = value
+    # Always the lab-managed checkout, not a manually-set external path -- see
+    # _checkout_source(). Overrides any stale FAMILY_LIBRARIAN_SOURCE_DIR line
+    # left in lab.env.
+    values["FAMILY_LIBRARIAN_SOURCE_DIR"] = str(lab_common.repo_dir())
+    # Idempotent (skips regeneration if already present) and cheap enough to run
+    # on every command, the same way as the checkout refresh above -- keeps the
+    # cwa-sftp-key bind-mount path always valid regardless of which profile a
+    # given command actually ends up using, matching the "harmless when unused"
+    # pattern already established for the always-mounted cwa-ingest volume.
+    clients.ensure_sftp_test_keypair(SFTP_KEY_DIR)
+    values["FAMILY_LIBRARIAN_SFTP_KEY_DIR"] = str(SFTP_KEY_DIR)
+    values.setdefault("FAMILY_LIBRARIAN_SFTP_PASSWORD", clients.CWA_SFTP_DEFAULT_PASSWORD)
     return values
 
 
@@ -77,13 +148,19 @@ def _project_name(values: dict[str, str], requested: str | None, *, unique: bool
     if not candidate and unique:
         candidate = "family-librarian-lab-" + datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     if not candidate:
-        raise SystemExit("Specify --project-name or set FAMILY_LIBRARIAN_PROJECT_NAME in lab.env.")
+        candidate = lab_common.project_name()
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", candidate):
         raise SystemExit("Compose project names may contain lowercase letters, digits, hyphens, and underscores only.")
     return candidate
 
 
-def _compose(values: dict[str, str], project_name: str, *arguments: str, capture: bool = False) -> subprocess.CompletedProcess[str]:
+def _compose(
+    values: dict[str, str],
+    project_name: str,
+    *arguments: str,
+    profiles: Sequence[str] = (PROFILE,),
+    capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.update(values)
     command = [
@@ -95,28 +172,192 @@ def _compose(values: dict[str, str], project_name: str, *arguments: str, capture
         project_name,
         "--file",
         str(COMPOSE_FILE),
-        "--profile",
-        PROFILE,
-        *arguments,
     ]
-    return subprocess.run(command, env=environment, text=True, capture_output=capture, check=False)
+    for profile in profiles:
+        command += ["--profile", profile]
+    command += list(arguments)
+    if capture:
+        return subprocess.run(command, env=environment, text=True, capture_output=True, check=False)
+
+    # Not asked to capture -- normally this inherits the real terminal
+    # directly (the right behavior for `up`/`build`/`status`, run
+    # interactively with no dashboard around). But every scenario `run`
+    # drives brings up a fresh Compose stack via this same function, and a
+    # dashboard is active for the whole run then: letting docker compose's
+    # own multi-line progress spinner print raw doesn't corrupt the
+    # dashboard's redraw math (clear_active_dashboard() below already
+    # prevents that) but it does mean the dashboard scrolls away with
+    # everything else instead of staying pinned to the bottom -- exactly
+    # what "no capture" is for outside a dashboard, and exactly what a
+    # dashboard can't tolerate. Same principle as se-lab's own
+    # common.run(): capture and suppress while a dashboard owns the
+    # screen, surfaced only on failure so debugging isn't harder than
+    # before. This call bypasses common.run() entirely (its own project-
+    # name/profile plumbing), so it needs the same handling explicitly.
+    lab_common.clear_active_dashboard()
+    if lab_common.active_dashboard() is not None:
+        result = subprocess.run(command, env=environment, text=True, capture_output=True, check=False)
+        if result.returncode and (result.stdout or result.stderr):
+            if result.stdout:
+                sys.stdout.write(result.stdout)
+            if result.stderr:
+                sys.stderr.write(result.stderr)
+        return result
+    return subprocess.run(command, env=environment, text=True, capture_output=False, check=False)
 
 
-def _run_or_exit(values: dict[str, str], project_name: str, *arguments: str) -> None:
-    result = _compose(values, project_name, *arguments)
+@dataclass(slots=True)
+class _CwaIngestObserver:
+    """A read-only polling observer for the CWA-facing side of the shared
+    ingest volume.
+
+    CWA-L-04 needs to observe the transport boundary while the host writes,
+    without treating CWA's managed library or database as a test oracle.  The
+    observer runs inside the real CWA container and only lists/stat's the
+    shared ingest mount; it never writes to it.
+    """
+
+    process: subprocess.Popen[str]
+    observations: list[tuple[str, int]] = field(default_factory=list)
+
+    def wait_until_ready(self) -> None:
+        if self.process.stdout is None:
+            raise AssertionError("CWA ingest observer did not expose stdout.")
+        ready, _, _ = select.select([self.process.stdout], [], [], 15)
+        if not ready:
+            self.stop()
+            raise AssertionError("CWA ingest observer did not start within 15 seconds.")
+        if self.process.stdout.readline().strip() != "__observer_ready__":
+            self.stop()
+            raise AssertionError("CWA ingest observer did not report its ready marker.")
+
+    def stop(self) -> list[tuple[str, int]]:
+        if self.process.poll() is None:
+            if self.process.stdin is None:
+                raise AssertionError("CWA ingest observer did not expose stdin.")
+            self.process.stdin.write("stop\n")
+            self.process.stdin.flush()
+            self.process.stdin.close()
+        try:
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=10)
+
+        output = self.process.stdout.read() if self.process.stdout is not None else ""
+
+        for line in output.splitlines():
+            self._record(line)
+        return self.observations
+
+    def wait_for_uploading(self, timeout_seconds: float) -> bool:
+        """Wait until the real SFTP transport has exposed its temporary
+        remote filename, proving an interruption targets an active transfer
+        rather than a before-connect or after-completion race."""
+        if self.process.stdout is None:
+            raise AssertionError("CWA ingest observer did not expose stdout.")
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([self.process.stdout], [], [], min(0.25, deadline - time.monotonic()))
+            if not ready:
+                continue
+            line = self.process.stdout.readline()
+            if not line:
+                break
+            observation = self._record(line)
+            if observation is not None and observation[0].startswith(".") and observation[0].endswith(".uploading"):
+                return True
+        return False
+
+    def _record(self, line: str) -> tuple[str, int] | None:
+        filename, separator, size = line.strip().partition("\t")
+        if not separator:
+            return None
+        try:
+            observation = (filename, int(size))
+        except ValueError:
+            return None
+        self.observations.append(observation)
+        return observation
+
+
+def _run_or_exit(
+    values: dict[str, str], project_name: str, *arguments: str, profiles: Sequence[str] = (PROFILE,)
+) -> None:
+    result = _compose(values, project_name, *arguments, profiles=profiles)
     if result.returncode:
         raise SystemExit(result.returncode)
 
 
 def _host_base(values: dict[str, str]) -> str:
-    port = values.get("FAMILY_LIBRARIAN_HOST_PORT", str(DEFAULT_HOST_PORT))
+    return _client_host_base(values, DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_HOST_PORT")
+
+
+def _client_host_base(values: dict[str, str], default_port: int, env_key: str) -> str:
+    port = values.get(env_key, str(default_port))
     try:
         numeric_port = int(port)
     except ValueError as error:
-        raise SystemExit("FAMILY_LIBRARIAN_HOST_PORT must be a valid TCP port.") from error
+        raise SystemExit(f"{env_key} must be a valid TCP port.") from error
     if not 1 <= numeric_port <= 65535:
-        raise SystemExit("FAMILY_LIBRARIAN_HOST_PORT must be between 1 and 65535.")
+        raise SystemExit(f"{env_key} must be between 1 and 65535.")
     return f"http://127.0.0.1:{numeric_port}"
+
+
+def _wire_destinations(
+    values: dict[str, str], profiles: Sequence[str], api: FamilyLibrarianApi
+) -> tuple["clients.CwaClient | None", "clients.AbsClient | None", "dict[str, object] | None"]:
+    """Configure Family Librarian to point at whichever extra destinations this
+    scenario/deployment brought up -- the same call, used by both `up` (manual
+    testing) and the cwa-local/abs/cwa-sftp-* suites' scenario setup (automated
+    testing), so both paths exercise the identical wiring rather than two
+    hand-maintained copies of it."""
+    cwa_client: clients.CwaClient | None = None
+    abs_client: clients.AbsClient | None = None
+    sftp_wiring: dict[str, object] | None = None
+
+    if clients.CWA_PROFILE in profiles:
+        cwa_client = clients.CwaClient(
+            host_base_url=_client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
+        )
+        api.configure_cwa_local(
+            local_ingest_path=clients.CWA_INGEST_CONTAINER_PATH,
+            opds_base_url=clients.CWA_INTERNAL_URL,
+            opds_username=clients.CWA_DEFAULT_USERNAME,
+            opds_password=clients.CWA_DEFAULT_PASSWORD,
+        )
+    elif clients.CWA_SFTP_PROFILE_KEY in profiles or clients.CWA_SFTP_PROFILE_PASSWORD in profiles:
+        is_key_mode = clients.CWA_SFTP_PROFILE_KEY in profiles
+        service = clients.CWA_SFTP_SERVICE_KEY if is_key_mode else clients.CWA_SFTP_SERVICE_PASSWORD
+        if is_key_mode:
+            credential, _ = clients.ensure_sftp_test_keypair(SFTP_KEY_DIR)
+        else:
+            credential = values["FAMILY_LIBRARIAN_SFTP_PASSWORD"]
+        cwa_client = clients.CwaClient(
+            host_base_url=_client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
+        )
+        sftp_wiring = api.configure_cwa_sftp(
+            sftp_host=service,
+            sftp_port=clients.CWA_SFTP_PORT,
+            sftp_username=clients.CWA_SFTP_USERNAME,
+            sftp_ingest_path=clients.CWA_SFTP_INGEST_PATH,
+            auth_mode="PrivateKey" if is_key_mode else "Password",
+            credential=credential,
+            opds_base_url=clients.CWA_INTERNAL_URL,
+            opds_username=clients.CWA_DEFAULT_USERNAME,
+            opds_password=clients.CWA_DEFAULT_PASSWORD,
+        )
+
+    if clients.ABS_PROFILE in profiles:
+        abs_client = clients.AbsClient(
+            host_base_url=_client_host_base(values, clients.ABS_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ABS_HOST_PORT")
+        )
+        token, library_id, folder_id = abs_client.ensure_bootstrapped()
+        api.configure_audiobookshelf(
+            base_url=clients.ABS_INTERNAL_URL, library_id=library_id, folder_id=folder_id, api_token=token
+        )
+
+    return cwa_client, abs_client, sftp_wiring
 
 
 def _probe(url: str) -> dict[str, object]:
@@ -142,9 +383,9 @@ def _capture_result(values: dict[str, str], project_name: str, checks: dict[str,
     run_directory = RESULTS_ROOT / run_id
     run_directory.mkdir(parents=True, exist_ok=False)
 
-    ps = _compose(values, project_name, "ps", "--all", "--format", "json", capture=True)
-    config = _compose(values, project_name, "config", "--no-interpolate", capture=True)
-    logs = _compose(values, project_name, "logs", "--no-color", capture=True)
+    ps = _compose(values, project_name, "ps", "--all", "--format", "json", profiles=ALL_PROFILES, capture=True)
+    config = _compose(values, project_name, "config", "--no-interpolate", profiles=ALL_PROFILES, capture=True)
+    logs = _compose(values, project_name, "logs", "--no-color", profiles=ALL_PROFILES, capture=True)
 
     (run_directory / "compose-ps.json").write_text(_redact(ps.stdout, values), encoding="utf-8")
     (run_directory / "compose-config.yaml").write_text(_redact(config.stdout, values), encoding="utf-8")
@@ -211,7 +452,7 @@ def _parse_compose_ps_json(output: str) -> list[dict[str, Any]]:
 
 
 def _compose_service_health(values: dict[str, str], project_name: str) -> tuple[dict[str, object], bool]:
-    result = _compose(values, project_name, "ps", "--all", "--format", "json", capture=True)
+    result = _compose(values, project_name, "ps", "--all", "--format", "json", profiles=ALL_PROFILES, capture=True)
     services: dict[str, object] = {}
     for row in _parse_compose_ps_json(result.stdout):
         if not isinstance(row, dict):
@@ -241,12 +482,22 @@ def _compose_service_health(values: dict[str, str], project_name: str) -> tuple[
 
 
 def _readiness(values: dict[str, str], project_name: str) -> tuple[dict[str, object], bool]:
+    """Destination checks (cwa/abs) are auto-detected from which containers
+    this project actually has -- not from a caller-supplied profile list -- so
+    `status`, which has no other record of what a given project brought up,
+    reports correctly without special-casing."""
     base = _host_base(values)
     checks: dict[str, object] = {
         "live": _probe(f"{base}/health/live"),
         "ready": _probe(f"{base}/health/ready"),
     }
     services, services_ready = _compose_service_health(values, project_name)
+    if clients.CWA_SERVICE in services:
+        cwa_url = _client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
+        checks["cwa"] = {"url": cwa_url, "ok": clients.CwaClient(host_base_url=cwa_url).ready()}
+    if clients.ABS_SERVICE in services:
+        abs_url = _client_host_base(values, clients.ABS_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ABS_HOST_PORT")
+        checks["abs"] = {"url": abs_url, "ok": clients.AbsClient(host_base_url=abs_url).ready()}
     checks["compose_services"] = services
     passed = (
         all(bool(item.get("ok")) for name, item in checks.items() if name != "compose_services" and isinstance(item, dict))
@@ -255,33 +506,46 @@ def _readiness(values: dict[str, str], project_name: str) -> tuple[dict[str, obj
     return checks, passed
 
 
-def _wait_for_clamav(values: dict[str, str], project_name: str, timeout_seconds: int = 360) -> None:
+def _wait_for_service(
+    values: dict[str, str], project_name: str, service_name: str, *, timeout_seconds: int = 360
+) -> None:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        services, healthy = _compose_service_health(values, project_name)
-        clamav = services.get("clamav")
-        if healthy and isinstance(clamav, dict) and clamav.get("health") == "healthy":
+        services, _ = _compose_service_health(values, project_name)
+        service = services.get(service_name)
+        if isinstance(service, dict) and service.get("state") == "running" and service.get("health") in ("healthy", ""):
             return
         time.sleep(2)
-    raise AssertionError("ClamAV did not become healthy within six minutes after restart.")
+    raise AssertionError(f"{service_name} did not become ready within six minutes after restart.")
 
 
 class _BaseScenario:
-    """One fresh, disposable Compose project backing one suite case."""
+    """One fresh, disposable Compose project backing one suite case.
 
-    def __init__(self, values: dict[str, str], test_id: str, *, keep: bool) -> None:
+    `profiles` are the extra destination profiles (cwa-local, abs) this
+    scenario needs beyond `base` -- teardown always requests ALL_PROFILES
+    regardless, so a scenario that did bring up an extra destination never
+    leaves it as an undiscovered, profile-filtered-out orphan (the same class
+    of bug already found and fixed once this session in `clients down`).
+    """
+
+    def __init__(self, values: dict[str, str], test_id: str, *, keep: bool, profiles: Sequence[str] = ()) -> None:
         self._values = values
         self._test_id = test_id
         self._keep = keep
+        self._profiles = (PROFILE, *profiles)
         suffix = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
         self.project_name = f"family-librarian-lab-{test_id.lower()}-{suffix}"
         self.api: FamilyLibrarianApi | None = None
         self.readiness_passed = False
+        self.cwa_client: clients.CwaClient | None = None
+        self.abs_client: clients.AbsClient | None = None
+        self.cwa_sftp_wiring: dict[str, object] | None = None
         self._result_directory: Path | None = None
 
     def __enter__(self) -> "_BaseScenario":
-        _run_or_exit(self._values, self.project_name, "down", "--volumes", "--remove-orphans")
-        _run_or_exit(self._values, self.project_name, "up", "--wait", "--remove-orphans")
+        _run_or_exit(self._values, self.project_name, "down", "--volumes", "--remove-orphans", profiles=ALL_PROFILES)
+        _run_or_exit(self._values, self.project_name, "up", "--wait", "--remove-orphans", profiles=self._profiles)
         checks, self.readiness_passed = _readiness(self._values, self.project_name)
         outcome = "pass" if self.readiness_passed else "fail"
         self._result_directory = _capture_result(self._values, self.project_name, checks, outcome).parent
@@ -293,6 +557,9 @@ class _BaseScenario:
             self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
         )
         self.api = api
+        self.cwa_client, self.abs_client, self.cwa_sftp_wiring = _wire_destinations(
+            self._values, self._profiles, api
+        )
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
@@ -300,50 +567,256 @@ class _BaseScenario:
             trace_path = self._result_directory / "api-trace.json"
             trace_path.write_text(json.dumps(self.api.trace, indent=2) + "\n", encoding="utf-8")
         if not self._keep:
-            result = _compose(self._values, self.project_name, "down", "--volumes", "--remove-orphans", capture=True)
+            result = _compose(
+                self._values, self.project_name, "down", "--volumes", "--remove-orphans",
+                profiles=ALL_PROFILES, capture=True,
+            )
             if result.returncode:
                 print(_redact(result.stderr, self._values), file=sys.stderr, end="")
         return False
 
+    def stop_service(self, service_name: str) -> None:
+        """Stop one service in this scenario's isolated Compose project.
+
+        Fault scenarios deliberately use Compose lifecycle operations rather
+        than mocks, so the same helper works for ClamAV, Family Librarian,
+        CWA, Audiobookshelf, and either SFTP sidecar.
+        """
+        _run_or_exit(self._values, self.project_name, "stop", service_name, profiles=self._profiles)
+
+    def kill_service(self, service_name: str) -> None:
+        """Abruptly terminate one disposable scenario service.
+
+        Unlike ``stop_service``, Compose does not give the process a graceful
+        shutdown window. Fault tests use this only when they need a genuine
+        in-flight transport disconnect.
+        """
+        _run_or_exit(self._values, self.project_name, "kill", service_name, profiles=self._profiles)
+
+    def start_service(self, service_name: str) -> None:
+        _run_or_exit(self._values, self.project_name, "up", "--wait", service_name, profiles=self._profiles)
+        _wait_for_service(self._values, self.project_name, service_name)
+
+    def restart_service(self, service_name: str) -> None:
+        self.stop_service(service_name)
+        self.start_service(service_name)
+
+    def observe_cwa_ingest(self) -> _CwaIngestObserver:
+        """Poll CWA's read-only view of the shared ingest volume.
+
+        This deliberately observes only filenames and byte lengths.  CWA's
+        OPDS catalog remains the proof of a successful import.
+        """
+        command = [
+            "docker",
+            "compose",
+            "--env-file",
+            str(LAB_ENV_FILE),
+            "--project-name",
+            self.project_name,
+            "--file",
+            str(COMPOSE_FILE),
+        ]
+        for profile in self._profiles:
+            command += ["--profile", profile]
+        command += [
+            "exec",
+            "-T",
+            clients.CWA_SERVICE,
+            "sh",
+            "-c",
+            """
+(read -r _; exit 0) &
+stopper=$!
+printf '%s\\n' '__observer_ready__'
+while kill -0 "$stopper" 2>/dev/null; do
+  for path in /cwa-book-ingest/.*.uploading /cwa-book-ingest/*.epub; do
+    [ -f \"$path\" ] || continue
+    printf '%s\\t%s\\n' \"${path##*/}\" \"$(wc -c < \"$path\")\"
+  done
+  sleep 0.01
+done
+""",
+        ]
+        environment = os.environ.copy()
+        environment.update(self._values)
+        observer = _CwaIngestObserver(
+            subprocess.Popen(
+                command,
+                env=environment,
+                text=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        )
+        observer.wait_until_ready()
+        return observer
+
+    def seed_cwa_ingest(self, content: bytes, filename: str) -> None:
+        """Place a fixture through CWA's own watched ingest path.
+
+        This is deliberately an exec into CWA's ingest mount, never a write to
+        its Calibre library or metadata database. CWA's watcher must still
+        import it and expose it through OPDS before a scenario can pass.
+        """
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.epub", filename):
+            raise ValueError("CWA seed filenames must be a simple .epub basename.")
+        command = [
+            "docker", "compose", "--env-file", str(LAB_ENV_FILE), "--project-name", self.project_name,
+            "--file", str(COMPOSE_FILE),
+        ]
+        for profile in self._profiles:
+            command += ["--profile", profile]
+        command += [
+            "exec", "-T", clients.CWA_SERVICE, "sh", "-c",
+            f"base64 -d > /cwa-book-ingest/{filename}",
+        ]
+        environment = os.environ.copy()
+        environment.update(self._values)
+        result = subprocess.run(
+            command,
+            env=environment,
+            input=base64.b64encode(content).decode("ascii"),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            raise AssertionError(f"CWA ingest seed failed: {_redact(result.stderr, self._values).strip()}")
+
+    def cwa_ingest_filenames(self) -> list[str]:
+        """Read only the CWA-facing shared ingest mount for fault diagnostics.
+        Catalog visibility remains the success assertion for every CWA test."""
+        command = [
+            "docker", "compose", "--env-file", str(LAB_ENV_FILE), "--project-name", self.project_name,
+            "--file", str(COMPOSE_FILE),
+        ]
+        for profile in self._profiles:
+            command += ["--profile", profile]
+        command += [
+            "exec", "-T", clients.CWA_SERVICE, "sh", "-c",
+            "for path in /cwa-book-ingest/.*.uploading /cwa-book-ingest/*.epub; do [ -f \"$path\" ] && basename \"$path\"; done; exit 0",
+        ]
+        environment = os.environ.copy()
+        environment.update(self._values)
+        result = subprocess.run(command, env=environment, text=True, capture_output=True, check=False)
+        if result.returncode:
+            raise AssertionError(f"Could not inspect CWA ingest files: {_redact(result.stderr, self._values).strip()}")
+        return [line for line in result.stdout.splitlines() if line]
+
+    def wait_for_cwa_ingest_uploading(self, timeout_seconds: float) -> bool:
+        """Poll CWA's mount until the remote SFTP temporary file is visible.
+
+        This is deliberately a sequence of short, independent Compose execs
+        rather than a long-lived observer: Docker Desktop may detach stdin
+        from a `compose exec -T` child, which makes an stdin-controlled watcher
+        unsuitable for synchronizing a destructive transport fault.
+        """
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if any(name.startswith(".") and name.endswith(".uploading") for name in self.cwa_ingest_filenames()):
+                return True
+            time.sleep(0.1)
+        return False
+
+    def regenerate_sftp_host_keys(self, service_name: str) -> None:
+        """Rotate a disposable atmoz/sftp sidecar's server host keys.
+
+        The service uses its real entrypoint to generate the replacement keys
+        on restart; only this throwaway scenario container is altered.
+        """
+        _run_or_exit(
+            self._values,
+            self.project_name,
+            "exec",
+            "-T",
+            service_name,
+            "sh",
+            "-c",
+            # atmoz/sftp's entrypoint generates RSA and ed25519 keys, but
+            # OpenSSH's default config may still list ECDSA as well. Recreate
+            # the complete host-key set before restart so the deliberate
+            # rotation does not turn into a sidecar bootstrap failure.
+            "rm -f /etc/ssh/ssh_host_* && ssh-keygen -A",
+            profiles=self._profiles,
+        )
+        self.restart_service(service_name)
+
+    def reauthenticate(self) -> None:
+        """Refresh the browser-session client after a host restart."""
+        if self.api is None:
+            raise AssertionError("Scenario API client was not initialized.")
+        self.api.authenticate(
+            self._values["FAMILY_LIBRARIAN_ADMIN_EMAIL"],
+            self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
+        )
+
     def stop_clamav(self) -> None:
-        _run_or_exit(self._values, self.project_name, "stop", "clamav")
+        self.stop_service("clamav")
 
     def start_clamav(self) -> None:
-        _run_or_exit(self._values, self.project_name, "up", "--wait", "clamav")
-        _wait_for_clamav(self._values, self.project_name)
+        self.start_service("clamav")
 
 
 class _BaseScenarioFactory:
-    def __init__(self, values: dict[str, str], *, keep: bool) -> None:
+    def __init__(self, values: dict[str, str], *, keep: bool, profiles: Sequence[str] = ()) -> None:
         self._values = values
         self._keep = keep
+        self._profiles = profiles
 
     def __call__(self, test_id: str) -> _BaseScenario:
-        return _BaseScenario(self._values, test_id, keep=self._keep)
+        return _BaseScenario(self._values, test_id, keep=self._keep, profiles=self._profiles)
 
 
-@registry.command("build", help="Build the Family Librarian base-profile image")
+@registry.command("build", help="Check out and build Family Librarian's base-profile image", configure=_configure_checkout_target)
 def handle_build(args: argparse.Namespace, config: object) -> int:
+    _checkout_source(args.target)
     values = _load_lab_env()
-    project_name = _project_name(values, None, unique=False)
+    project_name = lab_common.project_name()
     _run_or_exit(values, project_name, "build", "family-librarian", "migrate")
     return 0
 
 
-@registry.command("run", help="Start the isolated base profile and record readiness", configure=_configure_run)
-def handle_run(args: argparse.Namespace, config: object) -> int:
+@registry.command(
+    "up",
+    help="Check out, build, and deploy Family Librarian's base profile, and leave it running for manual testing",
+    configure=_configure_up,
+)
+def handle_up(args: argparse.Namespace, config: object) -> int:
+    _checkout_source(args.target)
     values = _load_lab_env()
-    project_name = _project_name(values, args.project_name, unique=True)
-    if args.fresh:
-        _run_or_exit(values, project_name, "down", "--volumes", "--remove-orphans")
-    _run_or_exit(values, project_name, "up", "--build", "--wait", "--remove-orphans")
+    project_name = lab_common.project_name()
+    profiles = (PROFILE, *args.profile)
+    _run_or_exit(values, project_name, "up", "--build", "--wait", "--remove-orphans", profiles=profiles)
     checks, passed = _readiness(values, project_name)
-    result_path = _capture_result(values, project_name, checks, "pass" if passed else "fail")
-    print(f"Base result captured: {result_path}", flush=True)
     if not passed:
         print(json.dumps(checks, indent=2), file=sys.stderr)
-        return 1
-    print(f"Base profile ready: {project_name}", flush=True)
+        raise SystemExit("Base profile failed readiness checks after 'up'.")
+
+    api = FamilyLibrarianApi(_host_base(values))
+    api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+    cwa_client, abs_client, sftp_wiring = _wire_destinations(values, profiles, api)
+
+    print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
+    if cwa_client is not None:
+        print(
+            f"  CWA:  {cwa_client.host_base_url}  (OPDS user: {clients.CWA_DEFAULT_USERNAME} / "
+            f"password: {clients.CWA_DEFAULT_PASSWORD}) -- already wired into Family Librarian",
+            flush=True,
+        )
+    if sftp_wiring is not None:
+        print(
+            "  CWA ingest transport: SFTP, trusted and enabled during this 'up' "
+            "(see the trust probe in the run's own output above for detail).",
+            flush=True,
+        )
+    if abs_client is not None:
+        print(
+            f"  Audiobookshelf: {abs_client.host_base_url}  (user: {clients.ABS_DEFAULT_USERNAME} / "
+            f"password: {clients.ABS_DEFAULT_PASSWORD}) -- already wired into Family Librarian",
+            flush=True,
+        )
     return 0
 
 
@@ -351,7 +824,7 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
 def handle_status(args: argparse.Namespace, config: object) -> int:
     values = _load_lab_env()
     project_name = _project_name(values, args.project_name, unique=False)
-    ps = _compose(values, project_name, "ps", "--all", "--format", "json", capture=True)
+    ps = _compose(values, project_name, "ps", "--all", "--format", "json", profiles=ALL_PROFILES, capture=True)
     if ps.stdout:
         print(ps.stdout, end="" if ps.stdout.endswith("\n") else "\n")
     if ps.returncode:
@@ -366,74 +839,97 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
 def handle_down(args: argparse.Namespace, config: object) -> int:
     values = _load_lab_env()
     project_name = _project_name(values, args.project_name, unique=False)
-    _run_or_exit(values, project_name, "down", "--remove-orphans")
+    _run_or_exit(values, project_name, "down", "--remove-orphans", profiles=ALL_PROFILES)
     print(f"Base profile stopped: {project_name}", flush=True)
     return 0
 
 
-@registry.command("test", help="Run black-box integration suites against fresh base-profile projects", configure=_configure_test)
-def handle_test(args: argparse.Namespace, config: object) -> int:
-    values = _load_lab_env()
-    suites = suites_in_group(discover_suites(TESTS_ROOT), args.group)
-    if args.case:
-        selected_suites: list[Suite] = []
-        for candidate in suites:
-            selected_cases = [case for case in candidate.cases if case.test_id == args.case]
-            if selected_cases:
-                selected_suites.append(
-                    Suite(
-                        name=candidate.name,
-                        group=candidate.group,
-                        order=candidate.order,
-                        cases=selected_cases,
-                        setup_fn=candidate.setup_fn,
-                        teardown_fn=candidate.teardown_fn,
-                    )
-                )
-        suites = selected_suites
+def _profiles_for(suite: Suite) -> tuple[str, ...]:
+    """Derive the extra destination profile a suite's own declared group
+    needs, so `--test-group cwa-local`/`--test-group abs`/
+    `--test-group cwa-sftp-key`/`--test-group cwa-sftp-password` each bring
+    up exactly the destination they test."""
+    if suite.group in (
+        clients.CWA_PROFILE,
+        clients.ABS_PROFILE,
+        clients.CWA_SFTP_PROFILE_KEY,
+        clients.CWA_SFTP_PROFILE_PASSWORD,
+    ):
+        return (suite.group,)
+    return ()
+
+
+def _group_suites_by_profile(suites: list[Suite]) -> list[tuple[tuple[str, ...], list[Suite]]]:
+    """Buckets a mixed selection (e.g. `--test-group all`) by which extra profile
+    each suite's own group needs, preserving selection order within each
+    bucket. Each bucket gets its own scenario factory -- sharing one factory
+    (and its bundled destination wiring) across every suite in a mixed run
+    would enable CWA/ABS for suites that specifically assert no destination
+    is configured (confirmed for real: base-security's SEC-01/SEC-02 failed
+    exactly this way under a single blanket-profile factory)."""
+    buckets: dict[tuple[str, ...], list[Suite]] = {}
+    order: list[tuple[str, ...]] = []
+    for target in suites:
+        key = _profiles_for(target)
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(target)
+    return [(key, buckets[key]) for key in order]
+
+
+@registry.command(
+    "run",
+    help="Run black-box integration suites against fresh, isolated base-profile projects",
+    configure=_configure_run,
+)
+def handle_run(args: argparse.Namespace, config: object) -> int:
+    _validate_run_options(args)
+    suites = select_suites(discover_suites(TESTS_ROOT), group=args.test_group, case=args.case)
     if not suites:
         selector = f" and case {args.case!r}" if args.case else ""
-        raise SystemExit(f"No suites found for group {args.group!r}{selector}.")
+        raise SystemExit(f"No suites found for group {args.test_group!r}{selector}.")
 
     if not args.skip_build:
-        build_project = _project_name(values, None, unique=False)
+        _checkout_source(args.target)
+    values = _load_lab_env()
+    if not args.skip_build:
+        build_project = lab_common.project_name()
         _run_or_exit(values, build_project, "build", "family-librarian", "migrate")
 
-    selector = args.case.lower() if args.case else args.group
+    selector = args.case.lower() if args.case else args.test_group
     run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}-suites-{selector}"
     run_directory = RESULTS_ROOT / run_id
     run_directory.mkdir(parents=True, exist_ok=False)
-    factory = _BaseScenarioFactory(values, keep=args.keep)
-    suite_reports: list[dict[str, Any]] = []
+
+    all_results = []
     failed = False
+    for profiles, group_suites in _group_suites_by_profile(suites):
+        factory = _BaseScenarioFactory(values, keep=args.keep, profiles=profiles)
+        summary = run_suites(group_suites, results_dir=run_directory, label="Family Librarian Lab", scenario_factory=factory)
+        all_results.extend(summary.results)
+        failed = failed or summary.failed
 
-    for selected in suites:
-        context = RunContext(selected.name)
-        suite_result = run_suite(selected, context, scenario_factory=factory)
-        context.print_summary()
-        result_path = run_directory / f"results-{selected.name}.json"
-        context.write_json(result_path)
-        report = {
-            "suite": selected.name,
-            "expected": suite_result.expected,
-            "actual": suite_result.actual,
-            "setup_ok": suite_result.setup_ok,
-            "setup_error": suite_result.setup_error,
-            "drifted": suite_result.drifted,
-            "result": result_path.name,
-        }
-        suite_reports.append(report)
-        failed = failed or context.exit_code() != 0 or suite_result.drifted or not suite_result.setup_ok
-
-    summary = {
+    report = {
         "run_id": run_id,
         "profile": PROFILE,
-        "group": args.group,
+        "group": args.test_group,
         "case": args.case,
         "outcome": "fail" if failed else "pass",
-        "suites": suite_reports,
+        "suites": [
+            {
+                "suite": result.suite_name,
+                "expected": result.expected,
+                "actual": result.actual,
+                "setup_ok": result.setup_ok,
+                "setup_error": result.setup_error,
+                "drifted": result.drifted,
+                "result": f"results-{result.suite_name}.json",
+            }
+            for result in all_results
+        ],
     }
     summary_path = run_directory / "results-suite-run.json"
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Suite result captured: {summary_path}", flush=True)
     return 1 if failed else 0

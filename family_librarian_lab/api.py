@@ -53,6 +53,11 @@ class FamilyLibrarianApi:
         _require_status(response, 200, "admin requests")
         return _list_field(response.body, "requests", "admin requests")
 
+    def admin_request(self, request_id: str) -> dict[str, Any]:
+        response = self._request("GET", f"/api/v1/admin/requests/{request_id}")
+        _require_status(response, 200, "admin request")
+        return _object(response.body, "admin request")
+
     def list_assets(self) -> list[dict[str, Any]]:
         response = self._request("GET", "/api/v1/admin/media-assets/")
         _require_status(response, 200, "media assets")
@@ -63,29 +68,105 @@ class FamilyLibrarianApi:
         _require_status(response, 200, "publishing queue")
         return _object(response.body, "publishing queue")
 
+    def recheck_delivery(self, delivery_id: str) -> None:
+        """Audiobookshelf deliveries have no background verification hosted
+        service (unlike CWA's CwaVerificationHostedService) -- a delivery
+        left Verifying after its one synchronous check stays there until
+        this is called explicitly."""
+        response = self._request("POST", f"/api/v1/admin/publishing/deliveries/{delivery_id}/recheck")
+        _require_status(response, 204, "delivery recheck")
+
+    def recheck_library_import(self, library_import_id: str) -> None:
+        response = self._request("POST", f"/api/v1/admin/publishing/library-imports/{library_import_id}/recheck")
+        _require_status(response, 204, "library-import recheck")
+
+    def cwa_settings(self) -> dict[str, Any]:
+        response = self._request("GET", "/api/v1/admin/publishing/cwa/")
+        _require_status(response, 200, "CWA settings")
+        return _object(response.body, "CWA settings")
+
+    def test_cwa_ingest(self, request: dict[str, object]) -> dict[str, Any]:
+        response = self._request("POST", "/api/v1/admin/publishing/cwa/test-ingest", json_body=request)
+        _require_status(response, 200, "CWA ingest probe")
+        return _object(response.body, "CWA ingest probe")
+
+    def set_cwa_sftp_private_key(self, private_key: str) -> dict[str, Any]:
+        response = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/sftp-key", json_body={"value": private_key}
+        )
+        _require_status(response, 200, "CWA SFTP private key")
+        return _object(response.body, "CWA settings")
+
+    def set_cwa_sftp_password(self, password: str) -> dict[str, Any]:
+        response = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/sftp-password", json_body={"value": password}
+        )
+        _require_status(response, 200, "CWA SFTP password")
+        return _object(response.body, "CWA settings")
+
+    def test_cwa_opds(self, request: dict[str, object]) -> dict[str, Any]:
+        response = self._request("POST", "/api/v1/admin/publishing/cwa/test-opds", json_body=request)
+        _require_status(response, 200, "CWA OPDS probe")
+        return _object(response.body, "CWA OPDS probe")
+
+    def audiobookshelf_settings(self) -> dict[str, Any]:
+        response = self._request("GET", "/api/v1/admin/publishing/audiobookshelf/")
+        _require_status(response, 200, "Audiobookshelf settings")
+        return _object(response.body, "Audiobookshelf settings")
+
+    def test_audiobookshelf(self, request: dict[str, object]) -> dict[str, Any]:
+        response = self._request("POST", "/api/v1/admin/publishing/audiobookshelf/test", json_body=request)
+        _require_status(response, 200, "Audiobookshelf connection probe")
+        return _object(response.body, "Audiobookshelf connection probe")
+
+    def discover_audiobookshelf_libraries(self, request: dict[str, object]) -> dict[str, Any]:
+        response = self._request("POST", "/api/v1/admin/publishing/audiobookshelf/libraries", json_body=request)
+        _require_status(response, 200, "Audiobookshelf library discovery")
+        return _object(response.body, "Audiobookshelf library discovery")
+
     def create_demo_ebook_request(self) -> tuple[str, str]:
-        work = self._request("POST", "/api/v1/catalog/candidates/demo/the-hobbit/resolve", data=b"")
-        _require_status(work, (200, 201), "demo catalog work resolution")
-        work_id = _object(work.body, "catalog work")["id"]
+        return self.create_demo_request("Ebook")
+
+    def create_demo_audiobook_request(self) -> tuple[str, str]:
+        return self.create_demo_request("Audiobook")
+
+    def create_demo_request(self, media_type: str) -> tuple[str, str]:
+        work_id = self.resolve_demo_work()
         created = self._request(
             "POST",
             "/api/v1/requests/",
-            json_body={"workId": work_id, "formats": ["Ebook"], "note": None, "confirmDuplicate": True},
+            json_body={"workId": work_id, "formats": [media_type], "note": None, "confirmDuplicate": True},
         )
-        _require_status(created, 201, "ebook request creation")
+        _require_status(created, 201, f"{media_type.lower()} request creation")
         request = _object(created.body, "created request")
         formats = request.get("formats")
         if not isinstance(formats, list):
             raise AssertionError("Created request did not contain formats.")
         format_id = next(
-            (item.get("formatId") for item in formats if isinstance(item, dict) and item.get("mediaType") == "Ebook"),
+            (item.get("formatId") for item in formats if isinstance(item, dict) and item.get("mediaType") == media_type),
             None,
         )
         if not isinstance(format_id, str):
-            raise AssertionError("Created request did not contain an ebook format.")
+            raise AssertionError(f"Created request did not contain a {media_type} format.")
         return _required_string(request, "id", "created request"), format_id
 
+    def resolve_demo_work(self) -> str:
+        work = self._request("POST", "/api/v1/catalog/candidates/demo/the-hobbit/resolve", data=b"")
+        _require_status(work, (200, 201), "demo catalog work resolution")
+        return _required_string(_object(work.body, "catalog work"), "id", "catalog work")
+
+    def fulfillment_options(self, work_id: str) -> dict[str, Any]:
+        response = self._request("GET", f"/api/v1/catalog/works/{work_id}/fulfillment-options")
+        _require_status(response, 200, "work fulfillment options")
+        return _object(response.body, "work fulfillment options")
+
     def upload_manual_epub(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
+        return self._upload_manual_file(request_id, format_id, content, filename)
+
+    def upload_manual_audio(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
+        return self._upload_manual_file(request_id, format_id, content, filename)
+
+    def _upload_manual_file(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
         boundary = f"----family-librarian-lab-{uuid.uuid4().hex}"
         payload = (
             f"--{boundary}\r\n"
@@ -98,6 +179,160 @@ class FamilyLibrarianApi:
             data=payload,
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
+
+    def configure_cwa_local(
+        self,
+        *,
+        local_ingest_path: str,
+        opds_base_url: str,
+        opds_username: str,
+        opds_password: str,
+    ) -> dict[str, Any]:
+        settings = self._request(
+            "PUT",
+            "/api/v1/admin/publishing/cwa/",
+            json_body={
+                "transportMode": "Local",
+                "localIngestPath": local_ingest_path,
+                "sftpHost": None,
+                "sftpPort": None,
+                "sftpUsername": None,
+                "sftpIngestPath": None,
+                "sftpAuthenticationMode": "PrivateKey",
+                "opdsBaseUrl": opds_base_url,
+                "opdsUsername": opds_username,
+            },
+        )
+        _require_status(settings, 200, "CWA settings")
+        password = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/opds-password", json_body={"value": opds_password}
+        )
+        _require_status(password, 200, "CWA OPDS password")
+        enabled = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/enabled", json_body={"enabled": True}
+        )
+        _require_status(enabled, 200, "CWA enable")
+        return _object(enabled.body, "CWA settings")
+
+    def configure_cwa_sftp(
+        self,
+        *,
+        sftp_host: str,
+        sftp_port: int,
+        sftp_username: str,
+        sftp_ingest_path: str,
+        auth_mode: str,
+        credential: str,
+        opds_base_url: str,
+        opds_username: str,
+        opds_password: str,
+    ) -> dict[str, Any]:
+        """Configures CWA's SFTP transport and drives the same trust-on-
+        first-test flow an administrator would (design doc CWA-S-01): probe
+        with no trusted fingerprint yet (expect a rejection carrying the
+        server's observed fingerprint, no file transferred), trust it, then
+        probe again (expect a real connect plus a temporary write-and-remove
+        probe on the remote ingest path). Returns both probe responses plus
+        the final enabled settings so a case can assert on the trust flow
+        itself, not just the end-to-end publish it enables."""
+        settings = self._request(
+            "PUT",
+            "/api/v1/admin/publishing/cwa/",
+            json_body={
+                "transportMode": "Sftp",
+                "localIngestPath": None,
+                "sftpHost": sftp_host,
+                "sftpPort": sftp_port,
+                "sftpUsername": sftp_username,
+                "sftpIngestPath": sftp_ingest_path,
+                "sftpAuthenticationMode": auth_mode,
+                "opdsBaseUrl": opds_base_url,
+                "opdsUsername": opds_username,
+            },
+        )
+        _require_status(settings, 200, "CWA SFTP settings")
+
+        secret_path = "sftp-key" if auth_mode == "PrivateKey" else "sftp-password"
+        secret = self._request(
+            "PUT", f"/api/v1/admin/publishing/cwa/{secret_path}", json_body={"value": credential}
+        )
+        _require_status(secret, 200, "CWA SFTP credential")
+
+        opds_password_response = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/opds-password", json_body={"value": opds_password}
+        )
+        _require_status(opds_password_response, 200, "CWA OPDS password")
+
+        def probe(trusted_fingerprint: str | None) -> dict[str, Any]:
+            response = self._request(
+                "POST",
+                "/api/v1/admin/publishing/cwa/test-ingest",
+                json_body={
+                    "transportMode": "Sftp",
+                    "localIngestPath": None,
+                    "sftpHost": sftp_host,
+                    "sftpPort": sftp_port,
+                    "sftpUsername": sftp_username,
+                    "sftpIngestPath": sftp_ingest_path,
+                    "sftpAuthenticationMode": auth_mode,
+                    "sftpPrivateKey": credential if auth_mode == "PrivateKey" else None,
+                    "sftpPassphrase": None,
+                    "sftpPassword": credential if auth_mode == "Password" else None,
+                    "trustedSftpHostKeyFingerprint": trusted_fingerprint,
+                },
+            )
+            _require_status(response, 200, "CWA SFTP ingest probe")
+            return _object(response.body, "CWA SFTP ingest probe")
+
+        untrusted_probe = probe(None)
+        fingerprint = untrusted_probe.get("sftpHostKeyFingerprint")
+        if not untrusted_probe.get("requiresSftpHostKeyTrust") or not isinstance(fingerprint, str):
+            raise AssertionError(
+                "Expected the first SFTP probe to reject an untrusted host key and report its "
+                f"fingerprint; got {untrusted_probe!r}."
+            )
+
+        trust = self._request(
+            "PUT", "/api/v1/admin/publishing/cwa/sftp-host-key", json_body={"fingerprint": fingerprint}
+        )
+        _require_status(trust, 200, "CWA SFTP host-key trust")
+
+        trusted_probe = probe(fingerprint)
+        if not trusted_probe.get("succeeded"):
+            raise AssertionError(f"SFTP ingest probe failed after trusting its host key: {trusted_probe!r}")
+
+        enabled = self._request("PUT", "/api/v1/admin/publishing/cwa/enabled", json_body={"enabled": True})
+        _require_status(enabled, 200, "CWA enable")
+
+        return {
+            "settings": _object(enabled.body, "CWA settings"),
+            "untrusted_probe": untrusted_probe,
+            "trusted_probe": trusted_probe,
+        }
+
+    def configure_audiobookshelf(
+        self,
+        *,
+        base_url: str,
+        library_id: str,
+        folder_id: str,
+        api_token: str,
+    ) -> dict[str, Any]:
+        settings = self._request(
+            "PUT",
+            "/api/v1/admin/publishing/audiobookshelf/",
+            json_body={"baseUrl": base_url, "libraryId": library_id, "folderId": folder_id},
+        )
+        _require_status(settings, 200, "Audiobookshelf settings")
+        token = self._request(
+            "PUT", "/api/v1/admin/publishing/audiobookshelf/api-token", json_body={"value": api_token}
+        )
+        _require_status(token, 200, "Audiobookshelf API token")
+        enabled = self._request(
+            "PUT", "/api/v1/admin/publishing/audiobookshelf/enabled", json_body={"enabled": True}
+        )
+        _require_status(enabled, 200, "Audiobookshelf enable")
+        return _object(enabled.body, "Audiobookshelf settings")
 
     def _request(
         self,

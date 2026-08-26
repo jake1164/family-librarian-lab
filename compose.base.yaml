@@ -82,6 +82,11 @@ services:
       start_period: 5s
     volumes:
       - family-librarian-data:/data/family-librarian
+      # Always mounted, even when neither client profile is active: harmless
+      # (an unused, unread volume) and keeps this one image usable for
+      # cwa-local without a separate compose file, matching what --profile
+      # brings up.
+      - cwa-ingest:/cwa-ingest
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,7 +95,75 @@ services:
       clamav:
         condition: service_healthy
 
+  cwa:
+    profiles: [cwa-local, cwa-sftp-key, cwa-sftp-password]
+    image: ${FAMILY_LIBRARIAN_CWA_IMAGE:-crocodilestick/calibre-web-automated:latest}
+    environment:
+      # Matches family-librarian's own non-root app user (the .NET base
+      # image's built-in $APP_UID) so both containers can write into the
+      # shared cwa-ingest volume -- a mismatch here fails LocalCwaIngestTransport
+      # with "Access to the path ... is denied." (confirmed for real).
+      PUID: 1654
+      PGID: 1654
+      TZ: Etc/UTC
+    ports:
+      - "${FAMILY_LIBRARIAN_CWA_HOST_PORT:-18083}:8083"
+    volumes:
+      - cwa-config:/config
+      - cwa-library:/calibre-library
+      # Same named volume family-librarian writes into above -- this is the
+      # shared ingest transport CWA-L-02 exercises, not two separate copies.
+      - cwa-ingest:/cwa-book-ingest
+
+  abs:
+    profiles: [abs]
+    image: ${FAMILY_LIBRARIAN_ABS_IMAGE:-advplyr/audiobookshelf:latest}
+    ports:
+      - "${FAMILY_LIBRARIAN_ABS_HOST_PORT:-18378}:80"
+    volumes:
+      - abs-config:/config
+      - abs-metadata:/metadata
+      - abs-audiobooks:/audiobooks
+
+  # Both sftp-* services write into the SAME cwa-ingest volume `cwa` already
+  # mounts at /cwa-book-ingest for cwa-local -- a file that arrives via SFTP
+  # becomes visible to CWA's importer no differently than one written
+  # directly, matching the design doc's "CWA sees the same backing ingest
+  # volume" topology. Only one of these two profiles is active per run, so
+  # the shared chroot upload subdir is never written by both at once. No host
+  # port: Family Librarian reaches these over the Compose network by service
+  # name, and there is no manual-testing need to reach them from the host.
+  sftp-key:
+    profiles: [cwa-sftp-key]
+    image: ${FAMILY_LIBRARIAN_SFTP_IMAGE:-atmoz/sftp:alpine}
+    volumes:
+      - cwa-ingest:/home/cwaftp/upload
+      - ${FAMILY_LIBRARIAN_SFTP_KEY_DIR:?Set FAMILY_LIBRARIAN_SFTP_KEY_DIR in lab.env}:/home/cwaftp/.ssh/keys:ro
+      # atmoz/sftp only chowns a home subdirectory when IT creates it; a
+      # pre-existing Docker-volume mount point at the same path (cwa-ingest,
+      # shared with `cwa`) stays root-owned, so writes fail "Permission
+      # denied" without this (confirmed for real against a live container).
+      - ./docker/sftp/fix-ingest-permissions.sh:/etc/sftp.d/fix-ingest-permissions.sh:ro
+    # Empty password field disables password auth for this user, relying
+    # solely on the mounted public key -- atmoz/sftp's documented syntax for
+    # key-only accounts. uid:gid match CWA's own PUID/PGID (see `cwa` above).
+    command: cwaftp::1654:1654:upload
+
+  sftp-password:
+    profiles: [cwa-sftp-password]
+    image: ${FAMILY_LIBRARIAN_SFTP_IMAGE:-atmoz/sftp:alpine}
+    volumes:
+      - cwa-ingest:/home/cwaftp/upload
+      - ./docker/sftp/fix-ingest-permissions.sh:/etc/sftp.d/fix-ingest-permissions.sh:ro
+    command: cwaftp:${FAMILY_LIBRARIAN_SFTP_PASSWORD:?Set FAMILY_LIBRARIAN_SFTP_PASSWORD in lab.env}:1654:1654:upload
+
 volumes:
   postgres-data:
   clamav-data:
   family-librarian-data:
+  cwa-ingest:
+  cwa-config:
+  cwa-library:
+  abs-config:
+  abs-metadata:
+  abs-audiobooks:

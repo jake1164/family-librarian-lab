@@ -27,7 +27,98 @@ def eicar_epub() -> bytes:
     return _build_epub(chapter_text=EICAR_TEST_STRING.decode("ascii"))
 
 
-def _build_epub(*, chapter_text: str) -> bytes:
+def invalid_epub() -> bytes:
+    """Return a ZIP-shaped EPUB that fails structural EPUB validation.
+
+    The HTTP upload boundary rightly rejects arbitrary non-ZIP bytes before
+    they become a MediaAsset.  This fixture gets past that shallow signature
+    check so the real security pipeline records its scanner and validator
+    evidence before rejecting the malformed package.
+    """
+    output = BytesIO()
+    with ZipFile(output, "w") as archive:
+        _write(archive, "mimetype", b"application/epub+zip", ZIP_STORED)
+        _write(
+            archive,
+            "META-INF/container.xml",
+            b'<?xml version="1.0" encoding="UTF-8"?>\n'
+            b'<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            b'<rootfiles><rootfile full-path="OEBPS/content.opf" '
+            b'media-type="application/oebps-package+xml"/></rootfiles></container>',
+            ZIP_DEFLATED,
+        )
+        _write(archive, "OEBPS/content.opf", b"This is deliberately not OPF XML.", ZIP_DEFLATED)
+    return output.getvalue()
+
+
+def identity_mismatched_epub() -> bytes:
+    """Return a well-formed EPUB whose package metadata is not The Hobbit."""
+    return _build_epub(
+        chapter_text="A valid fixture whose package identity must not match the requested work.",
+        title="A Tale of Two Cities",
+        author="Charles Dickens",
+        identifier="urn:uuid:family-librarian-lab-mismatch",
+    )
+
+
+def large_epub() -> bytes:
+    """Return a valid EPUB large enough to observe a real handoff in flight.
+
+    The deliberately incompressible stored payload prevents ZIP compression
+    from turning a nominally large synthetic fixture into a few kilobytes.
+    It remains comfortably below the lab ClamAV stream limit.
+    """
+    return _build_epub(
+        chapter_text="A deterministic large-fixture chapter.",
+        extra_payload=bytes(range(256)) * (128 * 1024),  # 32 MiB
+    )
+
+
+def clean_audiobook() -> bytes:
+    """Return a deterministic, genuinely ffprobe-decodable MP3 (repeated
+    MPEG-1 Layer III frame headers -- silent, not intended for listening).
+
+    A bare ID3v2 tag or arbitrary bytes with a ".mp3" extension is not
+    enough: Audiobookshelf's own scanner runs ffprobe against the real
+    content and drops the file with "Invalid data found when processing
+    input" if it can't decode a stream (confirmed against a real
+    Audiobookshelf instance) -- matching
+    FamilyLibrarian.Infrastructure.Acquisition.SignatureFileTypeDetector's
+    own bare-MPEG-frame-sync magic-byte check on Family Librarian's side.
+    """
+    # MPEG-1 Layer III, 128kbps, 44100Hz, mono, no CRC, no padding.
+    frame_header = bytes([0xFF, 0xFB, 0x90, 0xC0])
+    frame_size = 417  # floor(144 * 128000 / 44100)
+    frame = frame_header + b"\x00" * (frame_size - len(frame_header))
+    return frame * 20  # ~0.5s -- enough for a duration ffprobe can report
+
+
+def malformed_audiobook() -> bytes:
+    """Return bytes that cannot pass Family Librarian's audio type gate.
+
+    Keeping this distinct from the valid MP3 fixture makes ABS-07 prove that
+    an explicitly rejected audio submission has no publishing side effect.
+    """
+    return b"This is deliberately not an MP3 or any other supported audio format."
+
+
+def multi_track_audiobook() -> tuple[tuple[str, bytes], ...]:
+    """Return ordered, independently decodable tracks for bundle scenarios."""
+    return (
+        ("01-the-hobbit.mp3", clean_audiobook()),
+        ("02-the-hobbit.mp3", clean_audiobook()),
+        ("03-the-hobbit.mp3", clean_audiobook()),
+    )
+
+
+def _build_epub(
+    *,
+    chapter_text: str,
+    title: str = "The Hobbit",
+    author: str = "J. R. R. Tolkien",
+    identifier: str = "urn:uuid:family-librarian-lab-the-hobbit",
+    extra_payload: bytes | None = None,
+) -> bytes:
     output = BytesIO()
     with ZipFile(output, "w") as archive:
         _write(archive, "mimetype", b"application/epub+zip", ZIP_STORED)
@@ -46,11 +137,11 @@ def _build_epub(*, chapter_text: str) -> bytes:
             b'<?xml version="1.0" encoding="UTF-8"?>\n'
             b'<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">'
             b'<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
-            b'<dc:identifier id="book-id">urn:uuid:family-librarian-lab-the-hobbit</dc:identifier>'
-            b'<dc:title>The Hobbit</dc:title><dc:creator>J. R. R. Tolkien</dc:creator>'
-            b'<dc:language>en</dc:language></metadata><manifest>'
-            b'<item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>'
-            b'</manifest><spine><itemref idref="chapter"/></spine></package>',
+            + f'<dc:identifier id="book-id">{identifier}</dc:identifier>'.encode("utf-8")
+            + f'<dc:title>{title}</dc:title><dc:creator>{author}</dc:creator>'.encode("utf-8")
+            + b'<dc:language>en</dc:language></metadata><manifest>'
+            + b'<item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>'
+            + b'</manifest><spine><itemref idref="chapter"/></spine></package>',
             ZIP_DEFLATED,
         )
         chapter = (
@@ -59,6 +150,8 @@ def _build_epub(*, chapter_text: str) -> bytes:
             f"<body><p>{chapter_text}</p></body></html>"
         ).encode("utf-8")
         _write(archive, "OEBPS/chapter.xhtml", chapter, ZIP_DEFLATED)
+        if extra_payload is not None:
+            _write(archive, "OEBPS/transfer-observer.bin", extra_payload, ZIP_STORED)
     return output.getvalue()
 
 
