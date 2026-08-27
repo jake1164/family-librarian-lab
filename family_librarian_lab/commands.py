@@ -758,19 +758,25 @@ def handle_build(args: argparse.Namespace, config: object) -> int:
     configure=_configure_up,
 )
 def handle_up(args: argparse.Namespace, config: object) -> int:
-    _checkout_source(args.target)
-    values = _load_lab_env()
-    project_name = lab_common.project_name()
-    profiles = (PROFILE, *args.profile)
-    _run_or_exit(values, project_name, "up", "--build", "--wait", "--remove-orphans", profiles=profiles)
-    checks, passed = _readiness(values, project_name)
-    if not passed:
-        print(json.dumps(checks, indent=2), file=sys.stderr)
-        raise SystemExit("Base profile failed readiness checks after 'up'.")
+    # Only guards this command's own setup against overlapping another
+    # concurrent `up`/`run` on the same shared DEFAULT_HOST_PORT -- the lock
+    # releases once setup finishes; the stack itself is deliberately left
+    # running for manual testing (see './lab base down' below), independent
+    # of this invocation's lifetime.
+    with lab_common.run_lock(label="lab up"):
+        _checkout_source(args.target)
+        values = _load_lab_env()
+        project_name = lab_common.project_name()
+        profiles = (PROFILE, *args.profile)
+        _run_or_exit(values, project_name, "up", "--build", "--wait", "--remove-orphans", profiles=profiles)
+        checks, passed = _readiness(values, project_name)
+        if not passed:
+            print(json.dumps(checks, indent=2), file=sys.stderr)
+            raise SystemExit("Base profile failed readiness checks after 'up'.")
 
-    api = FamilyLibrarianApi(_host_base(values))
-    api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
-    cwa_client, abs_client, sftp_wiring = _wire_destinations(values, profiles, api)
+        api = FamilyLibrarianApi(_host_base(values))
+        api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+        cwa_client, abs_client, sftp_wiring = _wire_destinations(values, profiles, api)
 
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
     if cwa_client is not None:
@@ -864,46 +870,55 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         selector = f" and case {args.case!r}" if args.case else ""
         raise SystemExit(f"No suites found for group {args.test_group!r}{selector}.")
 
-    if not args.skip_build:
-        _checkout_source(args.target)
-    values = _load_lab_env()
-    if not args.skip_build:
-        build_project = lab_common.project_name()
-        _run_or_exit(values, build_project, "build", "family-librarian", "migrate")
+    # Every scenario reuses the same fixed DEFAULT_HOST_PORT regardless of
+    # its own unique, timestamped Compose project name -- a second `run`
+    # overlapping this one, or a stale container this one's own teardown
+    # never reached (killed mid-run, crashed), collides on that port with a
+    # raw, confusing Docker bind error instead of a clear "already running"
+    # message. See se-lab's agent.common.run_lock() for the full rationale.
+    with lab_common.run_lock(label="lab run"):
+        if not args.skip_build:
+            _checkout_source(args.target)
+        values = _load_lab_env()
+        if not args.skip_build:
+            build_project = lab_common.project_name()
+            _run_or_exit(values, build_project, "build", "family-librarian", "migrate")
 
-    selector = args.case.lower() if args.case else args.test_group
-    run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}-suites-{selector}"
-    run_directory = RESULTS_ROOT / run_id
-    run_directory.mkdir(parents=True, exist_ok=False)
+        selector = args.case.lower() if args.case else args.test_group
+        run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}-suites-{selector}"
+        run_directory = RESULTS_ROOT / run_id
+        run_directory.mkdir(parents=True, exist_ok=False)
 
-    all_results = []
-    failed = False
-    for profiles, group_suites in _group_suites_by_profile(suites):
-        factory = _BaseScenarioFactory(values, keep=args.keep, profiles=profiles)
-        summary = run_suites(group_suites, results_dir=run_directory, label="Family Librarian Lab", scenario_factory=factory)
-        all_results.extend(summary.results)
-        failed = failed or summary.failed
+        all_results = []
+        failed = False
+        for profiles, group_suites in _group_suites_by_profile(suites):
+            factory = _BaseScenarioFactory(values, keep=args.keep, profiles=profiles)
+            summary = run_suites(
+                group_suites, results_dir=run_directory, label="Family Librarian Lab", scenario_factory=factory
+            )
+            all_results.extend(summary.results)
+            failed = failed or summary.failed
 
-    report = {
-        "run_id": run_id,
-        "profile": PROFILE,
-        "group": args.test_group,
-        "case": args.case,
-        "outcome": "fail" if failed else "pass",
-        "suites": [
-            {
-                "suite": result.suite_name,
-                "expected": result.expected,
-                "actual": result.actual,
-                "setup_ok": result.setup_ok,
-                "setup_error": result.setup_error,
-                "drifted": result.drifted,
-                "result": f"results-{result.suite_name}.json",
-            }
-            for result in all_results
-        ],
-    }
-    summary_path = run_directory / "results-suite-run.json"
-    summary_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"Suite result captured: {summary_path}", flush=True)
-    return 1 if failed else 0
+        report = {
+            "run_id": run_id,
+            "profile": PROFILE,
+            "group": args.test_group,
+            "case": args.case,
+            "outcome": "fail" if failed else "pass",
+            "suites": [
+                {
+                    "suite": result.suite_name,
+                    "expected": result.expected,
+                    "actual": result.actual,
+                    "setup_ok": result.setup_ok,
+                    "setup_error": result.setup_error,
+                    "drifted": result.drifted,
+                    "result": f"results-{result.suite_name}.json",
+                }
+                for result in all_results
+            ],
+        }
+        summary_path = run_directory / "results-suite-run.json"
+        summary_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print(f"Suite result captured: {summary_path}", flush=True)
+        return 1 if failed else 0
