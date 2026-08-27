@@ -109,6 +109,17 @@ class FamilyLibrarianApi:
         _require_status(response, 200, "CWA OPDS probe")
         return _object(response.body, "CWA OPDS probe")
 
+    def test_cwa(self) -> dict[str, Any]:
+        """Tests the *saved* CWA configuration (ingest + OPDS combined) and
+        records the result on the settings row -- the only probe that feeds
+        the enablement invariant (docs/01 §12.1.1): enabling CWA requires
+        LastTestSucceeded to be true for the currently saved configuration.
+        Unlike test_cwa_ingest()/test_cwa_opds(), this takes no request body --
+        it always tests what's already saved, never a draft/candidate config."""
+        response = self._request("POST", "/api/v1/admin/publishing/cwa/test", json_body={})
+        _require_status(response, 200, "CWA connection test")
+        return _object(response.body, "CWA connection test")
+
     def audiobookshelf_settings(self) -> dict[str, Any]:
         response = self._request("GET", "/api/v1/admin/publishing/audiobookshelf/")
         _require_status(response, 200, "Audiobookshelf settings")
@@ -208,6 +219,14 @@ class FamilyLibrarianApi:
             "PUT", "/api/v1/admin/publishing/cwa/opds-password", json_body={"value": opds_password}
         )
         _require_status(password, 200, "CWA OPDS password")
+
+        # Enabling requires a passing test for this exact saved configuration
+        # (docs/01 §12.1.1's enablement invariant) -- test_cwa_ingest()/
+        # test_cwa_opds() above don't count, they only probe drafts.
+        probe = self.test_cwa()
+        if not probe.get("succeeded"):
+            raise AssertionError(f"CWA connection test did not succeed before enabling: {probe!r}")
+
         enabled = self._request(
             "PUT", "/api/v1/admin/publishing/cwa/enabled", json_body={"enabled": True}
         )
@@ -301,6 +320,14 @@ class FamilyLibrarianApi:
         if not trusted_probe.get("succeeded"):
             raise AssertionError(f"SFTP ingest probe failed after trusting its host key: {trusted_probe!r}")
 
+        # Enabling requires a passing test for this exact saved configuration
+        # (docs/01 §12.1.1's enablement invariant) -- the ingest probes above
+        # test drafts and don't count, and the OPDS side has never been probed
+        # against the saved settings yet either.
+        connection_test = self.test_cwa()
+        if not connection_test.get("succeeded"):
+            raise AssertionError(f"CWA connection test did not succeed before enabling: {connection_test!r}")
+
         enabled = self._request("PUT", "/api/v1/admin/publishing/cwa/enabled", json_body={"enabled": True})
         _require_status(enabled, 200, "CWA enable")
 
@@ -308,6 +335,7 @@ class FamilyLibrarianApi:
             "settings": _object(enabled.body, "CWA settings"),
             "untrusted_probe": untrusted_probe,
             "trusted_probe": trusted_probe,
+            "connection_test": connection_test,
         }
 
     def configure_audiobookshelf(

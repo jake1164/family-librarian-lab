@@ -7,6 +7,7 @@ from typing import Callable
 
 from agent.suites import suite
 
+from family_librarian_lab.api import ApiResponse
 from family_librarian_lab.fixtures import clean_epub, large_epub
 from family_librarian_lab import clients
 
@@ -342,6 +343,146 @@ def existing_cwa_item_is_reported_as_owned(ctx, scenario_factory):
             return {"work_id": work_id, "opds_book_id": book_ids[0], "fulfillment_option": owned}
 
     _run(ctx, "CWA-L-07", operation)
+
+
+@SUITE.case("CWA-L-08")
+def enabling_requires_opds_url_and_a_passing_test(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("CWA-L-08") as scenario:
+            if scenario.cwa_client is None:
+                raise AssertionError("Scenario did not bring up a CWA destination.")
+
+            # Scenario setup already configured, tested, and enabled CWA via
+            # configure_cwa_local() -- this proves the enablement invariant
+            # (docs/01 §12.1.1: an OPDS connection is required in every CWA
+            # deployment, independent of ingest transport, and enabling
+            # requires a *passing* test for the *currently saved*
+            # configuration) is actually enforced, not just satisfiable once
+            # at setup. Changing a setting resets the recorded test result
+            # (CwaSettings.ResetTestResult()), which is what re-triggers it.
+            settings = scenario.api.cwa_settings()
+            local_ingest_path = settings.get("localIngestPath")
+            opds_username = settings.get("opdsUsername")
+            if not isinstance(local_ingest_path, str):
+                raise AssertionError(f"Scenario setup left no local ingest path configured: {settings!r}")
+
+            def put_settings(*, opds_base_url: str | None) -> ApiResponse:
+                return scenario.api._request(  # noqa: SLF001 - need the raw status/body for the rejection assertions below
+                    "PUT",
+                    "/api/v1/admin/publishing/cwa/",
+                    json_body={
+                        "transportMode": "Local",
+                        "localIngestPath": local_ingest_path,
+                        "sftpHost": None,
+                        "sftpPort": None,
+                        "sftpUsername": None,
+                        "sftpIngestPath": None,
+                        "sftpAuthenticationMode": "PrivateKey",
+                        "opdsBaseUrl": opds_base_url,
+                        "opdsUsername": opds_username,
+                    },
+                )
+
+            def put_enabled() -> ApiResponse:
+                return scenario.api._request(  # noqa: SLF001
+                    "PUT", "/api/v1/admin/publishing/cwa/enabled", json_body={"enabled": True}
+                )
+
+            cleared = put_settings(opds_base_url=None)
+            if cleared.status != 200:
+                raise AssertionError(f"Could not clear the OPDS URL to set up the test: {cleared!r}")
+
+            rejected_no_opds = put_enabled()
+            if rejected_no_opds.status != 400:
+                raise AssertionError(f"Expected enabling without an OPDS URL to be rejected: {rejected_no_opds!r}")
+            no_opds_errors = _cwa_validation_errors(rejected_no_opds.body)
+            if not any("OPDS catalog URL is required" in message for message in no_opds_errors):
+                raise AssertionError(f"Expected the OPDS-required message, got {no_opds_errors!r}")
+
+            restored = put_settings(opds_base_url=clients.CWA_INTERNAL_URL)
+            if restored.status != 200:
+                raise AssertionError(f"Could not restore the OPDS URL: {restored!r}")
+
+            rejected_untested = put_enabled()
+            if rejected_untested.status != 400:
+                raise AssertionError(f"Expected enabling before re-testing to be rejected: {rejected_untested!r}")
+            untested_errors = _cwa_validation_errors(rejected_untested.body)
+            if not any("Test the connection" in message for message in untested_errors):
+                raise AssertionError(f"Expected the untested-connection message, got {untested_errors!r}")
+
+            tested = scenario.api.test_cwa()
+            if not tested.get("succeeded"):
+                raise AssertionError(f"CWA connection test did not succeed after restoring settings: {tested!r}")
+
+            enabled = put_enabled()
+            if enabled.status != 200:
+                raise AssertionError(f"Expected enabling after a passing test to succeed: {enabled!r}")
+
+            return {
+                "no_opds_errors": no_opds_errors,
+                "untested_errors": untested_errors,
+                "final_status": enabled.body,
+            }
+
+    _run(ctx, "CWA-L-08", operation)
+
+
+@SUITE.case("CWA-L-09")
+def opds_test_reports_an_unreachable_host(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("CWA-L-09") as scenario:
+            if scenario.cwa_client is None:
+                raise AssertionError("Scenario did not bring up a CWA destination.")
+
+            probe = scenario.api.test_cwa_opds(
+                {
+                    # A name Docker's embedded DNS cannot resolve inside the
+                    # Compose network -- CwaConnectionTester.TestOpdsAsync
+                    # wraps this as HttpRequestException, not a raw crash.
+                    "opdsBaseUrl": "http://cwa-does-not-exist.invalid:8083",
+                    "opdsUsername": None,
+                    "opdsPassword": None,
+                }
+            )
+            if probe.get("succeeded"):
+                raise AssertionError(f"Expected the OPDS probe against an unreachable host to fail: {probe!r}")
+            message = str(probe.get("message", ""))
+            if "unreachable" not in message.lower():
+                raise AssertionError(f"Expected an 'unreachable' message, got {message!r}")
+            return {"probe": probe}
+
+    _run(ctx, "CWA-L-09", operation)
+
+
+@SUITE.case("CWA-L-10")
+def opds_test_reports_a_rejected_credential(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("CWA-L-10") as scenario:
+            if scenario.cwa_client is None:
+                raise AssertionError("Scenario did not bring up a CWA destination.")
+
+            probe = scenario.api.test_cwa_opds(
+                {
+                    "opdsBaseUrl": clients.CWA_INTERNAL_URL,
+                    "opdsUsername": clients.CWA_DEFAULT_USERNAME,
+                    "opdsPassword": "definitely-the-wrong-password",
+                }
+            )
+            if probe.get("succeeded"):
+                raise AssertionError(f"Expected the OPDS probe with a wrong password to fail: {probe!r}")
+            return {"probe": probe}
+
+    _run(ctx, "CWA-L-10", operation)
+
+
+def _cwa_validation_errors(body: object) -> list[str]:
+    if not isinstance(body, dict):
+        return []
+    errors = body.get("errors")
+    if not isinstance(errors, dict):
+        return []
+    cwa_errors = errors.get("cwa")
+    return [str(message) for message in cwa_errors] if isinstance(cwa_errors, list) else []
 
 
 def _find_library_import(queue: dict[str, object], request_id: str) -> dict[str, object] | None:
