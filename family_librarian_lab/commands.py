@@ -24,6 +24,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 from agent import common as lab_common, registry
+from agent.planning import RunPlan
 from agent.suites import Suite, discover_suites, run_suites, select_suites
 
 from family_librarian_lab import clients
@@ -83,6 +84,9 @@ def _configure_run(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--case", default=None, help="Run one registered case id (for example SEC-02)")
     parser.add_argument("--keep", action="store_true", help="Keep each failed/successful scenario project for investigation")
     parser.add_argument("--skip-build", action="store_true", help="Use the existing Family Librarian image without rebuilding it")
+    parser.add_argument(
+        "--yes", "-y", action="store_true", help="Skip the run-plan confirmation prompt (for CI/automation)"
+    )
 
 
 def _validate_run_options(args: argparse.Namespace) -> None:
@@ -866,6 +870,36 @@ def _group_suites_by_profile(suites: list[Suite]) -> list[tuple[tuple[str, ...],
     return [(key, buckets[key]) for key in order]
 
 
+def _describe_run_plan(args: argparse.Namespace) -> RunPlan:
+    plan = RunPlan(label="Family Librarian Lab", host=lab_common.current_hostname())
+    if lab_common.is_git_checkout(lab_common.repo_dir()):
+        branch = lab_common.repo_current_branch() or "detached"
+        commit = lab_common.repo_head_commit(short=True) or "unknown"
+        plan.add("Current checkout", f"branch={branch} commit={commit}")
+    else:
+        plan.add("Current checkout", "none yet")
+
+    if args.skip_build:
+        plan.add("Resolved source", "existing image (no checkout/build)")
+        plan.add("Source action", "reuse currently built image")
+    elif args.target:
+        plan.add("Resolved source", f"branch or tag {args.target!r}")
+        plan.add("Source action", "fetch origin, checkout/reset, build image")
+    else:
+        plan.add("Resolved source", "refresh current branch")
+        plan.add("Source action", "fetch origin, fast-forward current branch, build image")
+
+    selection = f"group {args.test_group}"
+    if args.case:
+        selection += f", case {args.case}"
+    plan.add("Suites", selection)
+    plan.add(
+        "Scenario cleanup",
+        "keep each scenario project (--keep)" if args.keep else "remove each scenario project after its case",
+    )
+    return plan
+
+
 @registry.command(
     "run",
     help="Run black-box integration suites against fresh, isolated base-profile projects",
@@ -873,6 +907,9 @@ def _group_suites_by_profile(suites: list[Suite]) -> list[tuple[tuple[str, ...],
 )
 def handle_run(args: argparse.Namespace, config: object) -> int:
     _validate_run_options(args)
+    if not _describe_run_plan(args).confirm(assume_yes=args.yes):
+        print("Aborted.", flush=True)
+        return 1
     suites = select_suites(discover_suites(TESTS_ROOT), group=args.test_group, case=args.case)
     if not suites:
         selector = f" and case {args.case!r}" if args.case else ""
