@@ -292,9 +292,26 @@ class _CwaIngestObserver:
 def _run_or_exit(
     values: dict[str, str], project_name: str, *arguments: str, profiles: Sequence[str] = (PROFILE,)
 ) -> None:
+    """Run a compose command; raise with a clear message on failure.
+
+    A plain Exception, not SystemExit -- SystemExit(result.returncode) used
+    to be raised here, and two things about that were both wrong at once:
+    an int SystemExit prints nothing at all (confirmed for real: a scenario's
+    `up` failing this way looked like the whole run silently vanished, with
+    the dashboard's own teardown the only visible trace), and SystemExit is a
+    BaseException se-lab's run_suite() deliberately does not catch (so one
+    case's bug can't crash the whole run) -- it killed the entire `run`
+    instead of getting recorded as a failed test/setup like every other
+    scenario failure, e.g. the AssertionError two lines below in
+    _BaseScenario.__enter__. _compose() already prints the actual docker
+    output above this by the time it's raised.
+    """
     result = _compose(values, project_name, *arguments, profiles=profiles)
     if result.returncode:
-        raise SystemExit(result.returncode)
+        raise RuntimeError(
+            f"`docker compose {' '.join(arguments)}` failed for project {project_name!r} "
+            f"(exit {result.returncode}); see output above."
+        )
 
 
 def _host_base(values: dict[str, str]) -> str:
