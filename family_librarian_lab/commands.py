@@ -24,7 +24,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 from agent import common as lab_common, registry
-from agent.planning import RunPlan
+from agent.planning import RunPlan, RunReport
 from agent.suites import Suite, discover_suites, run_suites, select_suites
 
 from family_librarian_lab import clients
@@ -910,6 +910,7 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
     if not _describe_run_plan(args).confirm(assume_yes=args.yes):
         print("Aborted.", flush=True)
         return 1
+    started_at = datetime.now(UTC)
     suites = select_suites(discover_suites(TESTS_ROOT), group=args.test_group, case=args.case)
     if not suites:
         selector = f" and case {args.case!r}" if args.case else ""
@@ -966,4 +967,18 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         summary_path = run_directory / "results-suite-run.json"
         summary_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"Suite result captured: {summary_path}", flush=True)
+
+        completed_at = datetime.now(UTC)
+        run_report = RunReport(label="Family Librarian Lab")
+        if lab_common.is_git_checkout(lab_common.repo_dir()):
+            branch = lab_common.repo_current_branch() or "detached"
+            commit = lab_common.repo_head_commit(short=True) or "unknown"
+            run_report.add("Source", f"branch {branch}")
+            run_report.add("Lab commit", commit)
+        run_report.add("Started at UTC", started_at.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        run_report.add("Completed at UTC", completed_at.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        run_report.add("Duration", lab_common.format_duration(int((completed_at - started_at).total_seconds())))
+        run_report.add("Result", "FAIL" if failed else "PASS")
+        run_report.print()
+
         return 1 if failed else 0
