@@ -1,15 +1,39 @@
-"""Base-profile deployment and real ClamAV security-gate scenarios."""
+"""Base-profile deployment and real ClamAV security-gate scenarios.
+
+Every case here needs a real, ready CWA destination now, even though this
+suite's whole point is testing the security/malware pipeline independent of
+publishing: BookRequestService.CreateRequestAsync (app commit acb1ff7,
+"Implemented by-check cleanup") added a FormatReadinessService gate that
+rejects creating a request at all -- HTTP 400, before any upload happens --
+unless a ready destination exists for that media type. `extra_profiles`
+brings up a real `cwa` container so every case's own scenario factory can
+auto-enable it (`_wire_destinations()`), same as `base-restart`; unlike that
+suite, `cwa` is left running (not stopped) here, since these cases don't need
+CWA unavailable, just ready.
+
+That has one real behavioral consequence beyond satisfying the gate:
+CwaPublishingService.PublishAsync now actually publishes any asset that
+reaches Trusted storage (`MediaAssetPublishingCoordinator` dispatches every
+Trusted asset there), where before, with no destination at all, a clean
+upload's LibraryImport/delivery queue stayed empty by construction. SEC-01
+below is the only case that changes because of it -- SEC-02/03/04 all end in
+a non-Trusted state (Rejected, blocked-before-evaluation, or Unmatched) that
+never reaches the publish coordinator, so their existing "no destination
+record" assertions still hold exactly as before.
+"""
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 from agent.suites import suite
 
+from family_librarian_lab import clients
 from family_librarian_lab.fixtures import clean_epub, eicar_epub, identity_mismatched_epub, invalid_epub
 
 
-SUITE = suite("base-security", group="base", order=10)
+SUITE = suite("base-security", group="base", order=10, extra_profiles=(clients.CWA_PROFILE,))
 
 
 def _run(ctx, test_id: str, operation: Callable[[], dict[str, object]]) -> None:
@@ -60,16 +84,23 @@ def fresh_state_isolation(ctx, scenario_factory):
 # test_base_restart.py, not here: it needs a real, then-stopped CWA
 # destination to reach the AwaitingVerification state it asserts on
 # (CwaPublishingService.PublishAsync no-ops entirely when CWA isn't enabled,
-# and enabling requires a real passing OPDS test -- see CWA-L-08), which
-# would wire CWA into every case in this suite's shared scenario bucket if
-# it stayed here. SEC-01/SEC-02 already broke exactly that way once before
-# under a single blanket-profile factory (see _group_suites_by_profile).
+# and enabling requires a real passing OPDS test -- see CWA-L-08). It's a
+# separate suite (with its own extra_profiles) rather than a case here so
+# SEC-01/SEC-02, which assert no destination is configured, can never pick up
+# CWA's wiring -- sharing one factory pointed at a single fixed profile set
+# for a whole run already broke them exactly that way once before (see
+# handle_run()'s _scoped_for_run(), which now points the shared factory at
+# each suite's own required profile(s) only while that suite's own
+# setup/case/teardown is actually running).
 
 
 @SUITE.case("SEC-01")
 def clean_epub_passes_real_security_gate(ctx, scenario_factory):
     def operation() -> dict[str, object]:
         with scenario_factory("SEC-01") as scenario:
+            if scenario.cwa_client is None:
+                raise AssertionError("Scenario did not bring up a CWA destination.")
+
             request_id, format_id = scenario.api.create_demo_ebook_request()
             uploaded = scenario.api.upload_manual_epub(request_id, format_id, clean_epub(), "clean-the-hobbit.epub")
             if uploaded.status != 200 or not isinstance(uploaded.body, dict):
@@ -79,10 +110,15 @@ def clean_epub_passes_real_security_gate(ctx, scenario_factory):
                 raise AssertionError("Clean EPUB success response did not contain a media asset id.")
             if any(asset.get("assetId") == asset_id for asset in scenario.api.list_assets()):
                 raise AssertionError("Clean EPUB remained in the active security queue after successful evaluation.")
-            queue = scenario.api.publishing_queue()
-            if queue.get("libraryImports") or queue.get("deliveries"):
-                raise AssertionError("Base profile created a destination record although it has no configured destination.")
-            return {"asset_id": asset_id, "active_security_queue": "absent after success"}
+
+            # A Trusted asset now genuinely gets published (see the module
+            # docstring): this is the real publish pipeline, same as
+            # CWA-L-01/02, checked here mainly because FormatReadinessService
+            # requires this destination to exist just to create the request.
+            library_import = _poll_library_import(scenario.api, request_id, timeout_seconds=90)
+            if library_import is None:
+                raise AssertionError("Clean EPUB did not reach a published LibraryImport with a ready CWA destination.")
+            return {"asset_id": asset_id, "library_import_id": library_import.get("id")}
 
     _run(ctx, "SEC-01", operation)
 
@@ -203,14 +239,22 @@ def _find_asset(assets: list[dict[str, Any]], asset_id: object) -> dict[str, Any
     return asset
 
 
-def _find_library_import(queue: dict[str, Any], request_id: str) -> dict[str, Any]:
+def _find_library_import(queue: dict[str, Any], request_id: str) -> dict[str, Any] | None:
     imports = queue.get("libraryImports")
     if not isinstance(imports, list):
         raise AssertionError("Publishing queue did not contain library imports.")
-    library_import = next((item for item in imports if item.get("requestId") == request_id), None)
-    if not isinstance(library_import, dict):
-        raise AssertionError("Publishing queue did not retain a LibraryImport for the request.")
-    return library_import
+    return next((item for item in imports if item.get("requestId") == request_id), None)
+
+
+def _poll_library_import(api, request_id: str, *, timeout_seconds: float) -> dict[str, Any] | None:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        library_import = _find_library_import(api.publishing_queue(), request_id)
+        if library_import is not None and library_import.get("status") == "Available":
+            return library_import
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(2)
 
 
 def _require_evaluation(asset: dict[str, Any]) -> dict[str, Any]:

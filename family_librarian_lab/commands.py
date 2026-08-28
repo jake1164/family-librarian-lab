@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import json
 import os
 import re
@@ -16,7 +17,7 @@ import select
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Sequence
@@ -25,7 +26,7 @@ from urllib.request import urlopen
 
 from agent import common as lab_common, registry
 from agent.planning import RunPlan, RunReport
-from agent.suites import Suite, discover_suites, run_suites, select_suites
+from agent.suites import CaseFunc, Suite, discover_suites, run_suites, select_suites
 
 from family_librarian_lab import clients
 from family_librarian_lab.api import FamilyLibrarianApi
@@ -746,13 +747,68 @@ done
 
 
 class _BaseScenarioFactory:
-    def __init__(self, values: dict[str, str], *, keep: bool, profiles: Sequence[str] = ()) -> None:
+    """Builds each case's isolated scenario using whichever compose
+    profile(s) are currently active -- see `_scoped_for_run()`, which sets
+    `active_profiles` to the right value for whatever suite is executing
+    right now before each of its setup/case/teardown calls runs.
+
+    This indirection (rather than keying a lookup table by test_id) is what
+    lets `handle_run()` pass an entire mixed selection -- suites needing
+    different real destinations -- to a single `run_suites()` call, so
+    se-lab's dashboard/summary can track progress across the whole selection
+    in one continuous run (see m3undle_lab's 22-suite run) instead of
+    family-librarian-lab splitting it into several separate `run_suites()`
+    calls (and several separate dashboards) just because some suites need
+    `cwa-local`/`abs`/etc. and others don't. A plain test_id-keyed table
+    can't do this safely: test_id isn't unique across suites (CWA-S-02
+    exists in both the cwa-sftp-key and cwa-sftp-password suites, each
+    needing a different profile), so two suites in the same selection can
+    legitimately want the same test_id to mean different profiles.
+    """
+
+    def __init__(self, values: dict[str, str], *, keep: bool) -> None:
         self._values = values
         self._keep = keep
-        self._profiles = profiles
+        self.active_profiles: tuple[str, ...] = ()
 
     def __call__(self, test_id: str) -> _BaseScenario:
-        return _BaseScenario(self._values, test_id, keep=self._keep, profiles=self._profiles)
+        return _BaseScenario(self._values, test_id, keep=self._keep, profiles=self.active_profiles)
+
+
+def _scoped_for_run(suites: Sequence[Suite], factory: _BaseScenarioFactory) -> list[Suite]:
+    """Returns `suites` with every setup/case/teardown function wrapped so
+    `factory.active_profiles` is set to that specific suite's own required
+    profile(s) (`_profiles_for()`) for the duration of the call, then
+    restored -- see `_BaseScenarioFactory` for why this, not a test_id-keyed
+    table, is what safely lets suites needing different destinations share
+    one `run_suites()` call. Cases run one at a time (`run_suite()` is a
+    plain for-loop, no concurrency), so a single shared mutable attribute on
+    the factory is safe."""
+
+    def _bind(func: CaseFunc, profiles: tuple[str, ...]) -> CaseFunc:
+        @functools.wraps(func)
+        def wrapped(*args: object, **kwargs: object) -> object:
+            previous = factory.active_profiles
+            factory.active_profiles = profiles
+            try:
+                return func(*args, **kwargs)
+            finally:
+                factory.active_profiles = previous
+
+        return wrapped
+
+    scoped: list[Suite] = []
+    for target in suites:
+        profiles = _profiles_for(target)
+        scoped.append(
+            replace(
+                target,
+                cases=[replace(case, func=_bind(case.func, profiles)) for case in target.cases],
+                setup_fn=_bind(target.setup_fn, profiles) if target.setup_fn is not None else None,
+                teardown_fn=_bind(target.teardown_fn, profiles) if target.teardown_fn is not None else None,
+            )
+        )
+    return scoped
 
 
 @registry.command("build", help="Check out and build Family Librarian's base-profile image", configure=_configure_checkout_target)
@@ -859,25 +915,6 @@ def _profiles_for(suite: Suite) -> tuple[str, ...]:
     return ()
 
 
-def _group_suites_by_profile(suites: list[Suite]) -> list[tuple[tuple[str, ...], list[Suite]]]:
-    """Buckets a mixed selection (e.g. `--test-group all`) by which extra profile
-    each suite's own group needs, preserving selection order within each
-    bucket. Each bucket gets its own scenario factory -- sharing one factory
-    (and its bundled destination wiring) across every suite in a mixed run
-    would enable CWA/ABS for suites that specifically assert no destination
-    is configured (confirmed for real: base-security's SEC-01/SEC-02 failed
-    exactly this way under a single blanket-profile factory)."""
-    buckets: dict[tuple[str, ...], list[Suite]] = {}
-    order: list[tuple[str, ...]] = []
-    for target in suites:
-        key = _profiles_for(target)
-        if key not in buckets:
-            buckets[key] = []
-            order.append(key)
-        buckets[key].append(target)
-    return [(key, buckets[key]) for key in order]
-
-
 def _describe_run_plan(args: argparse.Namespace) -> RunPlan:
     plan = RunPlan(label="Family Librarian Lab", host=lab_common.current_hostname())
     if lab_common.is_git_checkout(lab_common.repo_dir()):
@@ -943,15 +980,19 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         run_directory = RESULTS_ROOT / run_id
         run_directory.mkdir(parents=True, exist_ok=False)
 
-        all_results = []
-        failed = False
-        for profiles, group_suites in _group_suites_by_profile(suites):
-            factory = _BaseScenarioFactory(values, keep=args.keep, profiles=profiles)
-            summary = run_suites(
-                group_suites, results_dir=run_directory, label="Family Librarian Lab", scenario_factory=factory
-            )
-            all_results.extend(summary.results)
-            failed = failed or summary.failed
+        # One factory, one run_suites() call, regardless of how many
+        # different compose profiles the selected suites need between them
+        # -- se-lab's dashboard/summary already tracks progress across an
+        # arbitrary suite list in one continuous run (see m3undle_lab).
+        # _scoped_for_run() is what points the shared factory at each
+        # suite's own required profile(s) while that suite's own
+        # setup/case/teardown is what's actually running.
+        factory = _BaseScenarioFactory(values, keep=args.keep)
+        summary = run_suites(
+            _scoped_for_run(suites, factory), results_dir=run_directory, label="Family Librarian Lab", scenario_factory=factory
+        )
+        all_results = summary.results
+        failed = summary.failed
 
         report = {
             "run_id": run_id,

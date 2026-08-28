@@ -16,11 +16,19 @@ own scenario factory brings up a real `cwa` container and auto-wires it
 enable-then-stop pattern CWA-L-03/CWA-L-05 already use -- before doing
 anything that needs CWA to be durably *unavailable*. `group="base"` is kept
 so this still runs in the default `--test-group base` sweep; `extra_profiles`
-is what actually gets `cwa` running, independent of that group. It stays out
-of base-security's own suite/bucket so SEC-01/SEC-02 (which assert no
-destination is configured) are never touched -- sharing one factory across
-suites that need opposite CWA states already broke them once before (see
-`_group_suites_by_profile`).
+is what actually gets `cwa` running, independent of that group.
+
+It's a separate suite from base-security (which now also declares
+`extra_profiles=(clients.CWA_PROFILE,)`, for an unrelated reason -- see that
+module's own docstring) rather than a case there because the two need CWA in
+opposite states: base-security needs it left running, this needs it stopped.
+`handle_run()`'s `_scoped_for_run()` points the shared scenario factory at
+each suite's own required profile(s) only while that specific suite's own
+setup/case/teardown is running, which is what makes sharing one run (and one
+dashboard) across suites needing different destination states safe --
+sharing one *factory pointed at a single fixed profile set for the whole
+run* is what broke SEC-01/SEC-02 once before, back when base-security had no
+destination requirement of its own at all.
 """
 
 from __future__ import annotations
