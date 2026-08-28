@@ -73,6 +73,31 @@ def _configure_up(parser: argparse.ArgumentParser) -> None:
         help="Extra destination(s) to bring up and wire alongside the base profile "
         "(cwa-local, abs, cwa-sftp-key, cwa-sftp-password)",
     )
+    # RawDescriptionHelpFormatter so the example block below keeps its own
+    # line breaks/indentation instead of argparse re-wrapping it -- only
+    # affects this subparser's description/epilog, not its per-argument help
+    # text (still wrapped normally) or any other command's --help.
+    parser.formatter_class = argparse.RawDescriptionHelpFormatter
+    parser.epilog = """\
+Examples:
+  ./lab up                                # base only, refresh the current branch
+  ./lab up main                           # check out, build, and deploy `main`
+  ./lab up main --profile cwa-local abs   # main, wired to both CWA and Audiobookshelf
+  ./lab up --profile cwa-sftp-key         # current branch, CWA over SFTP (key auth)
+  ./lab base down                         # tear down when done -- NOT `./lab down`
+
+--profile takes multiple values in one flag (--profile cwa-local abs).
+cwa-local and cwa-sftp-key/cwa-sftp-password are mutually exclusive -- they
+wire the same underlying `cwa` service over a different ingest transport.
+
+Connection info once up (defaults; override the *_HOST_PORT vars in lab.env):
+  Family Librarian  http://127.0.0.1:18080  FAMILY_LIBRARIAN_ADMIN_EMAIL / _ADMIN_PASSWORD
+  CWA               http://127.0.0.1:18083  admin / admin123
+  Audiobookshelf    http://127.0.0.1:18378  bootstrapped and wired in automatically
+
+`target` is lab-managed and fetched from GitHub -- push a local branch before
+`./lab up <branch>` can see it. `./lab status` reports health at any time.
+"""
 
 
 def _configure_project(parser: argparse.ArgumentParser) -> None:
