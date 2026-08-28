@@ -872,6 +872,11 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
         cwa_client, abs_client, sftp_wiring = _wire_destinations(values, profiles, api)
 
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
+    print(
+        f"  Family Librarian: {_host_base(values)}  (user: {values['FAMILY_LIBRARIAN_ADMIN_EMAIL']} / "
+        f"password: {values['FAMILY_LIBRARIAN_ADMIN_PASSWORD']})",
+        flush=True,
+    )
     if cwa_client is not None:
         print(
             f"  CWA:  {cwa_client.host_base_url}  (OPDS user: {clients.CWA_DEFAULT_USERNAME} / "
