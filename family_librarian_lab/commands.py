@@ -837,10 +837,18 @@ def handle_down(args: argparse.Namespace, config: object) -> int:
 
 
 def _profiles_for(suite: Suite) -> tuple[str, ...]:
-    """Derive the extra destination profile a suite's own declared group
-    needs, so `--test-group cwa-local`/`--test-group abs`/
-    `--test-group cwa-sftp-key`/`--test-group cwa-sftp-password` each bring
-    up exactly the destination they test."""
+    """Derive the extra destination profile(s) a suite's scenario factory
+    needs to bring up.
+
+    A suite that declares its own `extra_profiles` (e.g. a "base"-group
+    suite that still needs a real, then-stopped CWA destination) always wins
+    -- that's an explicit, per-suite requirement independent of `group`.
+    Otherwise fall back to the group-as-profile convention so
+    `--test-group cwa-local`/`--test-group abs`/`--test-group cwa-sftp-key`/
+    `--test-group cwa-sftp-password` each bring up exactly the destination
+    they test."""
+    if suite.extra_profiles:
+        return suite.extra_profiles
     if suite.group in (
         clients.CWA_PROFILE,
         clients.ABS_PROFILE,
