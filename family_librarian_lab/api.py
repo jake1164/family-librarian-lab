@@ -356,6 +356,20 @@ class FamilyLibrarianApi:
             "PUT", "/api/v1/admin/publishing/audiobookshelf/api-token", json_body={"value": api_token}
         )
         _require_status(token, 200, "Audiobookshelf API token")
+
+        # Unlike CWA, AudiobookshelfSettingsService.SetEnabledAsync does not
+        # itself require a passing test, so skipping this would still "enable"
+        # successfully -- but FormatReadinessService's request-creation gate
+        # requires LastTestSucceeded regardless, so a request would then be
+        # permanently rejected ("Test the connection...") despite IsEnabled
+        # already being true. Test the just-saved config for real before
+        # enabling, same as configure_cwa_local().
+        tested = self._request("POST", "/api/v1/admin/publishing/audiobookshelf/test", json_body={})
+        _require_status(tested, 200, "Audiobookshelf connection test")
+        probe = _object(tested.body, "Audiobookshelf connection test")
+        if not probe.get("succeeded"):
+            raise AssertionError(f"Audiobookshelf connection test did not succeed before enabling: {probe!r}")
+
         enabled = self._request(
             "PUT", "/api/v1/admin/publishing/audiobookshelf/enabled", json_body={"enabled": True}
         )
