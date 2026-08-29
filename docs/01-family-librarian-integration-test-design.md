@@ -38,28 +38,38 @@ test driver
     +-- Family Librarian HTTP API / browser checks
     |
     +-- Compose project (unique per scenario)
-          |- postgres       (empty volume, migrations run normally)
-          |- clamav         (real scanner)
-          |- family-librarian (immutable image under test)
-          |- cwa            (local or SFTP profile; empty library/config/ingest)
-          |- sftp           (SFTP profile only; scoped to CWA's ingest volume)
-          |- audiobookshelf (ABS profile; empty config/library)
-          `- optional controlled provider / fault proxy
+    |     |- postgres       (empty volume, migrations run normally)
+    |     |- family-librarian (immutable image under test)
+    |     |- cwa            (local or SFTP profile; empty library/config/ingest)
+    |     |- sftp           (SFTP profile only; scoped to CWA's ingest volume)
+    |     |- audiobookshelf (ABS profile; empty config/library)
+    |     |- gutenberg-fixture (gutenberg profile; HTTPS archive/RDF server)
+    |     `- optional controlled provider / fault proxy
+    |
+    `-- clamav (one real scanner shared across a whole suite's cases, not
+          per-scenario -- see "ClamAV lifecycle" below)
 ```
 
 The test driver may call Family Librarian's public HTTP endpoints and the documented CWA/ABS HTTP surfaces using test-only accounts. It must not change `metadata.db`, write directly into CWA's managed library, or inspect a destination database to declare success. An observer may have read-only access to the test ingest volume for transport diagnostics, but the success assertion for CWA remains OPDS catalog visibility.
 
 The CWA image/version, Audiobookshelf image/version, ClamAV image, and Family Librarian image digest are pinned in the lab's Compose templates. Each run records their digests and reported application versions. Updating one is a deliberate compatibility change with a recorded green run, not an implicit `latest` pull.
 
+### ClamAV lifecycle
+
+ClamAV is deliberately **not** part of any per-scenario Compose project. Its virus database never changes between cases — nothing writes to it, and the two scanner-outage fault cases (`SEC-03`, and the ABS equivalent) stop/start the *process* via a targeted Compose command against the scenario's own project, never a full container rebuild. Rebuilding and re-warming it for every single case measured at a consistent ~16–18s Compose down+up+readiness cost per case regardless of profile, and — found the hard way — the constant rebuild made its detection behavior depend on whatever `freshclam` happened to pull from the internet at that moment rather than being pinned and reproducible (see `SEC-02`'s fixture, below).
+
+Instead, one real ClamAV container is brought up once per **suite** (`ensure_shared_clamav()` in `family_librarian_lab/commands.py`, wired through `@SUITE.setup`/`@SUITE.teardown`) and reused by every case in that suite; each scenario's `family-librarian` container reaches it via a published host port and a stable non-`host.docker.internal` gateway hostname (Docker Desktop's own built-in DNS for that reserved name resolves IPv6-only here and isn't routable — confirmed for real, hence the non-reserved name). A suite that needs it stopped/restarted mid-case (a fault scenario) still only ever affects its own suite's shared instance, never another suite's.
+
 ### Profiles
 
 | Profile | Services | Scope |
 | --- | --- | --- |
-| `base` | Family Librarian, PostgreSQL, ClamAV | Deployment/migration/health and security-gate checks |
+| `base` | Family Librarian, PostgreSQL | Deployment/migration/health and security-gate checks (ClamAV is suite-shared, not part of this profile — see "ClamAV lifecycle" above) |
 | `cwa-local` | `base` + CWA with a shared ingest volume | All ebook publishing scenarios on the local/shared-filesystem transport |
 | `cwa-sftp-key` | `base` + CWA + SFTP sidecar using CWA's ingest volume | Remote CWA transport with private-key authentication |
 | `cwa-sftp-password` | Same as key profile | Remote CWA transport with password authentication |
 | `abs` | `base` + Audiobookshelf | Audiobook publishing and library API scenarios |
+| `gutenberg` | `base` + an HTTPS fixture server (archive/RDF/mirror) | Local Gutenberg catalog sync, search, and acquisition scenarios — see §6 below |
 | `full` | All above plus controlled provider/fault proxy | Restart, retry, and cross-boundary regression scenarios |
 
 The SFTP sidecar is the only writer exposed to Family Librarian in the SFTP profiles. Family Librarian must not mount CWA's ingest or library volume there. CWA sees the same backing ingest volume, making this a genuine remote-ingest topology rather than a local copy followed by a cosmetic SFTP probe.
@@ -74,9 +84,13 @@ Fixtures are small, redistributable, deterministic assets stored in the lab:
 - an EPUB whose package identity deliberately does not match the requested work;
 - a structurally invalid EPUB;
 - the EICAR test string with an ebook-like filename, used only to assert rejection by ClamAV;
-- a valid single-file audiobook and a valid ordered multi-track audiobook bundle;
+- a valid single-file audiobook and a valid ordered multi-track audiobook bundle whose tracks are distinguishable by size, not byte-identical, so a bundle scenario can assert order survived, not just that three tracks arrived;
+- a malformed-but-plausible `.mp3` and `.m4b` (a real frame sync/`ftyp` box, but no genuine second frame or `moov` box) — clears the shallow content-type sniff but fails `AudioValidator`'s structural check, distinct from bytes that fail even the shallow check;
 - a controlled direct-acquisition/provider response serving the same fixtures;
-- a large-enough synthetic EPUB fixture for the atomic-handoff observation.
+- a large-enough synthetic EPUB fixture for the atomic-handoff observation;
+- a deterministic Gutenberg RDF archive/RSS feed (`family_librarian_lab/gutenberg_fixtures.py`) matching the real parser's exact XML schema, for the `gutenberg` profile.
+
+The EICAR fixture specifically must be the chapter entry's *entire raw content*, not text wrapped in the EPUB template's usual `<html>...<body><p>` markup — found the hard way: ClamAV does not reliably flag the identical EICAR bytes once they're embedded in HTML, even inside an otherwise-valid EPUB (confirmed via direct, app-independent scans). `eicar_epub()` builds it unwrapped for exactly this reason; do not "simplify" it back to the shared HTML template.
 
 Every scenario derives a run-unique title and author from its run ID. This avoids title/author matching collisions and allows a precise destination lookup without relying on deletion timing. The test records this correlation tuple, the asset checksum, request ID, format ID, library-import/delivery ID, and the destination item ID in its result artifact.
 
@@ -159,6 +173,21 @@ Manual upload is the shortest route to test a publishing adapter, but it is not 
 | AUTO-06 | Private-egress requirement | For a provider marked `PRIVATE_REQUIRED`, unavailable gateway blocks the entire provider interaction and the lab observes no normal-egress fallback. |
 
 The actual cadence is part of the system under test. Tests poll the visible state with a generous bounded deadline; they do not invoke application services inside the container to skip the hosted worker. If the product later exposes a safe, authenticated test trigger or configurable test-only polling interval, the lab may use it only in a test image/profile and must retain at least one real-cadence smoke scenario.
+
+### 6. Gutenberg local catalog profile
+
+The Gutenberg local-catalog feature (product commit `5e9823f`) syncs a `.tar.bz2` RDF archive into Postgres and serves search/acquisition from there — never a live call to `gutendex.com`/`gutenberg.org` at request time. `GutenbergCatalogOptions`/`GutenbergMirrorOptions` require every configured archive/mirror URL to be absolute HTTPS (enforced at DI startup, no bypass), so the `gutenberg` profile's fixture server is a real TLS endpoint (`gutenberg-fixture`, self-signed CA trusted only by suite-scoped scenarios) serving a small, deterministic fixture archive — not the live internet.
+
+| ID | Scenario | Required assertions | Status |
+| --- | --- | --- | --- |
+| GUT-01 | First sync from empty state | Sync reaches `Completed`/`isReady`; book count matches the fixture archive exactly. | Implemented (`test_gutenberg.py`) |
+| GUT-02 | Local search has no live network dependency | An ebook option resolves purely from the synced Postgres catalog — `GutenbergProvider.FindDirectAcquisitionsAsync` never calls a live search endpoint at all, confirmed by reading it end to end (this container can in fact reach the real internet; the guarantee is the code path, not network isolation). | Implemented |
+| GUT-05 | EPUB preference order (Epub3Images preferred) | — | **Not implemented**: the chosen format lives in `FulfillmentOption.ProviderData`, which `FulfillmentOptionResponse` deliberately does not expose to the client. Needs either a product change to surface it, or driving the real download path to observe which file is fetched. |
+| GUT-06 | A Sound-type record is excluded from ebook fulfillment | A Sound-classified catalog entry never appears as an ebook option for a real, matching demo Work. | Implemented |
+| GUT-03/04 | End-to-end acquisition; mirror failover | — | **Not implemented**: needs a fixture mirror server that replicates Gutenberg's real per-mirror split-digit path convention, not just an archive/RSS server. |
+| GUT-07..10 | Corrupted archive; malformed RDF within an archive; below-minimum book count; incremental sync | — | **Not implemented**: need additional fixture archive variants; GUT-08/GUT-10 additionally can't be verified via the public `/status` endpoint as originally envisioned — `ParseErrorCount` and `LastSuccessfulIncrementalSyncUtc` are internal-only (`GutenbergCatalogRepository.ToStatus` does not map them). |
+
+Full detail, including the real config field names, the provider id (`gutendex`, a legacy name — not `gutenberg`), and a real incident this suite's own build surfaced (the background sync service races ahead of an explicit `POST /sync`, taking the incremental path and silently pulling from the live internet unless `EbookRdfBaseUrl` is also overridden), lives in `test_gutenberg.py`'s module docstring rather than duplicated here — read that file before extending this profile.
 
 ## CWA correctness tests that should be introduced with product fixes
 

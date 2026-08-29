@@ -53,12 +53,17 @@ se-lab's generic top-level `down` only knows how to tear down a
 same standard project name `up` uses, so no `--project-name` is needed for
 the common case.
 
-`./lab run --test-group base` discovers suites through se-lab. Each case receives a
-new Compose project, PostgreSQL volume, ClamAV volume, and Family Librarian
-storage volume; its results include the deployment artifacts plus a redacted API
-trace. `--keep` preserves those projects for investigation, and `--skip-build`
-uses an image built by an earlier `./lab build`/`./lab up`. Use `--case SEC-02`
-to run one registered scenario while investigating a failure.
+`./lab run` discovers suites through se-lab and defaults to `--test-group all` — every
+suite, matching se-lab's own `select_suites()` default and the legacy m3undle-lab
+convention (`./lab run <branch>` runs everything; narrow down explicitly, not the other
+way around). Each case receives a new Compose project, PostgreSQL volume, and Family
+Librarian storage volume; its results include the deployment artifacts plus a redacted
+API trace. ClamAV is the one exception: it's shared across a whole suite's cases, not
+per-case (see [the design doc's "ClamAV lifecycle"](docs/01-family-librarian-integration-test-design.md#clamav-lifecycle)
+for why). `--keep` preserves case projects for investigation, and `--skip-build` uses an
+image built by an earlier `./lab build`/`./lab up`. Use `--test-group base` to narrow to
+one group, or `--case SEC-02` to run one registered scenario while investigating a
+failure.
 
 ## CWA and Audiobookshelf destinations
 
@@ -114,13 +119,45 @@ way an admin would through the UI:
 ./lab run --test-group cwa-sftp-password
 ```
 
-`cwa-sftp-key` covers both CWA-S-01 (trust-on-first-test) and CWA-S-02 (remote happy
-path); `cwa-sftp-password` re-runs CWA-S-02 under the alternative auth mode. Key-mode
-authentication uses a disposable host-local test keypair generated automatically under
-`runtime/` (gitignored, not real deployment material); password mode uses
-`FAMILY_LIBRARIAN_SFTP_PASSWORD` from `lab.env`. The remaining CWA-S-* scenarios
-(host-key mismatch, credential rotation, independent-catalog-outage, and the rest of
-the design doc's matrix) are not yet implemented.
+`cwa-sftp-key` covers the full CWA-S-01..06 matrix (trust-on-first-test, remote happy
+path, authentication rejection, host-key change, interruption, and independent-catalog-
+outage); `cwa-sftp-password` re-runs CWA-S-02/03 under the alternative auth mode. Both
+CWA-S-03 cases (authentication rejection) create their ebook request *before* breaking
+the credential, not after — `BookRequestService`'s format-readiness gate (product commit
+`acb1ff7`) resets a destination's "ready" state on any settings mutation, so breaking the
+credential first blocks request creation before the transport-layer behavior these cases
+actually test ever runs. Key-mode authentication uses a disposable host-local test
+keypair generated automatically under `runtime/` (gitignored, not real deployment
+material); password mode uses `FAMILY_LIBRARIAN_SFTP_PASSWORD` from `lab.env`.
+
+## Gutenberg local catalog
+
+`gutenberg` is a Compose profile on top of `base`, adding an HTTPS fixture server
+(`gutenberg-fixture`) that serves a small, deterministic RDF archive/feed in place of the
+real `gutenberg.org`. This isn't optional plumbing: `GutenbergCatalogOptions`/
+`GutenbergMirrorOptions` require every configured archive/mirror URL to be absolute
+HTTPS, enforced at startup with no bypass, so the fixture server needs a real certificate
+family-librarian is made to trust, not a plain HTTP stand-in. `ensure_gutenberg_fixture_tls()`
+in `family_librarian_lab/commands.py` generates a self-signed CA once, appends it to the
+app image's own real trust bundle (never replaces it), and points it only at scenarios in
+this suite via `SSL_CERT_FILE` — every other suite is unaffected either way:
+
+```bash
+./lab run --test-group gutenberg
+```
+
+There's no `./lab up --profile gutenberg` yet for manual poking — the fixture server and
+certificate only exist for the duration of an automated suite run today.
+
+Implemented: `GUT-01` (first sync from an empty catalog), `GUT-02` (search resolves from
+the local Postgres catalog, never a live network call), `GUT-06` (a Sound-type record
+never surfaces as an ebook option). Not yet implemented, with reasons — see
+[the design doc](docs/01-family-librarian-integration-test-design.md#6-gutenberg-local-catalog-profile)
+and `tests/test_gutenberg.py`'s own module docstring for the full detail: `GUT-05`
+(the API response contract doesn't expose the field needed to verify format preference),
+`GUT-03`/`GUT-04` (need a fixture mirror replicating Gutenberg's real per-mirror path
+convention), `GUT-07..10` (need additional archive variants, and two of them hit the same
+"not exposed via the API" problem as `GUT-05`).
 
 se-lab is included as a git submodule at `se-lab/`. After cloning:
 
