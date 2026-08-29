@@ -10,9 +10,20 @@ from typing import Callable
 from agent.suites import suite
 
 from family_librarian_lab import clients
+from family_librarian_lab.commands import ensure_shared_clamav, teardown_shared_clamav
 from family_librarian_lab.fixtures import clean_epub
 
 SUITE = suite("cwa-sftp-password", group="cwa-sftp-password", order=22)
+
+
+@SUITE.setup
+def _setup(scenario_factory):
+    scenario_factory.extra_env = ensure_shared_clamav()
+
+
+@SUITE.teardown
+def _teardown():
+    teardown_shared_clamav()
 
 
 def _run(ctx, test_id: str, operation: Callable[[], dict[str, object]]) -> None:
@@ -83,8 +94,24 @@ def password_authentication_rejects_wrong_password(ctx, scenario_factory):
                     f"{rejected_probe!r}"
                 )
 
-            scenario.api.set_cwa_sftp_password(wrong_password)
+            # Create the request while CWA is still ready, *then* break the
+            # credential. Product commit acb1ff7 (FormatReadinessService)
+            # made any settings/secret mutation reset LastTestSucceeded,
+            # which now makes CWA "not ready" until its next successful
+            # test -- CwaSettingsService.GetRequestReadinessErrorAsync calls
+            # the same GetConfigurationError() SetEnabledAsync uses, and
+            # BookRequestService.CreateRequestAsync rejects a new request
+            # with 400 while not ready. Calling set_cwa_sftp_password()
+            # before create_demo_ebook_request() (the original order) trips
+            # that gate before the transport layer this case actually tests
+            # ever runs -- confirmed for real, reproducible 100% of the time,
+            # not a flake and not a product bug: the gate is doing exactly
+            # what it's supposed to. This case's own intent (a credential
+            # that breaks *after* a request already exists must still fail
+            # safely at upload, not silently succeed) is untouched by the
+            # reorder -- if anything it's a more realistic timeline.
             request_id, format_id = scenario.api.create_demo_ebook_request()
+            scenario.api.set_cwa_sftp_password(wrong_password)
             upload = scenario.api.upload_manual_epub(
                 request_id, format_id, clean_epub(), "cwa-s-03-wrong-password-the-hobbit.epub"
             )

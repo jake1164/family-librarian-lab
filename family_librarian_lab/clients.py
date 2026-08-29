@@ -70,6 +70,18 @@ ABS_DEFAULT_PASSWORD = "family-librarian-lab-abs-only"
 ABS_LIBRARY_NAME = "lab-audiobooks"
 ABS_LIBRARY_FOLDER_PATH = "/audiobooks"
 
+# HTTPS-only, deliberately not a plain static-file server: GutenbergCatalogOptions/
+# GutenbergMirrorOptions validate every configured URL as absolute HTTPS at DI
+# startup (confirmed against real code, no bypass hook exists) -- see
+# ensure_gutenberg_fixture_tls() in commands.py for the self-signed CA this
+# depends on. Same-project service, resolved by name like cwa/abs; unlike
+# ClamAV it does not need suite-wide sharing (cheap to start, no meaningful
+# per-case cost), so it's brought up per-case via `extra_profiles` same as
+# CWA/ABS/SFTP.
+GUTENBERG_PROFILE = "gutenberg"
+GUTENBERG_SERVICE = "gutenberg-fixture"
+GUTENBERG_FIXTURE_INTERNAL_URL = "https://gutenberg-fixture"
+
 _BOOK_ID_PATTERN = re.compile(r"/opds/(?:book|download)/(\d+)")
 
 

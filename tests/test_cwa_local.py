@@ -8,10 +8,21 @@ from typing import Callable
 from agent.suites import suite
 
 from family_librarian_lab.api import ApiResponse
+from family_librarian_lab.commands import ensure_shared_clamav, teardown_shared_clamav
 from family_librarian_lab.fixtures import clean_epub, large_epub
 from family_librarian_lab import clients
 
 SUITE = suite("cwa-local", group="cwa-local", order=20)
+
+
+@SUITE.setup
+def _setup(scenario_factory):
+    scenario_factory.extra_env = ensure_shared_clamav()
+
+
+@SUITE.teardown
+def _teardown():
+    teardown_shared_clamav()
 
 
 def _run(ctx, test_id: str, operation: Callable[[], dict[str, object]]) -> None:

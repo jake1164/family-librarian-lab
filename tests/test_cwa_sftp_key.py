@@ -11,9 +11,20 @@ from typing import Callable
 from agent.suites import suite
 
 from family_librarian_lab import clients
+from family_librarian_lab.commands import ensure_shared_clamav, teardown_shared_clamav
 from family_librarian_lab.fixtures import clean_epub, large_epub
 
 SUITE = suite("cwa-sftp-key", group="cwa-sftp-key", order=21)
+
+
+@SUITE.setup
+def _setup(scenario_factory):
+    scenario_factory.extra_env = ensure_shared_clamav()
+
+
+@SUITE.teardown
+def _teardown():
+    teardown_shared_clamav()
 
 
 def _run(ctx, test_id: str, operation: Callable[[], dict[str, object]]) -> None:
@@ -113,8 +124,16 @@ def key_authentication_rejects_an_untrusted_private_key(ctx, scenario_factory):
                     f"{rejected_probe!r}"
                 )
 
-            scenario.api.set_cwa_sftp_private_key(wrong_key)
+            # Create the request while CWA is still ready, *then* break the
+            # credential -- see test_cwa_sftp_password.py's CWA-S-03 for the
+            # full explanation. Product commit acb1ff7 (FormatReadinessService)
+            # made any settings/secret mutation reset LastTestSucceeded,
+            # which makes CWA "not ready" until its next successful test;
+            # set_cwa_sftp_private_key() before create_demo_ebook_request()
+            # (the original order) trips that gate (HTTP 400) before the
+            # transport layer this case actually tests ever runs.
             request_id, format_id = scenario.api.create_demo_ebook_request()
+            scenario.api.set_cwa_sftp_private_key(wrong_key)
             upload = scenario.api.upload_manual_epub(
                 request_id, format_id, clean_epub(), "cwa-s-03-wrong-key-the-hobbit.epub"
             )

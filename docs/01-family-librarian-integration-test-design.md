@@ -162,11 +162,12 @@ The actual cadence is part of the system under test. Tests poll the visible stat
 
 ## CWA correctness tests that should be introduced with product fixes
 
-These are required conformance tests, but they should not be declared green against the current implementation merely because the lab can work around the problem. The product architecture identifies both as current gaps.
+These are required conformance tests, but they should not be declared green against the current implementation merely because the lab can work around the problem. The product architecture identifies these as current gaps.
+
+CWA-C-01 (CWA cannot be enabled unless both an ingest transport and a working OPDS connection are configured) is no longer listed here: `CwaSettingsService.GetConfigurationError` now requires `OpdsBaseUrl` and `LastTestSucceeded == true` before enablement (commit `0f0bfa2`), and `CWA-L-08..10` in `test_cwa_local.py` already exercise this at the API/HTTP layer. Covered by: `CWA-L-08..10`.
 
 | ID | Required future behavior | Current reason it is not a green gate yet |
 | --- | --- | --- |
-| CWA-C-01 | CWA cannot be enabled unless both an ingest transport and a working OPDS connection are configured. | The current settings service permits ingest-only enablement, although the architecture calls it a misconfiguration. |
 | CWA-C-02 | Catalog correlation chooses the correct edition/format using retained identifier/ISBN first and rejects ambiguity rather than accepting a title collision. | Current OPDS matching is best-effort title/author substring matching. |
 | CWA-C-03 | A failed/retried post-transfer publish cannot create a duplicate CWA book. | The desired duplicate-safe retry contract needs an end-to-end failure injection once correlation/idempotency is strengthened. |
 | CWA-C-04 | Existing CWA artifact retrieval works over OPDS/HTTP for both local and SFTP CWA, without filesystem or SFTP read access. | The CWA catalog client currently resolves only a book ID; no artifact-retrieval capability exists. |
@@ -205,7 +206,7 @@ The lab reports failures by boundary: host/migration, scanner, local ingest, SFT
 
 A scenario that finds a real, already-diagnosed product bug outside the current batch's fix scope must report it with `ctx.skip(test_id, reason)`, not `ctx.fail(test_id, ...)`. `ctx.fail()` marks the whole suite run failed (`agent/results.py`'s `RunContext.failed_count`), and per the table above several suites are meant to gate pull requests or nightly runs — a `fail()` left in for a bug someone else has to fix in Family Librarian would red that gate on every run indefinitely, not just document the gap. `ctx.skip()` still shows up as neither a pass nor silence: it prints, it's counted separately in the suite summary, and its reason is the bug report.
 
-Keep the assertion itself strict — do not weaken it to accept the buggy behavior as correct. Instead, narrow the skip to the *exact* diagnosed signature (e.g., "status is X and field Y is absent") and let anything else — including an unexpected variant of the same failure — fall through to `ctx.fail()` as a real, uninvestigated failure. `SEC-02` (destroyed assets absent from the admin API) and `CWA-L-06` (a CWA-unavailable handoff recorded as `AwaitingVerification` with no `failureReason` instead of a `Failed` record) are the reference examples. `CWA-C-01..04` below are the same idea at the design-doc level, before any test code exists for them; once a scenario is written against a diagnosed-but-unfixed gap, it follows this section, not a bare `ctx.fail()`.
+Keep the assertion itself strict — do not weaken it to accept the buggy behavior as correct. Instead, narrow the skip to the *exact* diagnosed signature (e.g., "status is X and field Y is absent") and let anything else — including an unexpected variant of the same failure — fall through to `ctx.fail()` as a real, uninvestigated failure. `SEC-02` (destroyed assets absent from the admin API) and `CWA-L-06` (a CWA-unavailable handoff recorded as `AwaitingVerification` with no `failureReason` instead of a `Failed` record) are the reference examples. `CWA-C-02..04` below are the same idea at the design-doc level, before any test code exists for them; once a scenario is written against a diagnosed-but-unfixed gap, it follows this section, not a bare `ctx.fail()`.
 
 ## Implementation order
 

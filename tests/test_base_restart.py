@@ -38,9 +38,20 @@ from typing import Any, Callable
 from agent.suites import suite
 
 from family_librarian_lab import clients
+from family_librarian_lab.commands import ensure_shared_clamav, teardown_shared_clamav
 from family_librarian_lab.fixtures import clean_epub, invalid_epub
 
 SUITE = suite("base-restart", group="base", order=11, extra_profiles=(clients.CWA_PROFILE,))
+
+
+@SUITE.setup
+def _setup(scenario_factory):
+    scenario_factory.extra_env = ensure_shared_clamav()
+
+
+@SUITE.teardown
+def _teardown():
+    teardown_shared_clamav()
 
 
 def _run(ctx, test_id: str, operation: Callable[[], dict[str, object]]) -> None:

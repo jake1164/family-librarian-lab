@@ -30,9 +30,22 @@ services:
     restart: "no"
 
   clamav:
-    profiles: [base]
+    # Own profile, deliberately never included alongside `base`: ClamAV's
+    # virus database never changes between cases (nothing writes to it; the
+    # two scanner-outage fault cases stop/start the process via
+    # stop_service()/start_service(), never a full compose cycle), so it is
+    # brought up once per suite (see ensure_shared_clamav() in commands.py)
+    # instead of torn down and rebuilt for every case. Published to the host
+    # rather than joined to each case's own per-case Compose network/project,
+    # since a case's project is intentionally short-lived and uniquely named
+    # per run -- host.docker.internal is a stable address every case's
+    # family-librarian container can already reach without new network
+    # plumbing.
+    profiles: [shared-clamav]
     platform: linux/amd64
     image: ${FAMILY_LIBRARIAN_CLAMAV_IMAGE:-clamav/clamav:1.4}
+    ports:
+      - "${FAMILY_LIBRARIAN_CLAMAV_HOST_PORT:-13310}:3310"
     environment:
       CLAMD_CONF_StreamMaxLength: 600M
       CLAMD_CONF_MaxFileSize: 600M
@@ -57,19 +70,52 @@ services:
     ports:
       - "${FAMILY_LIBRARIAN_HOST_PORT:-18080}:8080"
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__FamilyLibrarian: Host=postgres;Port=5432;Database=family_librarian;Username=family_librarian;Password=${FAMILY_LIBRARIAN_POSTGRES_PASSWORD:?Set FAMILY_LIBRARIAN_POSTGRES_PASSWORD in lab.env}
-      MetadataProviders__OpenLibrary__ContactEmail: ${FAMILY_LIBRARIAN_OPENLIBRARY_CONTACT_EMAIL:-}
-      MetadataProviders__OpenLibrary__RequestsPerSecond: ${FAMILY_LIBRARIAN_OPENLIBRARY_REQUESTS_PER_SECOND:-1}
-      MetadataProviders__GoogleBooks__Enabled: ${FAMILY_LIBRARIAN_GOOGLE_BOOKS_ENABLED:-false}
-      MetadataProviders__GoogleBooks__ApiKey: ${FAMILY_LIBRARIAN_GOOGLE_BOOKS_API_KEY:-}
-      ADMIN_EMAIL: ${FAMILY_LIBRARIAN_ADMIN_EMAIL:?Set FAMILY_LIBRARIAN_ADMIN_EMAIL in lab.env}
-      ADMIN_PASSWORD: ${FAMILY_LIBRARIAN_ADMIN_PASSWORD:?Set FAMILY_LIBRARIAN_ADMIN_PASSWORD in lab.env}
-      Invitations__LifetimeDays: ${FAMILY_LIBRARIAN_INVITATIONS_LIFETIME_DAYS:-7}
-      Invitations__RedemptionAttemptsPerMinute: ${FAMILY_LIBRARIAN_INVITATIONS_REDEMPTION_ATTEMPTS_PER_MINUTE:-10}
-      Storage__RootPath: /data/family-librarian
-      ClamAv__Host: clamav
-      ClamAv__Port: 3310
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__FamilyLibrarian=Host=postgres;Port=5432;Database=family_librarian;Username=family_librarian;Password=${FAMILY_LIBRARIAN_POSTGRES_PASSWORD:?Set FAMILY_LIBRARIAN_POSTGRES_PASSWORD in lab.env}
+      - MetadataProviders__OpenLibrary__ContactEmail=${FAMILY_LIBRARIAN_OPENLIBRARY_CONTACT_EMAIL:-}
+      - MetadataProviders__OpenLibrary__RequestsPerSecond=${FAMILY_LIBRARIAN_OPENLIBRARY_REQUESTS_PER_SECOND:-1}
+      - MetadataProviders__GoogleBooks__Enabled=${FAMILY_LIBRARIAN_GOOGLE_BOOKS_ENABLED:-false}
+      - MetadataProviders__GoogleBooks__ApiKey=${FAMILY_LIBRARIAN_GOOGLE_BOOKS_API_KEY:-}
+      - ADMIN_EMAIL=${FAMILY_LIBRARIAN_ADMIN_EMAIL:?Set FAMILY_LIBRARIAN_ADMIN_EMAIL in lab.env}
+      - ADMIN_PASSWORD=${FAMILY_LIBRARIAN_ADMIN_PASSWORD:?Set FAMILY_LIBRARIAN_ADMIN_PASSWORD in lab.env}
+      - Invitations__LifetimeDays=${FAMILY_LIBRARIAN_INVITATIONS_LIFETIME_DAYS:-7}
+      - Invitations__RedemptionAttemptsPerMinute=${FAMILY_LIBRARIAN_INVITATIONS_REDEMPTION_ATTEMPTS_PER_MINUTE:-10}
+      - Storage__RootPath=/data/family-librarian
+      # Overridden per-scenario to lab-host-gateway/the published host port
+      # when a suite's shared ClamAV (see the `clamav` service above) is in
+      # play -- see ensure_shared_clamav()/`_BaseScenario`'s extra_env in
+      # commands.py. Defaults still work for anyone running `docker compose`
+      # against this file directly with the old-style `base` profile only.
+      - ClamAv__Host=${FAMILY_LIBRARIAN_CLAMAV_HOST:-clamav}
+      - ClamAv__Port=${FAMILY_LIBRARIAN_CLAMAV_PORT:-3310}
+      # Bare passthrough (no `=value`): Compose only sets these inside the
+      # container when the named variable is actually present in whatever
+      # environment `docker compose` itself was invoked with (see
+      # family_librarian_lab.commands._compose()). Every existing suite's
+      # `extra_env` never sets any of these, so the app falls back to its own
+      # real compiled-in defaults (real gutenberg.org URLs, no SSL_CERT_FILE)
+      # completely unaffected -- only the gutenberg suite's own
+      # ensure_gutenberg_fixture_tls() sets them, scenario-scoped, never a
+      # blanket override in this file. A `=value` form with an empty default
+      # here would instead set SSL_CERT_FILE="" for every other suite,
+      # replacing the app's normal trust store with nothing.
+      - GutenbergCatalog__ArchiveUrl
+      - GutenbergCatalog__RecentUpdatesFeedUrl
+      - GutenbergCatalog__EbookRdfBaseUrl
+      - GutenbergCatalog__MinimumBookCount
+      - SSL_CERT_FILE
+    # A deliberately non-reserved name, not "host.docker.internal": Docker
+    # Desktop already special-cases that literal name with its own built-in
+    # DNS entry, which on this Mac resolves to an IPv6 address that is not
+    # actually routable from a project's bridge network ("Network is
+    # unreachable", confirmed for real) -- an extra_hosts entry for that same
+    # reserved name did not win over Docker's own resolution. A name Docker
+    # has no built-in opinion about only ever resolves via this entry, so
+    # host-gateway (the real IPv4 gateway of this container's own network,
+    # Docker Engine 20.10+) is what actually gets used, on this Mac and on
+    # Linux (toontown-int-srv2) alike.
+    extra_hosts:
+      - "lab-host-gateway:host-gateway"
     healthcheck:
       test:
         - CMD
@@ -87,13 +133,23 @@ services:
       # cwa-local without a separate compose file, matching what --profile
       # brings up.
       - cwa-ingest:/cwa-ingest
+      # Always mounted (same "harmless when unused" pattern as cwa-ingest
+      # above): an empty placeholder file for every suite but gutenberg (see
+      # _load_lab_env()'s ensure_gutenberg_ca_bundle_placeholder()), the real
+      # combined CA bundle -- the container's own real trust store plus the
+      # lab's self-signed CA -- only when ensure_gutenberg_fixture_tls() has
+      # written one and SSL_CERT_FILE (above) points the app at this path.
+      - ${FAMILY_LIBRARIAN_GUTENBERG_CA_BUNDLE:-./runtime/gutenberg-tls/ca-bundle.pem}:/etc/ssl/lab-gutenberg-ca-bundle.pem:ro
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      clamav:
-        condition: service_healthy
+      # No clamav entry: it's a separate, suite-shared container outside this
+      # project now (see the `clamav` service comment above), so Compose has
+      # no dependency to express here. family-librarian's own /health/ready
+      # already includes SecurityScannerHealthCheck, so the harness's
+      # readiness poll still correctly waits for real ClamAV reachability.
 
   cwa:
     profiles: [cwa-local, cwa-sftp-key, cwa-sftp-password]
@@ -118,6 +174,8 @@ services:
   abs:
     profiles: [abs]
     image: ${FAMILY_LIBRARIAN_ABS_IMAGE:-advplyr/audiobookshelf:latest}
+    # A failed client request must not leave the audiobook library unavailable.
+    restart: unless-stopped
     ports:
       - "${FAMILY_LIBRARIAN_ABS_HOST_PORT:-18378}:80"
     # advplyr/audiobookshelf bakes no HEALTHCHECK into its image (confirmed:
@@ -174,6 +232,40 @@ services:
       - cwa-ingest:/home/cwaftp/upload
       - ./docker/sftp/fix-ingest-permissions.sh:/etc/sftp.d/fix-ingest-permissions.sh:ro
     command: cwaftp:${FAMILY_LIBRARIAN_SFTP_PASSWORD:?Set FAMILY_LIBRARIAN_SFTP_PASSWORD in lab.env}:1654:1654:upload
+
+  # Serves the gutenberg suite's fixture archive/feed over HTTPS -- the real
+  # GutenbergCatalogOptions/GutenbergMirrorOptions validate every configured
+  # URL as absolute HTTPS at DI startup, no plain-HTTP path exists (confirmed
+  # against real code). ensure_gutenberg_fixture_tls() (commands.py)
+  # generates the self-signed cert this serves and the document root it
+  # mounts read-only; family-librarian trusts it via the CA-bundle mount and
+  # SSL_CERT_FILE described on that service above.
+  gutenberg-fixture:
+    profiles: [gutenberg]
+    image: ${FAMILY_LIBRARIAN_NGINX_IMAGE:-nginx:alpine}
+    volumes:
+      # Defaults, not required (`:?`): Compose interpolates every service's
+      # variables for any invocation against this file, regardless of which
+      # profile is actually active (confirmed for real -- a required var
+      # here broke the unrelated shared-clamav bring-up, which never
+      # requests the gutenberg profile at all). These defaults match
+      # GUTENBERG_FIXTURE_ROOT/GUTENBERG_TLS_DIR in commands.py; only
+      # ensure_gutenberg_fixture_tls() ever populates real content at them.
+      - ${FAMILY_LIBRARIAN_GUTENBERG_FIXTURE_ROOT:-./runtime/gutenberg-fixture-root}:/usr/share/nginx/html:ro
+      - ${FAMILY_LIBRARIAN_GUTENBERG_TLS_DIR:-./runtime/gutenberg-tls}/server.pem:/etc/nginx/ssl/server.pem:ro
+      - ${FAMILY_LIBRARIAN_GUTENBERG_TLS_DIR:-./runtime/gutenberg-tls}/server.key:/etc/nginx/ssl/server.key:ro
+      - ./docker/gutenberg/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      # 127.0.0.1, not "localhost": BusyBox wget resolves "localhost" to ::1
+      # first, and nginx's `listen 443 ssl;` only binds IPv4 by default --
+      # "Connection refused" on the healthcheck despite nginx actually being
+      # up (confirmed for real; same IPv6-preference class of issue as the
+      # host.docker.internal fix above).
+      test: ["CMD", "wget", "--no-check-certificate", "--no-verbose", "--tries=1", "--spider", "https://127.0.0.1/today.rss"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
 
 volumes:
   postgres-data:

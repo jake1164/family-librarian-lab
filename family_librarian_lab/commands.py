@@ -28,7 +28,7 @@ from agent import common as lab_common, registry
 from agent.planning import RunPlan, RunReport
 from agent.suites import CaseFunc, Suite, discover_suites, run_suites, select_suites
 
-from family_librarian_lab import clients
+from family_librarian_lab import clients, gutenberg_fixtures
 from family_librarian_lab.api import FamilyLibrarianApi
 
 
@@ -44,8 +44,15 @@ ALL_PROFILES = (
     clients.ABS_PROFILE,
     clients.CWA_SFTP_PROFILE_KEY,
     clients.CWA_SFTP_PROFILE_PASSWORD,
+    clients.GUTENBERG_PROFILE,
 )
+SHARED_CLAMAV_PROFILE = "shared-clamav"
+SHARED_CLAMAV_PROJECT = "family-librarian-lab-shared-clamav"
+DEFAULT_SHARED_CLAMAV_HOST_PORT = "13310"
 SFTP_KEY_DIR = REPO_ROOT / "runtime" / "sftp-test-key"
+GUTENBERG_TLS_DIR = REPO_ROOT / "runtime" / "gutenberg-tls"
+GUTENBERG_CA_BUNDLE_PATH = GUTENBERG_TLS_DIR / "ca-bundle.pem"
+GUTENBERG_FIXTURE_ROOT = REPO_ROOT / "runtime" / "gutenberg-fixture-root"
 DEFAULT_HOST_PORT = 18080
 DEFAULT_REPO_URL = "git@github.com:jake1164/family-librarian.git"
 _SECRET_NAMES = (
@@ -178,6 +185,14 @@ def _load_lab_env() -> dict[str, str]:
         "FAMILY_LIBRARIAN_SFTP_PASSWORD",
         os.environ.get("FAMILY_LIBRARIAN_SFTP_PASSWORD", clients.CWA_SFTP_DEFAULT_PASSWORD),
     )
+    # Same "always mounted, harmless when empty" reasoning as the cwa-ingest
+    # volume: family-librarian's compose service unconditionally mounts
+    # GUTENBERG_CA_BUNDLE_PATH (see its volumes: comment), so it must exist
+    # before ANY scenario's `up`, not only the gutenberg suite's own. An
+    # empty file here is inert -- nothing reads it unless SSL_CERT_FILE
+    # points at it, which only ensure_gutenberg_fixture_tls() ever sets.
+    GUTENBERG_TLS_DIR.mkdir(parents=True, exist_ok=True)
+    GUTENBERG_CA_BUNDLE_PATH.touch(exist_ok=True)
     return values
 
 
@@ -477,9 +492,12 @@ def _compose_service_health(values: dict[str, str], project_name: str) -> tuple[
                 "exit_code": row.get("ExitCode"),
             }
 
+    # No "clamav" entry: it's a separate, suite-shared container outside
+    # this project now (see compose.base.yaml's `clamav` service comment) --
+    # requiring one here would fail every scenario's readiness check
+    # unconditionally, since this project never brings one up anymore.
     expected = {
         "postgres": ("running", "healthy"),
-        "clamav": ("running", "healthy"),
         "family-librarian": ("running", "healthy"),
         "migrate": ("exited", None),
     }
@@ -531,6 +549,154 @@ def _wait_for_service(
     raise AssertionError(f"{service_name} did not become ready within six minutes after restart.")
 
 
+def ensure_shared_clamav() -> dict[str, str]:
+    """Bring up one ClamAV container for a whole suite's case list, replacing
+    the old per-case bring-up/teardown of `clamav` under the `base` profile.
+
+    Meant to be called from a suite's own `@SUITE.setup` (see
+    `tests/test_base_security.py` for the reference shape) with its return
+    value assigned to `scenario_factory.extra_env` -- every case built by
+    that factory for the rest of the suite then points its
+    `FAMILY_LIBRARIAN_CLAMAV_HOST`/`_PORT` at this shared instance instead of
+    a fresh per-case one. Idempotent: a second call while the container from
+    a still-running suite (or one killed before its own teardown ran) is
+    already up just confirms it's healthy and reuses it, rather than
+    failing or creating a duplicate.
+
+    ClamAV's virus database never changes between cases -- nothing writes to
+    it, and the two scanner-outage fault cases (`SEC-03`, `ABS-06`) stop/start
+    the process via `stop_service()`/`start_service()` against the *scenario's
+    own* project, never this one -- so paying its ~180s worst-case startup
+    budget and a full volume rebuild for every single case was pure waste,
+    not a safety requirement. Measured cost before this change: a consistent
+    ~16-18s Compose down+up+readiness delta per case regardless of profile,
+    across every existing suite.
+    """
+    values = _load_lab_env()
+    host_port = values.get("FAMILY_LIBRARIAN_CLAMAV_HOST_PORT") or DEFAULT_SHARED_CLAMAV_HOST_PORT
+    env = {**values, "FAMILY_LIBRARIAN_CLAMAV_HOST_PORT": host_port}
+    _run_or_exit(env, SHARED_CLAMAV_PROJECT, "up", "-d", "--wait", "clamav", profiles=(SHARED_CLAMAV_PROFILE,))
+    return {
+        "FAMILY_LIBRARIAN_CLAMAV_HOST": "lab-host-gateway",
+        "FAMILY_LIBRARIAN_CLAMAV_PORT": host_port,
+    }
+
+
+def teardown_shared_clamav() -> None:
+    """Suite-level `@SUITE.teardown` counterpart to `ensure_shared_clamav()`.
+
+    Best-effort: `capture=True` and no exit-on-failure, matching
+    `_BaseScenario.__exit__`'s own teardown call -- a teardown that raises
+    would mask every case result the suite just recorded (see
+    `agent/suites.py`'s `run_suite()`, which already treats a raising
+    teardown_fn as a non-fatal warning, but there is no reason to also make
+    it a hard compose failure here).
+    """
+    values = _load_lab_env()
+    _compose(
+        values, SHARED_CLAMAV_PROJECT, "down", "--volumes", "--remove-orphans",
+        profiles=(SHARED_CLAMAV_PROFILE,), capture=True,
+    )
+
+
+def ensure_gutenberg_fixture_tls() -> dict[str, str]:
+    """Suite-level setup (`@SUITE.setup`, tests/test_gutenberg.py): generates
+    a self-signed CA + server certificate for the suite's fixture mirror
+    (the `gutenberg-fixture` compose service), writes the fixture archive/
+    feed it serves, and returns the `extra_env` overrides every case in the
+    suite needs to point family-librarian's real Gutenberg sync at that
+    fixture instead of the real internet.
+
+    HTTPS is not optional here: GutenbergCatalogOptions/GutenbergMirrorOptions
+    validate every configured URL as absolute HTTPS at DI startup (confirmed
+    against real code -- no bypass hook exists anywhere in DependencyInjection.cs),
+    so a plain static-file HTTP server (the original punch-list plan's
+    assumption) cannot work.
+
+    The combined CA bundle appends the lab's CA to the real
+    family-librarian-lab:dev image's own system trust store (extracted fresh
+    each call, in case the image was rebuilt) rather than replacing it --
+    this suite is the only one that ever points SSL_CERT_FILE at the result,
+    so nothing else is affected either way, but there's no reason to trust
+    less than "the real store plus one more CA" when it costs nothing extra.
+    The CA/server cert themselves are cached on disk and only regenerated if
+    missing -- regenerating them every run would be safe but pointless
+    churn, unlike the bundle extraction.
+    """
+    GUTENBERG_TLS_DIR.mkdir(parents=True, exist_ok=True)
+    ca_key = GUTENBERG_TLS_DIR / "ca.key"
+    ca_cert = GUTENBERG_TLS_DIR / "ca.pem"
+    server_key = GUTENBERG_TLS_DIR / "server.key"
+    server_cert = GUTENBERG_TLS_DIR / "server.pem"
+
+    if not ca_cert.exists():
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
+                "-keyout", str(ca_key), "-out", str(ca_cert),
+                "-subj", "/CN=family-librarian-lab-gutenberg-ca",
+            ],
+            check=True, capture_output=True,
+        )
+
+    if not server_cert.exists():
+        server_csr = GUTENBERG_TLS_DIR / "server.csr"
+        ext_file = GUTENBERG_TLS_DIR / "server.ext"
+        ext_file.write_text("basicConstraints=CA:FALSE\nsubjectAltName=DNS:gutenberg-fixture\n")
+        subprocess.run(
+            [
+                "openssl", "req", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(server_key), "-out", str(server_csr),
+                "-subj", "/CN=gutenberg-fixture",
+            ],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            [
+                "openssl", "x509", "-req", "-in", str(server_csr), "-CA", str(ca_cert), "-CAkey", str(ca_key),
+                "-CAcreateserial", "-out", str(server_cert), "-days", "3650", "-extfile", str(ext_file),
+            ],
+            check=True, capture_output=True,
+        )
+
+    image = os.environ.get("FAMILY_LIBRARIAN_IMAGE", "family-librarian-lab:dev")
+    base_bundle = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "cat", image, "/etc/ssl/certs/ca-certificates.crt"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    GUTENBERG_CA_BUNDLE_PATH.write_text(base_bundle + "\n" + ca_cert.read_text())
+
+    GUTENBERG_FIXTURE_ROOT.mkdir(parents=True, exist_ok=True)
+    books = gutenberg_fixtures.diversity_books() + gutenberg_fixtures.SEARCH_TARGET_BOOKS
+    (GUTENBERG_FIXTURE_ROOT / "rdf-files.tar.bz2").write_bytes(gutenberg_fixtures.build_archive(books))
+    (GUTENBERG_FIXTURE_ROOT / "today.rss").write_bytes(
+        gutenberg_fixtures.build_recent_updates_rss([book.gutenberg_id for book in books])
+    )
+    # GutenbergCatalogSynchronizer.SynchronizeIncrementalAsync fetches each
+    # recently-updated id individually from EbookRdfBaseUrl + "{id}/pg{id}.rdf"
+    # -- confirmed for real: the very first sync in a scenario is actually
+    # triggered by GutenbergCatalogHostedService automatically (not this
+    # suite's own explicit POST /sync), which runs a correct full sync
+    # against ArchiveUrl; POST /sync then finds the catalog already ready and
+    # runs *incrementally* instead, which silently overwrote every fixture
+    # book with real internet content the first time this was missed --
+    # EbookRdfBaseUrl was the one Gutenberg URL not yet overridden.
+    for book in books:
+        book_dir = GUTENBERG_FIXTURE_ROOT / "cache" / "epub" / str(book.gutenberg_id)
+        book_dir.mkdir(parents=True, exist_ok=True)
+        (book_dir / f"pg{book.gutenberg_id}.rdf").write_bytes(gutenberg_fixtures.build_rdf(book))
+
+    return {
+        "SSL_CERT_FILE": "/etc/ssl/lab-gutenberg-ca-bundle.pem",
+        "GutenbergCatalog__ArchiveUrl": f"{clients.GUTENBERG_FIXTURE_INTERNAL_URL}/rdf-files.tar.bz2",
+        "GutenbergCatalog__RecentUpdatesFeedUrl": f"{clients.GUTENBERG_FIXTURE_INTERNAL_URL}/today.rss",
+        "GutenbergCatalog__EbookRdfBaseUrl": f"{clients.GUTENBERG_FIXTURE_INTERNAL_URL}/cache/epub/",
+        "GutenbergCatalog__MinimumBookCount": "1",
+        "FAMILY_LIBRARIAN_GUTENBERG_TLS_DIR": str(GUTENBERG_TLS_DIR),
+        "FAMILY_LIBRARIAN_GUTENBERG_FIXTURE_ROOT": str(GUTENBERG_FIXTURE_ROOT),
+    }
+
+
 class _BaseScenario:
     """One fresh, disposable Compose project backing one suite case.
 
@@ -541,8 +707,22 @@ class _BaseScenario:
     of bug already found and fixed once this session in `clients down`).
     """
 
-    def __init__(self, values: dict[str, str], test_id: str, *, keep: bool, profiles: Sequence[str] = ()) -> None:
-        self._values = values
+    def __init__(
+        self,
+        values: dict[str, str],
+        test_id: str,
+        *,
+        keep: bool,
+        profiles: Sequence[str] = (),
+        extra_env: dict[str, str] | None = None,
+    ) -> None:
+        # A per-instance merge, not a mutation of the shared `values` dict
+        # every scenario is constructed from. A suite's own @SUITE.setup
+        # assembles this (see ensure_shared_clamav() for the
+        # FAMILY_LIBRARIAN_CLAMAV_HOST/_PORT case, ensure_gutenberg_fixture_tls()
+        # for the SSL_CERT_FILE case) so every case it builds for the rest of
+        # the suite picks up whatever that suite needs beyond the defaults.
+        self._values = {**values, **(extra_env or {})}
         self._test_id = test_id
         self._keep = keep
         self._profiles = (PROFILE, *profiles)
@@ -556,22 +736,43 @@ class _BaseScenario:
         self._result_directory: Path | None = None
 
     def __enter__(self) -> "_BaseScenario":
-        _run_or_exit(self._values, self.project_name, "down", "--volumes", "--remove-orphans", profiles=ALL_PROFILES)
-        _run_or_exit(self._values, self.project_name, "up", "--wait", "--remove-orphans", profiles=self._profiles)
-        checks, self.readiness_passed = _readiness(self._values, self.project_name)
-        outcome = "pass" if self.readiness_passed else "fail"
-        self._result_directory = _capture_result(self._values, self.project_name, checks, outcome).parent
-        if not self.readiness_passed:
-            raise AssertionError("Base profile failed readiness checks.")
-        api = FamilyLibrarianApi(_host_base(self._values))
-        api.authenticate(
-            self._values["FAMILY_LIBRARIAN_ADMIN_EMAIL"],
-            self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
-        )
-        self.api = api
-        self.cwa_client, self.abs_client, self.cwa_sftp_wiring = _wire_destinations(
-            self._values, self._profiles, api
-        )
+        # Python never calls __exit__ if __enter__ itself raises -- there is
+        # no context to exit yet. Before this try/except, a readiness or
+        # wiring failure here left this scenario's containers running
+        # forever: found for real when a shared-ClamAV connectivity problem
+        # made readiness fail, and the leaked `cwa` container then held the
+        # one fixed host port every later case's `up` also needs, failing
+        # the entire rest of the run with an unrelated-looking port-conflict
+        # error. This mirrors __exit__'s own teardown so either path leaves
+        # nothing behind, `--keep` still honored.
+        try:
+            _run_or_exit(
+                self._values, self.project_name, "down", "--volumes", "--remove-orphans", profiles=ALL_PROFILES
+            )
+            _run_or_exit(self._values, self.project_name, "up", "--wait", "--remove-orphans", profiles=self._profiles)
+            checks, self.readiness_passed = _readiness(self._values, self.project_name)
+            outcome = "pass" if self.readiness_passed else "fail"
+            self._result_directory = _capture_result(self._values, self.project_name, checks, outcome).parent
+            if not self.readiness_passed:
+                raise AssertionError("Base profile failed readiness checks.")
+            api = FamilyLibrarianApi(_host_base(self._values))
+            api.authenticate(
+                self._values["FAMILY_LIBRARIAN_ADMIN_EMAIL"],
+                self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
+            )
+            self.api = api
+            self.cwa_client, self.abs_client, self.cwa_sftp_wiring = _wire_destinations(
+                self._values, self._profiles, api
+            )
+        except BaseException:
+            if not self._keep:
+                result = _compose(
+                    self._values, self.project_name, "down", "--volumes", "--remove-orphans",
+                    profiles=ALL_PROFILES, capture=True,
+                )
+                if result.returncode:
+                    print(_redact(result.stderr, self._values), file=sys.stderr, end="")
+            raise
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
@@ -765,10 +966,21 @@ done
         )
 
     def stop_clamav(self) -> None:
-        self.stop_service("clamav")
+        """Stop the suite's one shared ClamAV container.
+
+        Not `stop_service("clamav")`: this scenario's own project has no
+        clamav service of its own anymore (see `ensure_shared_clamav()`) --
+        it lives in `SHARED_CLAMAV_PROJECT` instead. Stopping it affects
+        every other case in the suite for as long as it stays down, which is
+        only safe because `start_clamav()` always runs before this case ends
+        -- `SEC-03` is the only caller, and its own contract already requires
+        that (see its "allows_retry" name).
+        """
+        _run_or_exit(self._values, SHARED_CLAMAV_PROJECT, "stop", "clamav", profiles=(SHARED_CLAMAV_PROFILE,))
 
     def start_clamav(self) -> None:
-        self.start_service("clamav")
+        _run_or_exit(self._values, SHARED_CLAMAV_PROJECT, "up", "--wait", "clamav", profiles=(SHARED_CLAMAV_PROFILE,))
+        _wait_for_service(self._values, SHARED_CLAMAV_PROJECT, "clamav")
 
 
 class _BaseScenarioFactory:
@@ -795,9 +1007,20 @@ class _BaseScenarioFactory:
         self._values = values
         self._keep = keep
         self.active_profiles: tuple[str, ...] = ()
+        # Set by a suite's own @SUITE.setup (ensure_shared_clamav(),
+        # ensure_gutenberg_fixture_tls(), or both merged together) before any
+        # of its cases run, cleared by @SUITE.teardown -- see
+        # _BaseScenario.__init__'s docstring. Suite-scoped, not per-case:
+        # cases run one at a time (same invariant _scoped_for_run's
+        # active_profiles wrapping already depends on), so a suite's setup
+        # and teardown bracketing every one of its cases is enough; no
+        # per-case save/restore wrapping needed the way active_profiles has.
+        self.extra_env: dict[str, str] = {}
 
     def __call__(self, test_id: str) -> _BaseScenario:
-        return _BaseScenario(self._values, test_id, keep=self._keep, profiles=self.active_profiles)
+        return _BaseScenario(
+            self._values, test_id, keep=self._keep, profiles=self.active_profiles, extra_env=self.extra_env
+        )
 
 
 def _scoped_for_run(suites: Sequence[Suite], factory: _BaseScenarioFactory) -> list[Suite]:
@@ -858,7 +1081,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
     # of this invocation's lifetime.
     with lab_common.run_lock(label="lab up"):
         _checkout_source(args.target)
-        values = _load_lab_env()
+        values = {**_load_lab_env(), **ensure_shared_clamav()}
         project_name = lab_common.project_name()
         profiles = (PROFILE, *args.profile)
         _run_or_exit(values, project_name, "up", "--build", "--wait", "--remove-orphans", profiles=profiles)
@@ -918,6 +1141,10 @@ def handle_down(args: argparse.Namespace, config: object) -> int:
     values = _load_lab_env()
     project_name = _project_name(values, args.project_name, unique=False)
     _run_or_exit(values, project_name, "down", "--remove-orphans", profiles=ALL_PROFILES)
+    # `./lab up` starts the shared ClamAV container (ensure_shared_clamav())
+    # outside this project -- ALL_PROFILES above never reaches it, so it
+    # would otherwise leak past this command's own "stopped" message.
+    teardown_shared_clamav()
     print(f"Base profile stopped: {project_name}", flush=True)
     return 0
 

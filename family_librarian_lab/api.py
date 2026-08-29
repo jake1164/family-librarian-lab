@@ -161,8 +161,14 @@ class FamilyLibrarianApi:
             raise AssertionError(f"Created request did not contain a {media_type} format.")
         return _required_string(request, "id", "created request"), format_id
 
-    def resolve_demo_work(self) -> str:
-        work = self._request("POST", "/api/v1/catalog/candidates/demo/the-hobbit/resolve", data=b"")
+    def resolve_demo_work(self, slug: str = "the-hobbit") -> str:
+        """Resolve one of DemoBookMetadataProvider's fixed catalog entries
+        into a real Work. `slug` defaults to "the-hobbit" (every other
+        existing suite's target) -- the gutenberg suite uses
+        "project-hail-mary" instead so its Gutenberg-catalog fixtures (built
+        with a matching title/author) don't share a Work with unrelated
+        suites."""
+        work = self._request("POST", f"/api/v1/catalog/candidates/demo/{slug}/resolve", data=b"")
         _require_status(work, (200, 201), "demo catalog work resolution")
         return _required_string(_object(work.body, "catalog work"), "id", "catalog work")
 
@@ -170,6 +176,33 @@ class FamilyLibrarianApi:
         response = self._request("GET", f"/api/v1/catalog/works/{work_id}/fulfillment-options")
         _require_status(response, 200, "work fulfillment options")
         return _object(response.body, "work fulfillment options")
+
+    def gutenberg_status(self) -> dict[str, Any]:
+        response = self._request("GET", "/api/v1/admin/gutenberg/status")
+        _require_status(response, 200, "gutenberg catalog status")
+        return _object(response.body, "gutenberg catalog status")
+
+    def gutenberg_sync(self) -> ApiResponse:
+        """Trigger a Gutenberg catalog sync (incremental if the catalog is
+        already ready, full otherwise -- GutenbergCatalogEndpoints' own
+        rule). 409 if one is already in progress; 502 on failure -- callers
+        decide what each status means for their scenario."""
+        return self._request("POST", "/api/v1/admin/gutenberg/sync", data=b"")
+
+    def gutenberg_purge(self) -> ApiResponse:
+        return self._request("DELETE", "/api/v1/admin/gutenberg/catalog")
+
+    def set_provider_enabled(self, provider_id: str, enabled: bool) -> ApiResponse:
+        """GutenbergProvider.FindDirectAcquisitionsAsync (and every other
+        IAutomaticDirectAcquisitionProvider) checks `ProviderState.IsUsable`
+        before ever searching -- a synced catalog with real matching data
+        still returns zero fulfillment options until this is called, same
+        registered/enabled gate CWA/ABS destinations already need
+        (confirmed against real code: GutenbergProvider.cs's
+        FindDirectAcquisitionsAsync)."""
+        return self._request(
+            "PUT", f"/api/v1/admin/integrations/metadata/{provider_id}/enabled", json_body={"enabled": enabled}
+        )
 
     def upload_manual_epub(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
         return self._upload_manual_file(request_id, format_id, content, filename)
