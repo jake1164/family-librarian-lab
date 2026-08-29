@@ -135,7 +135,11 @@ def _configure_run(parser: argparse.ArgumentParser) -> None:
     # both, found and fixed 2026-08-29 (user: "legacy system was ./lab run
     # branch(or tag) and would run all and you could then narrow it down by
     # selecting suites").
-    parser.add_argument("--test-group", default="all", help="Suite group to run (default: all; narrow with e.g. base, cwa-local, gutenberg)")
+    parser.add_argument(
+        "--test-group",
+        default="all",
+        help="Suite group(s) to run, comma-separated (default: all; e.g. base, cwa-local, cwa-local,gutenberg)",
+    )
     parser.add_argument("--case", default=None, help="Run one registered case id (for example SEC-02)")
     parser.add_argument("--keep", action="store_true", help="Keep each failed/successful scenario project for investigation")
     parser.add_argument("--skip-build", action="store_true", help="Use the existing Family Librarian image without rebuilding it")
@@ -1346,6 +1350,95 @@ def _describe_run_plan(args: argparse.Namespace) -> RunPlan:
     return plan
 
 
+def _write_se_lab_report_record(
+    *,
+    selector: str,
+    all_results: list,
+    failed: bool,
+    started_at: datetime,
+    completed_at: datetime,
+    run_directory: Path,
+) -> None:
+    """Additive: also populate se-lab's own generic report/status mechanism
+    (`report run`/`report latest`) alongside this lab's own
+    results-<suite>.json / results-suite-run.json files.
+
+    Confirmed broken for this lab until now, not by anything this run
+    itself does wrong: se-lab's report/artifact system was ported wholesale
+    during se-lab's original bootstrap, classified "generic" by grepping
+    m3undle-lab's common.py for product-specific string references -- never
+    actually verified against a real consumer calling it end to end.
+    `./lab report latest` returned "No recorded lab run." even immediately
+    after a real, successful run, for both family-librarian-lab and
+    m3undle-lab. This function is the first real integration proof; it must
+    never mask or replace the results this lab's own artifacts already
+    provide, only add to them, so any failure here is a warning, not a
+    raised error.
+    """
+    try:
+        lab_root_commit = lab_common.git_commit(REPO_ROOT, short=True)
+        lab_root_branch = lab_common.git_branch(REPO_ROOT)
+        product_is_checkout = lab_common.is_git_checkout(lab_common.repo_dir())
+        product_branch = lab_common.repo_current_branch() if product_is_checkout else None
+        product_commit = lab_common.repo_head_commit(short=True) if product_is_checkout else None
+        started_iso = started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        completed_iso = completed_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        duration_seconds = (completed_at - started_at).total_seconds()
+
+        se_run_id, se_summary_path, _ = lab_common.create_results_run(f"suites-{selector}")
+        se_summary_path.write_text(
+            json.dumps(
+                {
+                    "metadata": {
+                        "run_id": se_run_id,
+                        "lab_repo_branch": product_branch,
+                        "lab_repo_commit": product_commit,
+                        "hostname": lab_common.current_hostname(),
+                        "timestamp_utc": started_iso,
+                        "completed_at_utc": completed_iso,
+                        "duration_seconds": duration_seconds,
+                    },
+                    "suites": [
+                        {
+                            "suite": result.suite_name,
+                            "status": (
+                                "FAIL" if (result.failed or result.drifted or not result.setup_ok) else "PASS"
+                            ),
+                            "passed": result.passed,
+                            "failed": result.failed,
+                            "skipped": result.skipped,
+                            "elapsed_seconds": result.duration_seconds,
+                        }
+                        for result in all_results
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        lab_common.write_latest_artifact_record(
+            {
+                "kind": "run-summary",
+                "run_id": se_run_id,
+                "status": "FAIL" if failed else "PASS",
+                "host": lab_common.current_hostname(),
+                "source_type": "branch" if product_branch else None,
+                "source_ref": product_branch,
+                "product_commit": product_commit,
+                "lab_commit": lab_root_commit,
+                "started_at_utc": started_iso,
+                "completed_at_utc": completed_iso,
+                "duration_seconds": duration_seconds,
+                "summary_path": str(se_summary_path),
+                "artifacts_dir": str(run_directory),
+            }
+        )
+    except Exception as error:  # never let se-lab's parallel reporting mask a real test result
+        print(f"Warning: could not populate se-lab's shared report/status record: {error}", file=sys.stderr)
+
+
 @registry.command(
     "run",
     help="Run black-box integration suites against fresh, isolated base-profile projects",
@@ -1420,6 +1513,10 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         print(f"Suite result captured: {summary_path}", flush=True)
 
         completed_at = datetime.now(UTC)
+        _write_se_lab_report_record(
+            selector=selector, all_results=all_results, failed=failed,
+            started_at=started_at, completed_at=completed_at, run_directory=run_directory,
+        )
         run_report = RunReport(label="Family Librarian Lab")
         if lab_common.is_git_checkout(lab_common.repo_dir()):
             branch = lab_common.repo_current_branch() or "detached"
