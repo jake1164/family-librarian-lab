@@ -113,7 +113,14 @@ def _configure_project(parser: argparse.ArgumentParser) -> None:
 
 def _configure_run(parser: argparse.ArgumentParser) -> None:
     _configure_checkout_target(parser)
-    parser.add_argument("--test-group", default="base", help="Suite group to run (default: base; use all for every suite)")
+    # "all" matches se-lab's own select_suites() default ("by group, default
+    # 'all'") and the legacy m3undle-lab convention (./lab run <branch> ran
+    # every suite; --test-group/--only was how you narrowed down). This lab
+    # had locally overridden that to "base" -- a real regression against
+    # both, found and fixed 2026-08-29 (user: "legacy system was ./lab run
+    # branch(or tag) and would run all and you could then narrow it down by
+    # selecting suites").
+    parser.add_argument("--test-group", default="all", help="Suite group to run (default: all; narrow with e.g. base, cwa-local, gutenberg)")
     parser.add_argument("--case", default=None, help="Run one registered case id (for example SEC-02)")
     parser.add_argument("--keep", action="store_true", help="Keep each failed/successful scenario project for investigation")
     parser.add_argument("--skip-build", action="store_true", help="Use the existing Family Librarian image without rebuilding it")
