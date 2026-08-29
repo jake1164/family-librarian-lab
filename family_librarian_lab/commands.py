@@ -758,6 +758,24 @@ class _BaseScenario:
         self._result_directory: Path | None = None
 
     def __enter__(self) -> "_BaseScenario":
+        # A plain-text, unconditionally-printed marker: every case's own
+        # `docker compose up`/`down` output streams live regardless of
+        # dashboard mode (see _compose()'s own comment on
+        # stream_subprocess_to_dashboard()), which turns a multi-suite run
+        # into an unbroken firehose of "Container X Creating/Starting/
+        # Healthy" lines with no clean boundary between cases -- the only
+        # prior per-case marker was the `+ docker compose --project-name
+        # ...` echo line itself, which requires parsing the project name to
+        # find the case id. `grep -n "^==== "` now gives a clean index of
+        # every case's start line; each one's own [PASS]/[FAIL]/[SKIP]
+        # summary line (printed later, from ctx.ok/fail/skip) is already an
+        # adequate end marker, so this doesn't duplicate one.
+        start_marker = f"==== {self._test_id} starting ({self.project_name}) ===="
+        dashboard = lab_common.active_dashboard()
+        if dashboard is not None:
+            dashboard.print(start_marker)
+        else:
+            print(start_marker, flush=True)
         # Python never calls __exit__ if __enter__ itself raises -- there is
         # no context to exit yet. Before this try/except, a readiness or
         # wiring failure here left this scenario's containers running
@@ -1415,3 +1433,86 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         run_report.print()
 
         return 1 if failed else 0
+
+
+def _configure_report_failed(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--from-run", default=None, help="A results/ run directory name to inspect (default: the most recent run)"
+    )
+    parser.add_argument("--include-skipped", action="store_true", help="Also list skipped cases, not just failed ones")
+
+
+def _resolve_run_directory(from_run: str | None) -> Path:
+    if from_run:
+        candidate = RESULTS_ROOT / from_run
+        if not candidate.is_dir():
+            raise SystemExit(f"No such run directory: {candidate}")
+        return candidate
+    # Every `lab run` writes to a directory named "<timestamp>-suites-<selector>"
+    # (see handle_run) -- sorted by name, the newest timestamp sorts last.
+    candidates = sorted(RESULTS_ROOT.glob("*-suites-*"))
+    if not candidates:
+        raise SystemExit(f"No runs found under {RESULTS_ROOT}. Run './lab run' first.")
+    return candidates[-1]
+
+
+def _find_case_artifact_dir(case_id: str) -> Path | None:
+    """Best-effort pointer to the case's own scenario-capture directory
+    (compose-logs.txt, api-trace.json) for deeper digging. Not exact: a
+    case can open its scenario under a suffixed internal id (e.g. CWA-S-02
+    is recorded as "CWA-S-02" but its own project is
+    "family-librarian-lab-cwa-s-02-key-<timestamp>"), so this matches by
+    substring and returns the most recently modified hit -- right in
+    practice shortly after the run finished, not a guaranteed exact match
+    long after `results/` has accumulated many runs."""
+    needle = case_id.lower()
+    matches = [
+        path
+        for path in RESULTS_ROOT.glob(f"*-{LAB_PROJECT_PREFIX}-*")
+        if path.is_dir() and needle in path.name.lower()
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda path: path.stat().st_mtime)
+
+
+@registry.command(
+    "report failed",
+    help="Show just the failed (optionally also skipped) cases from a run, not the full firehose",
+    configure=_configure_report_failed,
+)
+def handle_report_failed(args: argparse.Namespace, config: object) -> int:
+    run_directory = _resolve_run_directory(args.from_run)
+    suite_run_path = run_directory / "results-suite-run.json"
+    if not suite_run_path.is_file():
+        raise SystemExit(f"No results-suite-run.json in {run_directory}")
+    suite_run = json.loads(suite_run_path.read_text(encoding="utf-8"))
+
+    wanted = {"fail"} | ({"skip"} if args.include_skipped else set())
+    found = False
+    print(f"Run: {run_directory.name}\n", flush=True)
+    for suite_entry in suite_run.get("suites", []):
+        suite_name = suite_entry.get("suite")
+        if suite_entry.get("setup_error"):
+            found = True
+            print(f"[{suite_name}] SUITE SETUP FAILED: {suite_entry['setup_error']}")
+            continue
+        result_path = run_directory / str(suite_entry.get("result", ""))
+        if not result_path.is_file():
+            continue
+        suite_results = json.loads(result_path.read_text(encoding="utf-8"))
+        for case in suite_results.get("results", []):
+            status = case.get("status")
+            if status not in wanted:
+                continue
+            found = True
+            case_id = case.get("name", "?")
+            print(f"[{suite_name}] {str(status).upper()} {case_id}: {case.get('message', '')}")
+            artifact_dir = _find_case_artifact_dir(case_id)
+            if artifact_dir is not None:
+                print(f"    logs: {artifact_dir}")
+
+    if not found:
+        suffix = "" if args.include_skipped else " (pass --include-skipped to also see skips)"
+        print(f"No failed cases in this run.{suffix}")
+    return 0
