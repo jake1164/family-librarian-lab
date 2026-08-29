@@ -111,6 +111,21 @@ def _configure_project(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project-name", default=None, help="Compose project name (default: the lab's standard project name)")
 
 
+def _configure_down(parser: argparse.ArgumentParser) -> None:
+    _configure_project(parser)
+    parser.add_argument(
+        "--all-projects",
+        action="store_true",
+        help=(
+            "Tear down every family-librarian-lab-* Compose project on this host, not just the "
+            "standard one -- recovers from a leaked scenario run or an interrupted 'lab run' "
+            "(found for real: a single leaked scenario held a fixed host port and jammed every "
+            "later case in the next run with a cryptic 'port already allocated' error). Ignores "
+            "--project-name."
+        ),
+    )
+
+
 def _configure_run(parser: argparse.ArgumentParser) -> None:
     _configure_checkout_target(parser)
     # "all" matches se-lab's own select_suites() default ("by group, default
@@ -1143,9 +1158,16 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
     return 0 if passed else 1
 
 
-@registry.command("base down", help="Stop a base-profile project and remove its containers", configure=_configure_project)
+@registry.command(
+    "base down",
+    help="Stop a base-profile project (or every family-librarian-lab-* project with --all-projects)",
+    configure=_configure_down,
+)
 def handle_down(args: argparse.Namespace, config: object) -> int:
     values = _load_lab_env()
+    if args.all_projects:
+        _down_all_projects(values)
+        return 0
     project_name = _project_name(values, args.project_name, unique=False)
     _run_or_exit(values, project_name, "down", "--remove-orphans", profiles=ALL_PROFILES)
     # `./lab up` starts the shared ClamAV container (ensure_shared_clamav())
@@ -1154,6 +1176,59 @@ def handle_down(args: argparse.Namespace, config: object) -> int:
     teardown_shared_clamav()
     print(f"Base profile stopped: {project_name}", flush=True)
     return 0
+
+
+LAB_PROJECT_PREFIX = "family-librarian-lab"
+
+
+def _down_all_projects(values: dict[str, str]) -> None:
+    """Tear down every family-librarian-lab-* Compose project Docker knows
+    about, regardless of profile or how it was created: the standard
+    `./lab up` project, the shared ClamAV project, or a scenario-run
+    project (`family-librarian-lab-<test-id>-<timestamp>`) left behind by a
+    crashed or interrupted `./lab run`.
+
+    `--all` (not just running projects) so a fully-stopped-but-not-removed
+    leftover is still caught. The prefix match is exact and case-sensitive
+    on purpose: a bare `docker compose ls` on this same host also lists an
+    entirely unrelated `family-librarian`/`family-librarian-debug` project
+    (someone's own separate, non-lab dev stack for the product itself) --
+    matching on "family-librarian" without the "-lab" would sweep that too.
+    """
+    result = subprocess.run(
+        ["docker", "compose", "ls", "--all", "--format", "json"], capture_output=True, text=True, check=False
+    )
+    if result.returncode:
+        print(result.stderr, file=sys.stderr, end="")
+        raise SystemExit("Could not list Compose projects.")
+    try:
+        projects = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"Could not parse `docker compose ls` output: {error}") from error
+
+    names = sorted(
+        {
+            project["Name"]
+            for project in projects
+            if isinstance(project, dict) and str(project.get("Name", "")).startswith(LAB_PROJECT_PREFIX)
+        }
+    )
+    if not names:
+        print(f"No {LAB_PROJECT_PREFIX}* Compose projects found.", flush=True)
+        return
+
+    failures: list[str] = []
+    for name in names:
+        print(f"Tearing down {name}...", flush=True)
+        outcome = _compose(values, name, "down", "--volumes", "--remove-orphans", profiles=ALL_PROFILES, capture=True)
+        if outcome.returncode:
+            failures.append(name)
+            print(_redact(outcome.stderr, values), file=sys.stderr, end="")
+
+    ok_count = len(names) - len(failures)
+    print(f"Tore down {ok_count}/{len(names)} {LAB_PROJECT_PREFIX}* project(s).", flush=True)
+    if failures:
+        raise SystemExit(f"Failed to tear down: {', '.join(failures)} -- see output above.")
 
 
 def _profiles_for(suite: Suite) -> tuple[str, ...]:
@@ -1177,6 +1252,50 @@ def _profiles_for(suite: Suite) -> tuple[str, ...]:
     ):
         return (suite.group,)
     return ()
+
+
+def _check_no_conflicting_containers(values: dict[str, str]) -> None:
+    """Fail fast, with a clear message naming the actual container, if a
+    port every scenario in this run needs is already held by something
+    else -- rather than letting each case fail independently with a
+    cryptic Docker networking error.
+
+    Found for real: a single scenario leaked by an earlier, interrupted
+    `lab run` (its own teardown never got a chance to run) held CWA's fixed
+    host port, and every case in the *next* run failed one at a time with
+    "port is already allocated" -- `run_lock()` only guards against a second
+    `lab run` process overlapping this one; it has no way to know about a
+    container left running by a run that already exited.
+    """
+    fixed_ports = {
+        "family-librarian": int(values.get("FAMILY_LIBRARIAN_HOST_PORT", DEFAULT_HOST_PORT)),
+        "cwa": int(values.get("FAMILY_LIBRARIAN_CWA_HOST_PORT", clients.CWA_DEFAULT_HOST_PORT)),
+        "abs": int(values.get("FAMILY_LIBRARIAN_ABS_HOST_PORT", clients.ABS_DEFAULT_HOST_PORT)),
+    }
+    result = subprocess.run(["docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"], capture_output=True, text=True, check=False)
+    if result.returncode:
+        # Don't block a run just because this diagnostic itself couldn't run
+        # (docker CLI missing/misbehaving) -- the real `up` call will fail
+        # loudly on its own if docker is genuinely unusable.
+        return
+
+    conflicts: list[str] = []
+    for line in result.stdout.splitlines():
+        name, _, ports = line.partition("\t")
+        if not name:
+            continue
+        for label, port in fixed_ports.items():
+            if f":{port}->" in ports:
+                conflicts.append(f"  {name}  (holding {label}'s port {port})")
+
+    if conflicts:
+        raise SystemExit(
+            "Found already-running container(s) holding a port this run needs, likely "
+            "leaked from a previous run or a manual './lab up' session:\n"
+            + "\n".join(conflicts)
+            + "\n\nRun './lab base down --all-projects' to clean up everything this lab "
+            "could have started, then try again."
+        )
 
 
 def _describe_run_plan(args: argparse.Namespace) -> RunPlan:
@@ -1235,6 +1354,7 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         if not args.skip_build:
             _checkout_source(args.target)
         values = _load_lab_env()
+        _check_no_conflicting_containers(values)
         if not args.skip_build:
             build_project = lab_common.project_name()
             _run_or_exit(values, build_project, "build", "family-librarian", "migrate")
