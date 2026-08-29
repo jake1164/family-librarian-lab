@@ -222,6 +222,17 @@ class FamilyLibrarianApi:
             f"/api/v1/admin/requests/{request_id}/formats/{format_id}/manual-import",
             data=payload,
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            # manual-import runs the real security pipeline synchronously
+            # before responding (SecurityEvaluationService.EvaluateAsync is
+            # awaited inline, confirmed against real code) -- a real ClamAV
+            # INSTREAM scan of a large fixture on a slower/busier host can
+            # exceed the default 30s. Found for real: CWA-L-04's 32MB
+            # large_epub() fixture consistently hit a bare client-side
+            # socket timeout ("Scenario failed unexpectedly: timed out",
+            # the upload call missing entirely from api-trace.json) on a
+            # shared host, never on a quieter one -- not a product bug, a
+            # too-tight lab-side timeout for a deliberately large fixture.
+            timeout=120,
         )
 
     def configure_cwa_local(
@@ -417,6 +428,7 @@ class FamilyLibrarianApi:
         json_body: object | None = None,
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
+        timeout: int = 30,
     ) -> ApiResponse:
         if json_body is not None:
             if data is not None:
@@ -428,7 +440,7 @@ class FamilyLibrarianApi:
             request_headers["X-CSRF-TOKEN"] = self._csrf_token
         request = Request(self._base_url + path, data=data, headers=request_headers, method=method)
         try:
-            with self._opener.open(request, timeout=30) as response:  # local Compose URL supplied by the lab
+            with self._opener.open(request, timeout=timeout) as response:  # local Compose URL supplied by the lab
                 status = response.status
                 raw = response.read()
         except HTTPError as error:
