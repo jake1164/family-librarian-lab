@@ -135,18 +135,32 @@ class FamilyLibrarianApi:
         _require_status(response, 200, "Audiobookshelf library discovery")
         return _object(response.body, "Audiobookshelf library discovery")
 
-    def create_demo_ebook_request(self) -> tuple[str, str]:
-        return self.create_demo_request("Ebook")
+    def create_demo_ebook_request(self, *, confirm_owned: bool = False) -> tuple[str, str]:
+        return self.create_demo_request("Ebook", confirm_owned=confirm_owned)
 
-    def create_demo_audiobook_request(self) -> tuple[str, str]:
-        return self.create_demo_request("Audiobook")
+    def create_demo_audiobook_request(self, *, confirm_owned: bool = False) -> tuple[str, str]:
+        return self.create_demo_request("Audiobook", confirm_owned=confirm_owned)
 
-    def create_demo_request(self, media_type: str) -> tuple[str, str]:
+    def create_demo_request(self, media_type: str, *, confirm_owned: bool = False) -> tuple[str, str]:
+        # BookRequestService.CreateRequestAsync gates on two independent
+        # confirmations: ConfirmDuplicate (an open request for this work
+        # already exists) and ConfirmOwned (a destination already reports
+        # this exact item, e.g. a directly seeded ABS item -- see ABS-03,
+        # the only caller that pre-seeds an owned item and so the only one
+        # that ever needs confirm_owned=True). Every other caller keeps the
+        # product's own default (False) rather than blanket-confirming a
+        # warning no other case is set up to trigger.
         work_id = self.resolve_demo_work()
         created = self._request(
             "POST",
             "/api/v1/requests/",
-            json_body={"workId": work_id, "formats": [media_type], "note": None, "confirmDuplicate": True},
+            json_body={
+                "workId": work_id,
+                "formats": [media_type],
+                "note": None,
+                "confirmDuplicate": True,
+                "confirmOwned": confirm_owned,
+            },
         )
         _require_status(created, 201, f"{media_type.lower()} request creation")
         request = _object(created.body, "created request")
