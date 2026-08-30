@@ -858,6 +858,49 @@ class _BaseScenario:
         self.stop_service(service_name)
         self.start_service(service_name)
 
+    def run_backup_script(self, script_name: str, *arguments: str) -> str:
+        """Run one of the product's own scripts/backups/*.sh scripts,
+        completely unmodified, against this scenario's real Compose project,
+        and return its captured stdout.
+
+        Those scripts only accept --compose-file, never a project-name flag
+        -- targeting this scenario's own dynamically-named project (rather
+        than whatever `docker compose` would resolve by default) has to go
+        through the same environment-variable mechanism `docker compose`
+        itself supports without -p: COMPOSE_PROJECT_NAME. compose.base.yaml
+        also profile-gates every base-profile service (`profiles: [base]`),
+        unlike the product's own unrestricted compose.yaml, so the scripts'
+        unmodified `docker compose ... exec postgres ...` calls need
+        COMPOSE_PROFILES set too, or they can't see a service that is, in
+        fact, already running.
+        """
+        source_dir = Path(self._values["FAMILY_LIBRARIAN_SOURCE_DIR"])
+        script_path = source_dir / "scripts" / "backups" / script_name
+        environment = os.environ.copy()
+        environment.update(self._values)
+        environment["COMPOSE_PROJECT_NAME"] = self.project_name
+        environment["COMPOSE_PROFILES"] = ",".join(self._profiles)
+        command = [str(script_path)]
+        # verify-backup.sh never touches Docker at all (pure filesystem/
+        # checksum verification) and, unlike the other two, does not accept
+        # --compose-file -- passing it anyway hits that script's own
+        # unrecognized-flag branch before it ever reaches --backup.
+        if script_name != "verify-backup.sh":
+            command += ["--compose-file", str(COMPOSE_FILE)]
+        command += list(arguments)
+        result = subprocess.run(
+            command,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            raise AssertionError(
+                f"{script_name} failed (exit {result.returncode}): {_redact(result.stderr, self._values).strip()}"
+            )
+        return result.stdout
+
     def observe_cwa_ingest(self) -> _CwaIngestObserver:
         """Poll CWA's read-only view of the shared ingest volume.
 
