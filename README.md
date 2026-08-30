@@ -204,6 +204,31 @@ encrypted-JSON export/import (`SettingsBackupService`, distinct from `BASE-04`'s
 pg_dump-based backup) — that has no lab coverage at all yet, for any setting, and is
 tracked as its own item rather than built for SMTP alone.
 
+### Outbound communications dispatcher (real notification trigger)
+
+`SMTP-01..04` above only ever exercise the manual admin "send test email" probe. They
+say nothing about the feature that actually motivated building the provider
+abstraction: an administrator transitions a book request to Available or
+NotAvailable, `BookRequestService.AdminTransitionAsync` enqueues an
+`OutboundCommunication`, and a separate background hosted service
+(`OutboundCommunicationDispatcherHostedService`, ~15s poll loop) later sends it
+through `SmtpOutboundCommunicationProvider` — different code, different (asynchronous)
+timing, and a distinct recipient-resolution path than the test-send probe. The
+`communications` test group proves that real end-to-end path against the same `smtp`
+profile/Mailpit fixture above (no separate `./lab up --profile` needed):
+
+```bash
+./lab run --test-group communications
+```
+
+Implemented: `COMM-01` (request becomes Available → a real email is delivered to the
+requester), `COMM-02` (request becomes NotAvailable → same), `COMM-03` (SMTP left
+unconfigured/disabled → the transition still succeeds and no message is ever sent — the
+provider-failure-must-not-block-the-business-operation invariant, end to end). See
+`tests/test_communications.py`'s own module docstring for the full detail, including why
+`admin_transition_request()` driving `status="Available"` directly is a legitimate call
+even though the admin UI never offers it as a button.
+
 se-lab is included as a git submodule at `se-lab/`. After cloning:
 
 ```

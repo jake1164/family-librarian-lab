@@ -58,6 +58,35 @@ class FamilyLibrarianApi:
         _require_status(response, 200, "admin request")
         return _object(response.body, "admin request")
 
+    def admin_transition_request(
+        self, request_id: str, status: str, *, expected_version: int, reason: str | None = None
+    ) -> ApiResponse:
+        """Drives BookRequestService.AdminTransitionAsync directly, the
+        endpoint behind the admin UI's status-change actions. Returns the
+        raw response (not an auto-raised assertion) because a caller proving
+        a stale expected_version needs to see the rejection, the same way
+        set_smtp_enabled() does.
+
+        Unlike every other admin-picked transition, `status="Available"` is
+        real and allowed here even though the admin UI never offers it as a
+        button: RequestStatusTransitions.IsAllowed() -- the only gate this
+        endpoint actually enforces -- permits PendingAcquisition/NeedsReview
+        -> Available directly; BookRequestService's AdminTransitions array
+        (confirmed against real code) is a UI-suggestion list, not an
+        authorization check. Available is normally only ever reached
+        automatically via BookRequest.MarkFormatAvailable once every
+        requested format is delivered, but nothing stops an administrator
+        from forcing it through this endpoint, which is exactly what makes
+        it usable here to reach the Available branch of
+        BookRequestService.AdminTransitionAsync's notification/outbound-
+        communication logic without driving the full upload/CWA-import
+        pipeline CWA-L-02 uses."""
+        return self._request(
+            "POST",
+            f"/api/v1/admin/requests/{request_id}/transitions",
+            json_body={"status": status, "reason": reason, "expectedVersion": expected_version},
+        )
+
     def list_assets(self) -> list[dict[str, Any]]:
         response = self._request("GET", "/api/v1/admin/media-assets/")
         _require_status(response, 200, "media assets")
@@ -198,6 +227,44 @@ class FamilyLibrarianApi:
         )
         _require_status(response, 200, "SMTP test send")
         return _object(response.body, "SMTP test send")
+
+    def configure_smtp(
+        self,
+        *,
+        host: str,
+        port: int,
+        username: str | None,
+        password: str | None,
+        from_address: str,
+        from_name: str,
+        security_mode: str = "StartTls",
+    ) -> dict[str, Any]:
+        """One-shot SMTP setup for suites that only need it working, mirroring
+        configure_cwa_local()/configure_audiobookshelf(): save settings, save
+        the password, prove a real test send against the saved config (the
+        enablement invariant SMTP-02 exercises directly -- SetEnabledAsync
+        refuses to enable without a fresh passing test of exactly what's
+        saved), then enable. The probe email itself lands in Mailpit, so a
+        caller that wants a clean inbox for its own assertions should
+        `scenario.smtp_client.clear()` after calling this, not before."""
+        self.set_smtp_settings(
+            host=host,
+            port=port,
+            security_mode=security_mode,
+            username=username,
+            from_address=from_address,
+            from_name=from_name,
+        )
+        if password is not None:
+            self.set_smtp_password(password)
+
+        probe = self.send_smtp_test(f"smtp-configure-probe-{uuid.uuid4().hex}@example.test")
+        if not probe.get("succeeded"):
+            raise AssertionError(f"SMTP test send did not succeed before enabling: {probe!r}")
+
+        enabled = self._request("PUT", "/api/v1/admin/communications/smtp/enabled", json_body={"enabled": True})
+        _require_status(enabled, 200, "SMTP enable")
+        return self.smtp_settings()
 
     def create_demo_ebook_request(self, *, confirm_owned: bool = False) -> tuple[str, str]:
         return self.create_demo_request("Ebook", confirm_owned=confirm_owned)
