@@ -27,6 +27,7 @@ This lab owns the missing tests:
 | CWA SFTP | SSH.NET unit/client behavior | Trusted-host-key SFTP upload to CWA's real ingest directory, then actual OPDS visibility |
 | Audiobookshelf | Fake HTTP API client | Real library discovery, upload, item lookup, and recorded external item ID |
 | Providers | Parser/client tests and an in-repo sample provider | A separately deployed protocol provider, its network policy, and its complete secure-ingress outcome |
+| Outbound SMTP | Fake test sender (`AlwaysSucceedsSmtpTestSender`), never a real SMTP connection | Real STARTTLS+AUTH send to a real SMTP server, verified via that server's own API — see §7 |
 
 ## Test system and isolation model
 
@@ -70,6 +71,7 @@ Instead, one real ClamAV container is brought up once per **suite** (`ensure_sha
 | `cwa-sftp-password` | Same as key profile | Remote CWA transport with password authentication |
 | `abs` | `base` + Audiobookshelf | Audiobook publishing and library API scenarios |
 | `gutenberg` | `base` + an HTTPS fixture server (archive/RDF/mirror) | Local Gutenberg catalog sync, search, and acquisition scenarios — see §6 below |
+| `smtp` | `base` + a real, disposable SMTP catcher (Mailpit) with TLS+AUTH | Outbound SMTP communications-provider scenarios — see §7 below |
 | `full` | All above plus controlled provider/fault proxy | Restart, retry, and cross-boundary regression scenarios |
 
 The SFTP sidecar is the only writer exposed to Family Librarian in the SFTP profiles. Family Librarian must not mount CWA's ingest or library volume there. CWA sees the same backing ingest volume, making this a genuine remote-ingest topology rather than a local copy followed by a cosmetic SFTP probe.
@@ -189,6 +191,24 @@ The Gutenberg local-catalog feature (product commit `5e9823f`) syncs a `.tar.bz2
 | GUT-07..10 | Corrupted archive; malformed RDF within an archive; below-minimum book count; incremental sync | — | **Not implemented**: need additional fixture archive variants; GUT-08/GUT-10 additionally can't be verified via the public `/status` endpoint as originally envisioned — `ParseErrorCount` and `LastSuccessfulIncrementalSyncUtc` are internal-only (`GutenbergCatalogRepository.ToStatus` does not map them). |
 
 Full detail, including the real config field names, the provider id (`gutendex`, a legacy name — not `gutenberg`), and a real incident this suite's own build surfaced (the background sync service races ahead of an explicit `POST /sync`, taking the incremental path and silently pulling from the live internet unless `EbookRdfBaseUrl` is also overridden), lives in `test_gutenberg.py`'s module docstring rather than duplicated here — read that file before extending this profile.
+
+### 7. SMTP outbound communications profile
+
+The outbound SMTP provider (`feature/smtp-configuration`, the first slice of family-librarian's own `.ai_docs/Family Librarian — Communications and Notification Provider Plan.md`) is admin-configuration surface only today — no FL event yet routes through it (that's the plan's later routing/notification-matrix phases). family-librarian's own test suite never exercises `MailKitSmtpTestSender` for real: `FamilyLibrarianAppFactory` force-registers a stub (`AlwaysSucceedsSmtpTestSender`) for every in-repo test. This profile exists to prove the one thing nothing else proves — that the real connect/STARTTLS/authenticate/send path against a real SMTP server actually works — using the same "assert against the real destination's own API" rule as every other profile here, not a repeat of what the product's own unit/integration tests already cover (recipient validation, secret non-disclosure, antiforgery).
+
+`SmtpSettings` has no plaintext transport option, so STARTTLS is mandatory for every case, including the happy path — there is no cheaper fixture shape available. The `smtp` profile's fixture (`mailpit`) is therefore a real TLS endpoint (self-signed CA, trusted only by suite-scoped scenarios via `ensure_smtp_fixture_tls()`, the same pattern `gutenberg`'s own fixture TLS already established) with SMTP AUTH required against a fixed, committed credential (`docker/mailpit/smtp-auth-file`).
+
+| ID | Scenario | Required assertions | Status |
+| --- | --- | --- | --- |
+| SMTP-01 | Configure, test, and enable delivers a real email | A real STARTTLS+AUTH send reaches Mailpit; verified via Mailpit's own API (not Family Librarian's report of success), including the authenticated SMTP-AUTH username; enabling then succeeds. | Implemented (`test_smtp.py`) |
+| SMTP-02 | Enabling requires a fresh passing test of the *currently saved* settings | Changing settings after a passing test (even to another value that would itself work) resets `LastTestSucceeded` and blocks enable until re-tested. | Implemented |
+| SMTP-03 | Wrong SMTP-AUTH credentials surface a real authentication failure | A real `AuthenticationException` from MailKit is reported back through the test-send response; Mailpit never receives the message. | Implemented |
+| SMTP-04 | An unreachable host surfaces a real connection failure | A real `SocketException` (connection refused) is reported back through the test-send response, not an unhandled error. | Implemented |
+| — | `SmtpSecurityMode.SslOnConnect` (implicit TLS) | — | **Not covered**: Mailpit's own SMTP server only supports STARTTLS, not a separate implicit-TLS listener. |
+| — | A server advertising no STARTTLS support at all | — | **Not covered**: MailKit's `SecureSocketOptions.StartTls` throws `NotSupportedException` in that case, which `MailKitSmtpTestSender.SendTestAsync`'s catch clauses do not handle — a real product-robustness question surfaced while building this profile, not yet turned into a case (needs a second, TLS-less Mailpit instance). |
+| — | Settings-backup HTTP API round trip (`SettingsBackupService`'s encrypted-JSON export/import) | — | **Not covered, for any setting, not just SMTP** — tracked as its own lab gap rather than built here; `BASE-04`'s existing pg_dump-based backup/restore already proves SMTP settings and the encrypted password survive a real backup/restore as part of the whole database. |
+
+Full detail lives in `test_smtp.py`'s own module docstring — read that file before extending this profile.
 
 ## CWA correctness tests that should be introduced with product fixes
 

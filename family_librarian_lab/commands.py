@@ -45,6 +45,7 @@ ALL_PROFILES = (
     clients.CWA_SFTP_PROFILE_KEY,
     clients.CWA_SFTP_PROFILE_PASSWORD,
     clients.GUTENBERG_PROFILE,
+    clients.SMTP_PROFILE,
 )
 SHARED_CLAMAV_PROFILE = "shared-clamav"
 SHARED_CLAMAV_PROJECT = "family-librarian-lab-shared-clamav"
@@ -53,6 +54,8 @@ SFTP_KEY_DIR = REPO_ROOT / "runtime" / "sftp-test-key"
 GUTENBERG_TLS_DIR = REPO_ROOT / "runtime" / "gutenberg-tls"
 GUTENBERG_CA_BUNDLE_PATH = GUTENBERG_TLS_DIR / "ca-bundle.pem"
 GUTENBERG_FIXTURE_ROOT = REPO_ROOT / "runtime" / "gutenberg-fixture-root"
+SMTP_TLS_DIR = REPO_ROOT / "runtime" / "smtp-tls"
+SMTP_CA_BUNDLE_PATH = SMTP_TLS_DIR / "ca-bundle.pem"
 DEFAULT_HOST_PORT = 18080
 DEFAULT_REPO_URL = "git@github.com:jake1164/family-librarian.git"
 _SECRET_NAMES = (
@@ -76,9 +79,15 @@ def _configure_up(parser: argparse.ArgumentParser) -> None:
         nargs="+",
         metavar="CLIENT",
         default=[],
-        choices=[clients.CWA_PROFILE, clients.ABS_PROFILE, clients.CWA_SFTP_PROFILE_KEY, clients.CWA_SFTP_PROFILE_PASSWORD],
+        choices=[
+            clients.CWA_PROFILE,
+            clients.ABS_PROFILE,
+            clients.CWA_SFTP_PROFILE_KEY,
+            clients.CWA_SFTP_PROFILE_PASSWORD,
+            clients.SMTP_PROFILE,
+        ],
         help="Extra destination(s) to bring up and wire alongside the base profile "
-        "(cwa-local, abs, cwa-sftp-key, cwa-sftp-password)",
+        "(cwa-local, abs, cwa-sftp-key, cwa-sftp-password, smtp)",
     )
     # RawDescriptionHelpFormatter so the example block below keeps its own
     # line breaks/indentation instead of argparse re-wrapping it -- only
@@ -96,11 +105,17 @@ Examples:
 --profile takes multiple values in one flag (--profile cwa-local abs).
 cwa-local and cwa-sftp-key/cwa-sftp-password are mutually exclusive -- they
 wire the same underlying `cwa` service over a different ingest transport.
+smtp brings up a real disposable SMTP catcher (Mailpit) but does NOT
+pre-configure Family Librarian's SMTP settings -- unlike CWA/ABS, SMTP
+configuration is the thing to manually exercise via the admin UI, not a
+prerequisite for something else.
 
 Connection info once up (defaults; override the *_HOST_PORT vars in lab.env):
   Family Librarian  http://127.0.0.1:18080  FAMILY_LIBRARIAN_ADMIN_EMAIL / _ADMIN_PASSWORD
   CWA               http://127.0.0.1:18083  admin / admin123
   Audiobookshelf    http://127.0.0.1:18378  bootstrapped and wired in automatically
+  Mailpit (SMTP)    http://127.0.0.1:18025  web UI (user: labmailer / password:
+                     family-librarian-lab-smtp-only); SMTP host mailpit:1025, STARTTLS required
 
 `target` is lab-managed and fetched from GitHub -- push a local branch before
 `./lab up <branch>` can see it. `./lab status` reports health at any time.
@@ -219,6 +234,10 @@ def _load_lab_env() -> dict[str, str]:
     # points at it, which only ensure_gutenberg_fixture_tls() ever sets.
     GUTENBERG_TLS_DIR.mkdir(parents=True, exist_ok=True)
     GUTENBERG_CA_BUNDLE_PATH.touch(exist_ok=True)
+    # Same reasoning, same "always mounted, harmless when empty" pattern, for
+    # the smtp suite's own CA bundle mount -- see ensure_smtp_fixture_tls().
+    SMTP_TLS_DIR.mkdir(parents=True, exist_ok=True)
+    SMTP_CA_BUNDLE_PATH.touch(exist_ok=True)
     return values
 
 
@@ -393,14 +412,20 @@ def _client_host_base(values: dict[str, str], default_port: int, env_key: str) -
 
 def _wire_destinations(
     values: dict[str, str], profiles: Sequence[str], api: FamilyLibrarianApi
-) -> tuple["clients.CwaClient | None", "clients.AbsClient | None", "dict[str, object] | None"]:
+) -> tuple[
+    "clients.CwaClient | None",
+    "clients.AbsClient | None",
+    "clients.MailpitClient | None",
+    "dict[str, object] | None",
+]:
     """Configure Family Librarian to point at whichever extra destinations this
     scenario/deployment brought up -- the same call, used by both `up` (manual
-    testing) and the cwa-local/abs/cwa-sftp-* suites' scenario setup (automated
-    testing), so both paths exercise the identical wiring rather than two
-    hand-maintained copies of it."""
+    testing) and the cwa-local/abs/cwa-sftp-*/smtp suites' scenario setup
+    (automated testing), so both paths exercise the identical wiring rather
+    than two hand-maintained copies of it."""
     cwa_client: clients.CwaClient | None = None
     abs_client: clients.AbsClient | None = None
+    smtp_client: clients.MailpitClient | None = None
     sftp_wiring: dict[str, object] | None = None
 
     if clients.CWA_PROFILE in profiles:
@@ -444,7 +469,18 @@ def _wire_destinations(
             base_url=clients.ABS_INTERNAL_URL, library_id=library_id, folder_id=folder_id, api_token=token
         )
 
-    return cwa_client, abs_client, sftp_wiring
+    if clients.SMTP_PROFILE in profiles:
+        # Deliberately does not call any Family Librarian settings API,
+        # unlike CWA/ABS above: SMTP configuration is the thing every
+        # tests/test_smtp.py case exercises directly, not a prerequisite for
+        # something else (nothing gates request creation on SMTP being
+        # ready). Just construct the client so callers can reach Mailpit's
+        # own API.
+        smtp_client = clients.MailpitClient(
+            host_base_url=_client_host_base(values, clients.SMTP_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_SMTP_HOST_PORT")
+        )
+
+    return cwa_client, abs_client, smtp_client, sftp_wiring
 
 
 def _probe(url: str) -> dict[str, object]:
@@ -723,6 +759,84 @@ def ensure_gutenberg_fixture_tls() -> dict[str, str]:
     }
 
 
+def ensure_smtp_fixture_tls() -> dict[str, str]:
+    """Suite-level setup (`@SUITE.setup`, tests/test_smtp.py): generates a
+    self-signed CA + server certificate for the suite's fixture SMTP catcher
+    (the `mailpit` compose service) and returns the `extra_env` overrides
+    that trust it.
+
+    TLS is not optional here: SmtpSecurityMode has no plaintext option (see
+    family-librarian's own SmtpSettings.cs doc comment, "Plaintext SMTP is
+    intentionally not an option") and MailKitSmtpTestSender's
+    SecureSocketOptions.StartTls REQUIRES the server to support STARTTLS and
+    presents a certificate MailKit validates against the app's own trust
+    store -- a self-signed cert the family-librarian container doesn't trust
+    would fail every case here (SslHandshakeException), not just ones that
+    mean to test that path. Same "extend the image's own trust store, don't
+    replace it" approach as ensure_gutenberg_fixture_tls(), deliberately
+    using a separate CA/bundle/mount rather than sharing that suite's: only
+    one suite is ever active in a given scenario, so there's no benefit to
+    merging them, and keeping them independent means neither suite's own
+    SSL_CERT_FILE override has to know the other exists.
+
+    The CA/server cert are cached on disk and only regenerated if missing --
+    confirmed for real (see this suite's own smoke test) that Mailpit
+    accepts them for STARTTLS and that MailKit's default certificate
+    validation accepts them once SSL_CERT_FILE points at the combined
+    bundle. The server cert's CN/SAN is `mailpit` -- clients.SMTP_INTERNAL_HOST,
+    the same name family-librarian's own container resolves on the Compose
+    network, so hostname validation matches for real, not just chain
+    validation.
+    """
+    SMTP_TLS_DIR.mkdir(parents=True, exist_ok=True)
+    ca_key = SMTP_TLS_DIR / "ca.key"
+    ca_cert = SMTP_TLS_DIR / "ca.pem"
+    server_key = SMTP_TLS_DIR / "server.key"
+    server_cert = SMTP_TLS_DIR / "server.pem"
+
+    if not ca_cert.exists():
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
+                "-keyout", str(ca_key), "-out", str(ca_cert),
+                "-subj", "/CN=family-librarian-lab-smtp-ca",
+            ],
+            check=True, capture_output=True,
+        )
+
+    if not server_cert.exists():
+        server_csr = SMTP_TLS_DIR / "server.csr"
+        ext_file = SMTP_TLS_DIR / "server.ext"
+        ext_file.write_text(f"basicConstraints=CA:FALSE\nsubjectAltName=DNS:{clients.SMTP_INTERNAL_HOST}\n")
+        subprocess.run(
+            [
+                "openssl", "req", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(server_key), "-out", str(server_csr),
+                "-subj", f"/CN={clients.SMTP_INTERNAL_HOST}",
+            ],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            [
+                "openssl", "x509", "-req", "-in", str(server_csr), "-CA", str(ca_cert), "-CAkey", str(ca_key),
+                "-CAcreateserial", "-out", str(server_cert), "-days", "3650", "-extfile", str(ext_file),
+            ],
+            check=True, capture_output=True,
+        )
+
+    image = os.environ.get("FAMILY_LIBRARIAN_IMAGE", "family-librarian-lab:dev")
+    base_bundle = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "cat", image, "/etc/ssl/certs/ca-certificates.crt"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    SMTP_CA_BUNDLE_PATH.write_text(base_bundle + "\n" + ca_cert.read_text())
+
+    return {
+        "SSL_CERT_FILE": "/etc/ssl/lab-smtp-ca-bundle.pem",
+        "FAMILY_LIBRARIAN_SMTP_TLS_DIR": str(SMTP_TLS_DIR),
+    }
+
+
 class _BaseScenario:
     """One fresh, disposable Compose project backing one suite case.
 
@@ -758,6 +872,7 @@ class _BaseScenario:
         self.readiness_passed = False
         self.cwa_client: clients.CwaClient | None = None
         self.abs_client: clients.AbsClient | None = None
+        self.smtp_client: clients.MailpitClient | None = None
         self.cwa_sftp_wiring: dict[str, object] | None = None
         self._result_directory: Path | None = None
 
@@ -805,7 +920,7 @@ class _BaseScenario:
                 self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
             )
             self.api = api
-            self.cwa_client, self.abs_client, self.cwa_sftp_wiring = _wire_destinations(
+            self.cwa_client, self.abs_client, self.smtp_client, self.cwa_sftp_wiring = _wire_destinations(
                 self._values, self._profiles, api
             )
         except BaseException:
@@ -1169,6 +1284,12 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
     with lab_common.run_lock(label="lab up"):
         _checkout_source(args.target)
         values = {**_load_lab_env(), **ensure_shared_clamav()}
+        if clients.SMTP_PROFILE in args.profile:
+            # Same reason tests/test_smtp.py's own @SUITE.setup calls this:
+            # STARTTLS is mandatory (SmtpSecurityMode has no plaintext
+            # option), so Mailpit needs a cert the app trusts before manual
+            # testing against it can work at all.
+            values = {**values, **ensure_smtp_fixture_tls()}
         project_name = lab_common.project_name()
         profiles = (PROFILE, *args.profile)
         _run_or_exit(values, project_name, "up", "--build", "--wait", "--remove-orphans", profiles=profiles)
@@ -1179,7 +1300,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
 
         api = FamilyLibrarianApi(_host_base(values))
         api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
-        cwa_client, abs_client, sftp_wiring = _wire_destinations(values, profiles, api)
+        cwa_client, abs_client, smtp_client, sftp_wiring = _wire_destinations(values, profiles, api)
 
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
     print(
@@ -1203,6 +1324,14 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
         print(
             f"  Audiobookshelf: {abs_client.host_base_url}  (user: {clients.ABS_DEFAULT_USERNAME} / "
             f"password: {clients.ABS_DEFAULT_PASSWORD}) -- already wired into Family Librarian",
+            flush=True,
+        )
+    if smtp_client is not None:
+        print(
+            f"  Mailpit (SMTP): {smtp_client.host_base_url}  (SMTP host {clients.SMTP_INTERNAL_HOST}:"
+            f"{clients.SMTP_INTERNAL_PORT}, STARTTLS required, AUTH user: {clients.SMTP_AUTH_USERNAME} / "
+            f"password: {clients.SMTP_AUTH_PASSWORD}) -- NOT wired into Family Librarian; "
+            "configure it yourself via the Communications admin page to test that flow manually.",
             flush=True,
         )
     return 0
@@ -1336,6 +1465,7 @@ def _check_no_conflicting_containers(values: dict[str, str]) -> None:
         "family-librarian": int(values.get("FAMILY_LIBRARIAN_HOST_PORT", DEFAULT_HOST_PORT)),
         "cwa": int(values.get("FAMILY_LIBRARIAN_CWA_HOST_PORT", clients.CWA_DEFAULT_HOST_PORT)),
         "abs": int(values.get("FAMILY_LIBRARIAN_ABS_HOST_PORT", clients.ABS_DEFAULT_HOST_PORT)),
+        "mailpit": int(values.get("FAMILY_LIBRARIAN_SMTP_HOST_PORT", clients.SMTP_DEFAULT_HOST_PORT)),
     }
     result = subprocess.run(["docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"], capture_output=True, text=True, check=False)
     if result.returncode:

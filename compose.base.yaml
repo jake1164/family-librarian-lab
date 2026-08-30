@@ -140,6 +140,16 @@ services:
       # lab's self-signed CA -- only when ensure_gutenberg_fixture_tls() has
       # written one and SSL_CERT_FILE (above) points the app at this path.
       - ${FAMILY_LIBRARIAN_GUTENBERG_CA_BUNDLE:-./runtime/gutenberg-tls/ca-bundle.pem}:/etc/ssl/lab-gutenberg-ca-bundle.pem:ro
+      # Same pattern, independent CA/bundle/mount, for the smtp suite's own
+      # fixture SMTP server (see ensure_smtp_fixture_tls() in commands.py).
+      # SmtpSecurityMode has no plaintext option -- every real SMTP send,
+      # including the happy path, negotiates STARTTLS and validates the
+      # server's certificate, so this must exist before that suite can prove
+      # anything. Kept separate from the gutenberg bundle above (not merged
+      # into one file) so the two suites' own SSL_CERT_FILE overrides never
+      # need to agree on a shared bundle -- only one suite is ever active in
+      # a given scenario, so there's no real benefit to merging them.
+      - ${FAMILY_LIBRARIAN_SMTP_CA_BUNDLE:-./runtime/smtp-tls/ca-bundle.pem}:/etc/ssl/lab-smtp-ca-bundle.pem:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -262,6 +272,48 @@ services:
       # up (confirmed for real; same IPv6-preference class of issue as the
       # host.docker.internal fix above).
       test: ["CMD", "wget", "--no-check-certificate", "--no-verbose", "--tries=1", "--spider", "https://127.0.0.1/today.rss"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # Real, disposable SMTP server for the smtp suite -- family-librarian's own
+  # test suite never exercises MailKitSmtpTestSender for real (it's stubbed
+  # out for every in-repo test), so this is the only place that proves the
+  # actual connect/STARTTLS/authenticate/send path works. SMTP AUTH is
+  # required and checked against docker/mailpit/smtp-auth-file (bcrypt; the
+  # only way to get a real, deterministic auth failure out of the app rather
+  # than faking one) -- see clients.SMTP_AUTH_USERNAME/_PASSWORD, which must
+  # match. TLS is not optional either: SmtpSecurityMode has no plaintext
+  # option, so even the happy-path case negotiates real STARTTLS against the
+  # cert ensure_smtp_fixture_tls() issues (commands.py) -- Mailpit's own SMTP
+  # server only supports STARTTLS, not a separate implicit-TLS listener, so
+  # SmtpSecurityMode.SslOnConnect remains unproven by this suite.
+  mailpit:
+    profiles: [smtp]
+    image: ${FAMILY_LIBRARIAN_MAILPIT_IMAGE:-axllent/mailpit:latest}
+    environment:
+      MP_SMTP_AUTH_FILE: /data/smtp-auth-file
+      MP_SMTP_TLS_CERT: /data/server.pem
+      MP_SMTP_TLS_KEY: /data/server.key
+    ports:
+      # Only Mailpit's own HTTP API/UI is published -- that's how the lab's
+      # Python client independently verifies delivery (MailpitClient in
+      # clients.py), the same "assert against the real destination's own
+      # API" pattern AbsClient/CwaClient already use. The SMTP port itself
+      # needs no host port: family-librarian reaches it over the Compose
+      # network by service name, same as cwa/abs.
+      - "${FAMILY_LIBRARIAN_SMTP_HOST_PORT:-18025}:8025"
+    volumes:
+      - ./docker/mailpit/smtp-auth-file:/data/smtp-auth-file:ro
+      # Defaults, not required (`:?`): same "every invocation interpolates
+      # every service's variables regardless of active profile" reasoning as
+      # the gutenberg-fixture service's volumes above. Only
+      # ensure_smtp_fixture_tls() ever populates real content at these paths.
+      - ${FAMILY_LIBRARIAN_SMTP_TLS_DIR:-./runtime/smtp-tls}/server.pem:/data/server.pem:ro
+      - ${FAMILY_LIBRARIAN_SMTP_TLS_DIR:-./runtime/smtp-tls}/server.key:/data/server.key:ro
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
       interval: 3s
       timeout: 5s
       retries: 20

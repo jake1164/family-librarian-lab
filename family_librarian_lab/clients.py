@@ -82,6 +82,32 @@ GUTENBERG_PROFILE = "gutenberg"
 GUTENBERG_SERVICE = "gutenberg-fixture"
 GUTENBERG_FIXTURE_INTERNAL_URL = "https://gutenberg-fixture"
 
+# Real, disposable SMTP catcher (Mailpit) for the smtp suite -- proves
+# MailKitSmtpTestSender's actual connect/STARTTLS/authenticate/send path,
+# which family-librarian's own test suite never exercises (it force-registers
+# AlwaysSucceedsSmtpTestSender for every in-repo test). TLS is not optional:
+# SmtpSecurityMode has no plaintext option, so even the happy path negotiates
+# real STARTTLS against the cert ensure_smtp_fixture_tls() issues
+# (commands.py) -- the internal host below is also that cert's CN.
+SMTP_PROFILE = "smtp"
+SMTP_SERVICE = "mailpit"
+SMTP_INTERNAL_HOST = "mailpit"
+SMTP_INTERNAL_PORT = 1025
+# Nothing listens here inside the mailpit container -- a real, deterministic
+# ECONNREFUSED for SMTP-04, no dependency on external/wildcard DNS behavior.
+SMTP_UNREACHABLE_PORT = 19999
+SMTP_DEFAULT_IMAGE = "axllent/mailpit:latest"
+# Mailpit's own HTTP API/UI -- published so the lab's Python client can
+# independently verify delivery, the same "assert against the real
+# destination's own API" pattern AbsClient/CwaClient already follow.
+SMTP_DEFAULT_HOST_PORT = 18025
+# Must match docker/mailpit/smtp-auth-file's bcrypt entry -- Mailpit rejects
+# any other SMTP AUTH credentials, the only way to get a real,
+# deterministic AuthenticationException out of MailKitSmtpTestSender
+# (SMTP-03) rather than faking one.
+SMTP_AUTH_USERNAME = "labmailer"
+SMTP_AUTH_PASSWORD = "family-librarian-lab-smtp-only"
+
 _BOOK_ID_PATTERN = re.compile(r"/opds/(?:book|download)/(\d+)")
 
 
@@ -405,3 +431,53 @@ def _find_matching_item_ids(list_response: dict[str, Any], title: str, author: s
         if isinstance(item_id, str):
             matches.append(item_id)
     return matches
+
+
+@dataclass(slots=True)
+class MailpitClient:
+    """Drives Mailpit's own HTTP API to independently verify SMTP delivery --
+    the same 'assert against the real destination, not Family Librarian's own
+    state' pattern AbsClient/CwaClient already follow. Mailpit's `Username`
+    field on a stored message is the SMTP-AUTH identity that actually
+    authenticated the send, so a case can confirm both that a message
+    arrived AND that it arrived authenticated as SMTP_AUTH_USERNAME, not
+    merely that *some* connection reached the catcher."""
+
+    host_base_url: str
+
+    def ready(self) -> bool:
+        status, _ = _http(f"{self.host_base_url}/api/v1/messages?limit=1")
+        return status == 200
+
+    def clear(self) -> None:
+        """Delete every stored message -- call at the start of a case so an
+        earlier case's leftover mail (Mailpit's own state persists for the
+        life of the container, shared across every case in the suite unless
+        cleared) can never be mistaken for this case's delivery."""
+        _http(f"{self.host_base_url}/api/v1/messages", method="DELETE", json_body={})
+
+    def find_message(
+        self, *, to: str, subject_contains: str | None = None, timeout_seconds: float = 15.0
+    ) -> dict[str, Any] | None:
+        """Polls Mailpit's message list for one already delivered to `to`
+        (and, if given, whose subject contains `subject_contains`). Returns
+        the message summary (includes `Username`, the authenticated SMTP-AUTH
+        identity) or None if nothing matched within the deadline -- callers
+        proving a *negative* (SMTP-03's rejected-auth case) should pass a
+        short timeout instead of waiting out the full default."""
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            status, body = _http(f"{self.host_base_url}/api/v1/messages")
+            if status == 200:
+                for summary in json.loads(body).get("messages", []):
+                    recipients = [
+                        address.get("Address")
+                        for address in summary.get("To") or []
+                        if isinstance(address, dict)
+                    ]
+                    subject = summary.get("Subject") or ""
+                    if to in recipients and (subject_contains is None or subject_contains in subject):
+                        return summary
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.5)

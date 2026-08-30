@@ -159,6 +159,51 @@ and `tests/test_gutenberg.py`'s own module docstring for the full detail: `GUT-0
 convention), `GUT-07..10` (need additional archive variants, and two of them hit the same
 "not exposed via the API" problem as `GUT-05`).
 
+## SMTP (outbound communications provider)
+
+`smtp` is a Compose profile on top of `base`, adding a real, disposable
+[Mailpit](https://github.com/axllent/mailpit) SMTP catcher. family-librarian's own test
+suite never exercises `MailKitSmtpTestSender` for real — every in-repo test
+force-registers a stub that always reports success — so this profile is the only place
+that proves the actual connect/STARTTLS/authenticate/send path works, and the only place
+that can independently verify a message actually arrived (Mailpit's own HTTP API,
+`MailpitClient` in `family_librarian_lab/clients.py`), not just that Family Librarian says
+it did.
+
+`SmtpSettings` intentionally has no plaintext transport option, so STARTTLS is not
+optional here either, not even for the happy path: `ensure_smtp_fixture_tls()` in
+`family_librarian_lab/commands.py` generates a self-signed CA once (same "extend the app
+image's own trust store, never replace it" approach as the Gutenberg fixture's own
+`ensure_gutenberg_fixture_tls()`, kept as an independent CA/bundle so the two suites' own
+`SSL_CERT_FILE` overrides never collide) and Mailpit is configured to require SMTP AUTH
+against a fixed, committed credential (`docker/mailpit/smtp-auth-file`) — the only way to
+get a real, deterministic authentication failure out of the app rather than faking one:
+
+```bash
+# Manual testing: brings up a real Mailpit, but does NOT pre-configure Family
+# Librarian's SMTP settings -- unlike cwa-local/abs, SMTP configuration is the
+# thing to manually exercise via the Communications admin page, not a
+# prerequisite for something else.
+./lab up --profile smtp
+./lab base down
+
+./lab run --test-group smtp
+```
+
+Implemented: `SMTP-01` (configure, real STARTTLS+AUTH test send, verified via Mailpit's
+own API, then enable), `SMTP-02` (enabling requires a fresh passing test of the
+*currently saved* settings — a settings change resets that, even to another value that
+would itself work), `SMTP-03` (wrong credentials surface a real authentication failure),
+`SMTP-04` (an unreachable host surfaces a real connection failure). Not covered, with
+reasons — see `tests/test_smtp.py`'s own module docstring for the full detail:
+`SmtpSecurityMode.SslOnConnect` (Mailpit's SMTP server only supports STARTTLS, not a
+separate implicit-TLS listener), a server with no STARTTLS support at all (MailKit throws
+`NotSupportedException` in that case, which `MailKitSmtpTestSender` doesn't catch — a real
+product-robustness question, not scoped here), and the settings-backup HTTP API's
+encrypted-JSON export/import (`SettingsBackupService`, distinct from `BASE-04`'s
+pg_dump-based backup) — that has no lab coverage at all yet, for any setting, and is
+tracked as its own item rather than built for SMTP alone.
+
 se-lab is included as a git submodule at `se-lab/`. After cloning:
 
 ```

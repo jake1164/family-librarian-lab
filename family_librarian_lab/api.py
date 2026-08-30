@@ -135,6 +135,70 @@ class FamilyLibrarianApi:
         _require_status(response, 200, "Audiobookshelf library discovery")
         return _object(response.body, "Audiobookshelf library discovery")
 
+    def smtp_settings(self) -> dict[str, Any]:
+        response = self._request("GET", "/api/v1/admin/communications/smtp/")
+        _require_status(response, 200, "SMTP settings")
+        return _object(response.body, "SMTP settings")
+
+    def set_smtp_settings(
+        self,
+        *,
+        host: str | None,
+        port: int | None,
+        security_mode: str,
+        username: str | None,
+        from_address: str | None,
+        from_name: str | None,
+    ) -> dict[str, Any]:
+        response = self._request(
+            "PUT",
+            "/api/v1/admin/communications/smtp/",
+            json_body={
+                "host": host,
+                "port": port,
+                "securityMode": security_mode,
+                "username": username,
+                "fromAddress": from_address,
+                "fromName": from_name,
+            },
+        )
+        _require_status(response, 200, "SMTP settings")
+        return _object(response.body, "SMTP settings")
+
+    def set_smtp_password(self, password: str) -> dict[str, Any]:
+        response = self._request(
+            "PUT", "/api/v1/admin/communications/smtp/password", json_body={"password": password}
+        )
+        _require_status(response, 200, "SMTP password")
+        return _object(response.body, "SMTP settings")
+
+    def clear_smtp_password(self) -> dict[str, Any]:
+        response = self._request("DELETE", "/api/v1/admin/communications/smtp/password")
+        _require_status(response, 200, "SMTP password clear")
+        return _object(response.body, "SMTP settings")
+
+    def set_smtp_enabled(self, enabled: bool) -> ApiResponse:
+        """Unlike CWA/ABS's enable calls, this can legitimately return a
+        validation-problem 400 -- SmtpSettingsService.SetEnabledAsync
+        requires a passing test of the *currently saved* settings (SMTP-02),
+        so a caller proving that rejection needs the raw response, not an
+        auto-raised assertion."""
+        return self._request("PUT", "/api/v1/admin/communications/smtp/enabled", json_body={"enabled": enabled})
+
+    def send_smtp_test(self, recipient_address: str) -> dict[str, Any]:
+        """Always HTTP 200 for a well-formed request, whether or not the SMTP
+        transport itself succeeded -- SmtpSettingsEndpoints.SendTestAsync
+        only returns a non-200 for a request-validation failure (e.g. a
+        malformed recipient address). The real transport outcome is the
+        `succeeded`/`message` fields on the returned object; the caller
+        decides what a failed `succeeded` means for its own scenario, the
+        same way test_cwa_ingest()/test_audiobookshelf() already work."""
+        response = self._request(
+            "POST", "/api/v1/admin/communications/smtp/test", json_body={"recipientAddress": recipient_address}
+        )
+        _require_status(response, 200, "SMTP test send")
+        return _object(response.body, "SMTP test send")
+
     def create_demo_ebook_request(self, *, confirm_owned: bool = False) -> tuple[str, str]:
         return self.create_demo_request("Ebook", confirm_owned=confirm_owned)
 
