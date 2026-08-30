@@ -49,7 +49,7 @@ from typing import Any, Callable
 from agent.suites import suite
 
 from family_librarian_lab import clients
-from family_librarian_lab.commands import ensure_smtp_fixture_tls
+from family_librarian_lab.commands import ensure_shared_clamav, ensure_smtp_fixture_tls, teardown_shared_clamav
 
 SUITE = suite("smtp", group="smtp", order=25, extra_profiles=(clients.SMTP_PROFILE,))
 
@@ -59,7 +59,18 @@ _FROM_NAME = "Family Librarian Lab"
 
 @SUITE.setup
 def _setup(scenario_factory):
-    scenario_factory.extra_env = ensure_smtp_fixture_tls()
+    # Family Librarian's own /health/ready includes SecurityScannerHealthCheck
+    # -- without ClamAv__Host/_Port pointed at the suite-shared scanner, the
+    # family-librarian container never becomes healthy at all ("A required
+    # malware scanner is unavailable"), regardless of anything SMTP-specific.
+    # Every other suite wires this the same way; this one just needs its own
+    # env merged in alongside it.
+    scenario_factory.extra_env = {**ensure_shared_clamav(), **ensure_smtp_fixture_tls()}
+
+
+@SUITE.teardown
+def _teardown():
+    teardown_shared_clamav()
 
 
 def _run(ctx, test_id: str, operation: Callable[[], dict[str, object]]) -> None:
