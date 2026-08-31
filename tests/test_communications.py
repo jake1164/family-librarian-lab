@@ -44,7 +44,22 @@ from agent.suites import suite
 from family_librarian_lab import clients
 from family_librarian_lab.commands import ensure_shared_clamav, ensure_smtp_fixture_tls, teardown_shared_clamav
 
-SUITE = suite("communications", group="communications", order=26, extra_profiles=(clients.SMTP_PROFILE,))
+SUITE = suite(
+    "communications",
+    group="communications",
+    order=26,
+    # cwa-local is required, not just smtp: create_demo_ebook_request() ->
+    # BookRequestService.CreateAsync gates on FormatReadinessService, which
+    # for Ebook requires CWA to be configured and passing its connection
+    # test (FormatReadinessService.CheckAsync -> CwaSettingsService.Get
+    # RequestReadinessErrorAsync). Bringing up this profile is what makes
+    # _wire_destinations() in commands.py auto-configure+enable CWA before
+    # any case runs, the same free wiring CWA-L-02 relies on -- without it
+    # every ebook request here is rejected with a 400 before SMTP is ever
+    # involved (found for real: COMM-01/02 failing on request creation with
+    # only the smtp profile active).
+    extra_profiles=(clients.SMTP_PROFILE, clients.CWA_PROFILE),
+)
 
 _FROM_ADDRESS = "library@example.test"
 _FROM_NAME = "Family Librarian Lab"

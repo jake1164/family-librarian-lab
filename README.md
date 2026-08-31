@@ -215,7 +215,10 @@ NotAvailable, `BookRequestService.AdminTransitionAsync` enqueues an
 through `SmtpOutboundCommunicationProvider` — different code, different (asynchronous)
 timing, and a distinct recipient-resolution path than the test-send probe. The
 `communications` test group proves that real end-to-end path against the same `smtp`
-profile/Mailpit fixture above (no separate `./lab up --profile` needed):
+profile/Mailpit fixture above, plus `cwa-local` (required for request *creation* itself
+— `FormatReadinessService` gates a new ebook request on CWA being configured and
+passing its own connection test, independent of SMTP entirely; `_wire_destinations()`
+auto-configures it the same way `cwa-local`'s own suite relies on):
 
 ```bash
 ./lab run --test-group communications
