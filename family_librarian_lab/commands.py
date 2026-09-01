@@ -1305,8 +1305,19 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
             # keeps postgres alone) -- unlike the full path below, this never
             # touches CWA/ABS/clamav/SMTP or re-runs their wiring, so a
             # manual test session's state in those stays put.
+            #
+            # Still calling ensure_shared_clamav() here: it's idempotent (just
+            # confirms/reuses an already-healthy container, per its own
+            # docstring) and is the only place that computes
+            # FAMILY_LIBRARIAN_CLAMAV_HOST/_PORT pointed at the shared
+            # instance. Without it, family-librarian falls back to the
+            # compose file's `clamav` default hostname, which no longer
+            # resolves now that clamav lives in its own SHARED_CLAMAV_PROJECT
+            # -- SecurityScannerHealthCheck then fails /health/ready forever
+            # and Docker marks the container unhealthy (matches the
+            # `--refresh` failure reported from toontown-int-srv2, 2026-09-01).
             _checkout_source(None)
-            values = _load_lab_env()
+            values = {**_load_lab_env(), **ensure_shared_clamav()}
             project_name = lab_common.project_name()
             _run_or_exit(values, project_name, "up", "-d", "--no-deps", "--build", "--wait", "migrate", "family-librarian")
             checks, passed = _readiness(values, project_name)
