@@ -46,6 +46,12 @@ given. Because the checkout is lab-managed and fetches from GitHub, a branch
 under local, uncommitted development needs to be pushed before `./lab up
 <branch>` can see it -- same workflow as m3undle-lab-public.
 
+By default the connection details printed by `up` use `127.0.0.1`. Set
+se-lab's generic `LAB_EXTERNAL_HOST=toontown-int-srv2` in `lab.env` (or the
+process environment) so every product lab uses hosted links such as
+`http://toontown-int-srv2:18378`; it changes only displayed links, not the
+lab's local readiness checks.
+
 se-lab's generic top-level `down` only knows how to tear down a
 `docker-config/docker-compose.yaml`-based stack, which this lab doesn't use
 (its Compose file is profile-gated and lives at the repo root) -- use

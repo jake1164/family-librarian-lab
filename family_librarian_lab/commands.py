@@ -117,7 +117,9 @@ pre-configure Family Librarian's SMTP settings -- unlike CWA/ABS, SMTP
 configuration is the thing to manually exercise via the admin UI, not a
 prerequisite for something else.
 
-Connection info once up (defaults; override the *_HOST_PORT vars in lab.env):
+Connection info once up (defaults; override the *_HOST_PORT vars in lab.env).
+Set se-lab's LAB_EXTERNAL_HOST (for example, toontown-int-srv2) to print
+hosted links instead of 127.0.0.1:
   Family Librarian  http://127.0.0.1:18080  FAMILY_LIBRARIAN_ADMIN_EMAIL / _ADMIN_PASSWORD
   CWA               http://127.0.0.1:18083  admin / admin123
   Audiobookshelf    http://127.0.0.1:18378  bootstrapped and wired in automatically
@@ -417,6 +419,10 @@ def _host_base(values: dict[str, str]) -> str:
 
 
 def _client_host_base(values: dict[str, str], default_port: int, env_key: str) -> str:
+    return f"http://127.0.0.1:{_port(values, default_port, env_key)}"
+
+
+def _port(values: dict[str, str], default_port: int, env_key: str) -> int:
     port = values.get(env_key, str(default_port))
     try:
         numeric_port = int(port)
@@ -424,7 +430,7 @@ def _client_host_base(values: dict[str, str], default_port: int, env_key: str) -
         raise SystemExit(f"{env_key} must be a valid TCP port.") from error
     if not 1 <= numeric_port <= 65535:
         raise SystemExit(f"{env_key} must be between 1 and 65535.")
-    return f"http://127.0.0.1:{numeric_port}"
+    return numeric_port
 
 
 def _wire_destinations(
@@ -498,6 +504,70 @@ def _wire_destinations(
         )
 
     return cwa_client, abs_client, smtp_client, sftp_wiring
+
+
+def _print_connection_info(
+    values: dict[str, str],
+    *,
+    cwa_running: bool = False,
+    abs_running: bool = False,
+    smtp_running: bool = False,
+    sftp_wiring: bool = False,
+) -> None:
+    """Print the manual-testing entry points for the services that are up.
+
+    Both the normal ``up`` path and ``up --refresh`` use this.  Refresh does
+    not receive profile arguments because it deliberately leaves destination
+    services untouched, so its caller detects the services already in the
+    Compose project before invoking this function.
+    """
+    connections = [
+        lab_common.ConnectionInfo(
+            "Family Librarian",
+            _port(values, DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_HOST_PORT"),
+            credentials=(
+                f"user: {values['FAMILY_LIBRARIAN_ADMIN_EMAIL']} / "
+                f"password: {values['FAMILY_LIBRARIAN_ADMIN_PASSWORD']}"
+            ),
+        )
+    ]
+    if cwa_running:
+        connections.append(
+            lab_common.ConnectionInfo(
+                "CWA",
+                _port(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT"),
+                credentials=f"OPDS user: {clients.CWA_DEFAULT_USERNAME} / password: {clients.CWA_DEFAULT_PASSWORD}",
+                note="already wired into Family Librarian",
+            )
+        )
+    if abs_running:
+        connections.append(
+            lab_common.ConnectionInfo(
+                "Audiobookshelf",
+                _port(values, clients.ABS_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ABS_HOST_PORT"),
+                credentials=f"user: {clients.ABS_DEFAULT_USERNAME} / password: {clients.ABS_DEFAULT_PASSWORD}",
+                note="already wired into Family Librarian",
+            )
+        )
+    if smtp_running:
+        connections.append(
+            lab_common.ConnectionInfo(
+                "Mailpit (SMTP)",
+                _port(values, clients.SMTP_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_SMTP_HOST_PORT"),
+                credentials=(
+                    f"SMTP host {clients.SMTP_INTERNAL_HOST}:{clients.SMTP_INTERNAL_PORT}, STARTTLS required, "
+                    f"AUTH user: {clients.SMTP_AUTH_USERNAME} / password: {clients.SMTP_AUTH_PASSWORD}"
+                ),
+                note="not wired into Family Librarian; configure it via the Communications admin page",
+            )
+        )
+    lab_common.print_connection_info(connections)
+    if sftp_wiring:
+        print(
+            "  CWA ingest transport: SFTP, trusted and enabled during the original 'up' "
+            "(see its output for the trust probe detail).",
+            flush=True,
+        )
 
 
 def _probe(url: str) -> dict[str, object]:
@@ -1325,6 +1395,16 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
                 print(json.dumps(checks, indent=2), file=sys.stderr)
                 raise SystemExit("Family Librarian failed readiness checks after '--refresh'.")
             print(f"Family Librarian refreshed on the current branch: {project_name}.", flush=True)
+            services, _ = _compose_service_health(values, project_name)
+            _print_connection_info(
+                values,
+                cwa_running=clients.CWA_SERVICE in services,
+                abs_running=clients.ABS_SERVICE in services,
+                smtp_running=clients.SMTP_SERVICE in services,
+                sftp_wiring=(
+                    clients.CWA_SFTP_SERVICE_KEY in services or clients.CWA_SFTP_SERVICE_PASSWORD in services
+                ),
+            )
             return 0
 
         _checkout_source(args.target)
@@ -1348,37 +1428,13 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
         cwa_client, abs_client, smtp_client, sftp_wiring = _wire_destinations(values, profiles, api)
 
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
-    print(
-        f"  Family Librarian: {_host_base(values)}  (user: {values['FAMILY_LIBRARIAN_ADMIN_EMAIL']} / "
-        f"password: {values['FAMILY_LIBRARIAN_ADMIN_PASSWORD']})",
-        flush=True,
+    _print_connection_info(
+        values,
+        cwa_running=cwa_client is not None,
+        abs_running=abs_client is not None,
+        smtp_running=smtp_client is not None,
+        sftp_wiring=sftp_wiring is not None,
     )
-    if cwa_client is not None:
-        print(
-            f"  CWA:  {cwa_client.host_base_url}  (OPDS user: {clients.CWA_DEFAULT_USERNAME} / "
-            f"password: {clients.CWA_DEFAULT_PASSWORD}) -- already wired into Family Librarian",
-            flush=True,
-        )
-    if sftp_wiring is not None:
-        print(
-            "  CWA ingest transport: SFTP, trusted and enabled during this 'up' "
-            "(see the trust probe in the run's own output above for detail).",
-            flush=True,
-        )
-    if abs_client is not None:
-        print(
-            f"  Audiobookshelf: {abs_client.host_base_url}  (user: {clients.ABS_DEFAULT_USERNAME} / "
-            f"password: {clients.ABS_DEFAULT_PASSWORD}) -- already wired into Family Librarian",
-            flush=True,
-        )
-    if smtp_client is not None:
-        print(
-            f"  Mailpit (SMTP): {smtp_client.host_base_url}  (SMTP host {clients.SMTP_INTERNAL_HOST}:"
-            f"{clients.SMTP_INTERNAL_PORT}, STARTTLS required, AUTH user: {clients.SMTP_AUTH_USERNAME} / "
-            f"password: {clients.SMTP_AUTH_PASSWORD}) -- NOT wired into Family Librarian; "
-            "configure it yourself via the Communications admin page to test that flow manually.",
-            flush=True,
-        )
     return 0
 
 
