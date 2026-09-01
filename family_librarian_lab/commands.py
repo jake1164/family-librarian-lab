@@ -89,6 +89,12 @@ def _configure_up(parser: argparse.ArgumentParser) -> None:
         help="Extra destination(s) to bring up and wire alongside the base profile "
         "(cwa-local, abs, cwa-sftp-key, cwa-sftp-password, smtp)",
     )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Rebuild and restart only Family Librarian's own container from the current branch -- "
+        "CWA/ABS/clamav/SMTP and their wiring are left running untouched",
+    )
     # RawDescriptionHelpFormatter so the example block below keeps its own
     # line breaks/indentation instead of argparse re-wrapping it -- only
     # affects this subparser's description/epilog, not its per-argument help
@@ -100,6 +106,7 @@ Examples:
   ./lab up main                           # check out, build, and deploy `main`
   ./lab up main --profile cwa-local abs   # main, wired to both CWA and Audiobookshelf
   ./lab up --profile cwa-sftp-key         # current branch, CWA over SFTP (key auth)
+  ./lab up --refresh                      # rebuild+restart Family Librarian only, current branch
   ./lab base down                         # tear down when done -- NOT `./lab down`
 
 --profile takes multiple values in one flag (--profile cwa-local abs).
@@ -161,6 +168,16 @@ def _configure_run(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--yes", "-y", action="store_true", help="Skip the run-plan confirmation prompt (for CI/automation)"
     )
+
+
+def _validate_up_options(args: argparse.Namespace) -> None:
+    if args.refresh and args.target:
+        raise SystemExit("--refresh always refreshes the current branch -- pass a target without --refresh instead.")
+    if args.refresh and args.profile:
+        raise SystemExit(
+            "--refresh only rebuilds and restarts Family Librarian's own container -- bring up a new "
+            "client profile with a plain './lab up --profile ...' first."
+        )
 
 
 def _validate_run_options(args: argparse.Namespace) -> None:
@@ -1276,12 +1293,29 @@ def handle_build(args: argparse.Namespace, config: object) -> int:
     configure=_configure_up,
 )
 def handle_up(args: argparse.Namespace, config: object) -> int:
+    _validate_up_options(args)
     # Only guards this command's own setup against overlapping another
     # concurrent `up`/`run` on the same shared DEFAULT_HOST_PORT -- the lock
     # releases once setup finishes; the stack itself is deliberately left
     # running for manual testing (see './lab base down' below), independent
     # of this invocation's lifetime.
     with lab_common.run_lock(label="lab up"):
+        if args.refresh:
+            # Rebuild+restart only "migrate"/"family-librarian" (--no-deps
+            # keeps postgres alone) -- unlike the full path below, this never
+            # touches CWA/ABS/clamav/SMTP or re-runs their wiring, so a
+            # manual test session's state in those stays put.
+            _checkout_source(None)
+            values = _load_lab_env()
+            project_name = lab_common.project_name()
+            _run_or_exit(values, project_name, "up", "-d", "--no-deps", "--build", "--wait", "migrate", "family-librarian")
+            checks, passed = _readiness(values, project_name)
+            if not passed:
+                print(json.dumps(checks, indent=2), file=sys.stderr)
+                raise SystemExit("Family Librarian failed readiness checks after '--refresh'.")
+            print(f"Family Librarian refreshed on the current branch: {project_name}.", flush=True)
+            return 0
+
         _checkout_source(args.target)
         values = {**_load_lab_env(), **ensure_shared_clamav()}
         if clients.SMTP_PROFILE in args.profile:
