@@ -103,6 +103,7 @@ services:
       - GutenbergCatalog__RecentUpdatesFeedUrl
       - GutenbergCatalog__EbookRdfBaseUrl
       - GutenbergCatalog__MinimumBookCount
+      - GutenbergMirrors__BaseUris__0
       - SSL_CERT_FILE
     # A deliberately non-reserved name, not "host.docker.internal": Docker
     # Desktop already special-cases that literal name with its own built-in
