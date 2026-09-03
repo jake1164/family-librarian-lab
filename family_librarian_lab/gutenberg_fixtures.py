@@ -19,6 +19,8 @@ import tarfile
 from dataclasses import dataclass, field
 from xml.sax.saxutils import escape
 
+from family_librarian_lab.fixtures import multi_track_audiobook
+
 RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 DCTERMS_NS = "http://purl.org/dc/terms/"
 PGTERMS_NS = "http://www.gutenberg.org/2009/pgterms/"
@@ -231,4 +233,34 @@ SEARCH_TARGET_BOOKS = [
         media_type="Sound",
         files=(FileEntry("/files/10004/10004-64kb.mp3", "audio/mpeg"),),
     ),
+    # ABS-05's direct-acquisition target: a realistic, chaptered Sound
+    # record whose three separate MP3 files must remain one ordered
+    # Audiobookshelf item.  The source paths deliberately use Gutenberg's
+    # public /files layout so the real mirror resolver has to translate them
+    # to its split-digit mirror layout before fetching the fixture payloads.
+    Book(
+        gutenberg_id=10008,
+        title="The Hobbit",
+        authors=(Person("J. R. R. Tolkien"),),
+        media_type="Sound",
+        files=tuple(
+            FileEntry(f"/files/10008/mp3/10008-{index:02}.mp3", "audio/mpeg", len(content))
+            for index, (_, content) in enumerate(multi_track_audiobook(), start=1)
+        ),
+    ),
 ]
+
+
+def multi_track_mirror_files() -> tuple[tuple[str, bytes], ...]:
+    """Return the real mirror paths and payloads for ABS-05's audio bundle.
+
+    GutenbergFileResolver translates /files/{id}/... to this split-digit
+    layout for every mirror other than www.gutenberg.org.  Keeping the map
+    beside the matching RDF record makes the fixture prove that translation
+    as well as the bundle pipeline, rather than bypassing it with a custom
+    provider stub.
+    """
+    return tuple(
+        (f"/1/0/0/0/8/10008/mp3/10008-{index:02}.mp3", content)
+        for index, (_, content) in enumerate(multi_track_audiobook(), start=1)
+    )

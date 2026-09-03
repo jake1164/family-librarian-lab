@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from http.cookiejar import CookieJar
 from typing import Any
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 
@@ -354,6 +355,23 @@ class FamilyLibrarianApi:
 
     def upload_manual_audio(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
         return self._upload_manual_file(request_id, format_id, content, filename)
+
+    def acquire_direct(
+        self, request_id: str, format_id: str, provider_id: str, provider_result_id: str
+    ) -> ApiResponse:
+        """Use the same direct-acquisition route as the admin UI.
+
+        This is deliberately separate from manual import: a multi-track
+        provider result is staged by DirectAcquisitionService as one bundle,
+        whereas the manual-import boundary accepts one file at a time.
+        """
+        return self._request(
+            "POST",
+            f"/api/v1/admin/requests/{request_id}/formats/{format_id}/direct-acquisitions/"
+            f"{quote(provider_id, safe='')}/{quote(provider_result_id, safe='')}",
+            data=b"",
+            timeout=120,
+        )
 
     def _upload_manual_file(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
         boundary = f"----family-librarian-lab-{uuid.uuid4().hex}"

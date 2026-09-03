@@ -835,11 +835,20 @@ def ensure_gutenberg_fixture_tls() -> dict[str, str]:
         book_dir.mkdir(parents=True, exist_ok=True)
         (book_dir / f"pg{book.gutenberg_id}.rdf").write_bytes(gutenberg_fixtures.build_rdf(book))
 
+    # ABS-05 fetches each member of a real Gutenberg-style audio bundle
+    # through GutenbergFileResolver.  These paths are intentionally the
+    # resolver's split-digit mirror paths, not the RDF's public /files paths.
+    for mirror_path, content in gutenberg_fixtures.multi_track_mirror_files():
+        destination = GUTENBERG_FIXTURE_ROOT / mirror_path.lstrip("/")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+
     return {
         "SSL_CERT_FILE": "/etc/ssl/lab-gutenberg-ca-bundle.pem",
         "GutenbergCatalog__ArchiveUrl": f"{clients.GUTENBERG_FIXTURE_INTERNAL_URL}/rdf-files.tar.bz2",
         "GutenbergCatalog__RecentUpdatesFeedUrl": f"{clients.GUTENBERG_FIXTURE_INTERNAL_URL}/today.rss",
         "GutenbergCatalog__EbookRdfBaseUrl": f"{clients.GUTENBERG_FIXTURE_INTERNAL_URL}/cache/epub/",
+        "GutenbergMirrors__BaseUris__0": f"{clients.GUTENBERG_FIXTURE_INTERNAL_URL}/",
         "GutenbergCatalog__MinimumBookCount": "1",
         "FAMILY_LIBRARIAN_GUTENBERG_TLS_DIR": str(GUTENBERG_TLS_DIR),
         "FAMILY_LIBRARIAN_GUTENBERG_FIXTURE_ROOT": str(GUTENBERG_FIXTURE_ROOT),

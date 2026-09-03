@@ -369,6 +369,33 @@ class AbsClient:
             return []
         return _find_matching_item_ids(json.loads(body), title, author)
 
+    def audio_track_filenames(self, item_id: str) -> list[str]:
+        """Read Audiobookshelf's own item representation and return its track order.
+
+        A delivery status only proves Family Librarian believes it handed an
+        asset off.  This verifies the destination retained one bundle's
+        individual files in order after its real scan.
+        """
+        assert self._token is not None
+        status, body = _http(f"{self.host_base_url}/api/items/{item_id}", bearer_token=self._token)
+        if status != 200:
+            raise AssertionError(f"Audiobookshelf GET /api/items/{item_id} returned HTTP {status}: {body!r}")
+        response = json.loads(body)
+        item = response.get("libraryItem", response) if isinstance(response, dict) else response
+        media = item.get("media") if isinstance(item, dict) else None
+        audio_files = media.get("audioFiles") if isinstance(media, dict) else None
+        if not isinstance(audio_files, list):
+            raise AssertionError(f"Audiobookshelf item has no audioFiles list: {response!r}")
+
+        filenames: list[str] = []
+        for audio_file in audio_files:
+            metadata = audio_file.get("metadata") if isinstance(audio_file, dict) else None
+            filename = metadata.get("filename") if isinstance(metadata, dict) else None
+            if not isinstance(filename, str) or not filename:
+                raise AssertionError(f"Audiobookshelf audio file has no metadata filename: {audio_file!r}")
+            filenames.append(filename)
+        return filenames
+
     def seed_item(self, content: bytes, filename: str, title: str, author: str) -> str:
         """Seed one item through ABS's supported upload API, not its database
         or managed-library filesystem. This intentionally mirrors Family
