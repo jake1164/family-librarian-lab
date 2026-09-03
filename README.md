@@ -33,10 +33,12 @@ cp se-lab/lab.env.example lab.env
 
 ./lab up mybranch     # check out, build, deploy, and leave running for manual testing
 ./lab status
-./lab base down        # note: base down, not the generic `down` -- see below
+./lab base down        # stop just the standard `up` project
 
 # Run each base/security case in its own fresh, isolated Compose project.
 ./lab run --test-group base
+
+./lab down             # or: stop everything -- `up`, any `--keep`-ed run projects, all of it
 ```
 
 `up [target]`/`build [target]` resolve `target` as a tag first, then a branch
@@ -52,12 +54,17 @@ process environment) so every product lab uses hosted links such as
 `http://toontown-int-srv2:18378`; it changes only displayed links, not the
 lab's local readiness checks.
 
-se-lab's generic top-level `down` only knows how to tear down a
-`docker-config/docker-compose.yaml`-based stack, which this lab doesn't use
-(its Compose file is profile-gated and lives at the repo root) -- use
-`./lab base down` to tear down what `./lab up` started; it defaults to the
-same standard project name `up` uses, so no `--project-name` is needed for
-the common case.
+`./lab base down` tears down what `./lab up` started; it defaults to the same
+standard project name `up` uses, so no `--project-name` is needed for the
+common case. se-lab's generic top-level `./lab down` is the broader hammer:
+it sweeps and stops *every* Compose project docker knows about for this
+product -- the `up` project, any `--keep`-ed `./lab run` case project left
+behind for investigation, a crashed/interrupted run's leftovers, all of it --
+by name, without needing this lab's profile-gated, repo-root Compose file at
+all. Named volumes (Postgres data, etc.) are kept by either command; pass
+`./lab down --clean-volumes` to also wipe them. `./lab base down
+--all-projects` still exists and does the same sweep as `./lab down`, kept
+for backwards compatibility.
 
 `./lab run` discovers suites through se-lab and defaults to `--test-group all` — every
 suite, matching se-lab's own `select_suites()` default and the legacy m3undle-lab
