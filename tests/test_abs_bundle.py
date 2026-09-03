@@ -136,13 +136,16 @@ def _gutenberg_audio_bundle_option(options: dict[str, object]) -> dict[str, obje
     audiobook_options = options.get("audiobook")
     if not isinstance(audiobook_options, list):
         return None
+    # FulfillmentOptionResponse deliberately exposes only the provider/result
+    # identity needed to acquire a fresh option; its internal format marker
+    # ("audio-bundle") is not a client API field. The destination assertion
+    # below is the black-box proof that this selected option was a bundle.
     return next(
         (
             option
             for option in audiobook_options
             if isinstance(option, dict)
             and option.get("providerId") == "gutendex"
-            and option.get("format") == "audio-bundle"
         ),
         None,
     )
