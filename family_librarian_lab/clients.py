@@ -65,8 +65,8 @@ ABS_PROFILE = "abs"
 ABS_INTERNAL_URL = "http://abs:80"
 ABS_DEFAULT_IMAGE = "advplyr/audiobookshelf:latest"
 ABS_DEFAULT_HOST_PORT = 18378
-ABS_DEFAULT_USERNAME = "admin"
-ABS_DEFAULT_PASSWORD = "family-librarian-lab-abs-only"
+ABS_DEFAULT_USERNAME = "test-admin"
+ABS_DEFAULT_PASSWORD = "admin123"
 ABS_LIBRARY_NAME = "lab-audiobooks"
 ABS_LIBRARY_FOLDER_PATH = "/audiobooks"
 
