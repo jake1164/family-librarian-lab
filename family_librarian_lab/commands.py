@@ -685,6 +685,60 @@ def _readiness(values: dict[str, str], project_name: str) -> tuple[dict[str, obj
     return checks, passed
 
 
+def _status_service_lines(compose_ps: str) -> list[str]:
+    """Render Compose's JSON into the small service inventory `status` needs.
+
+    Compose's JSON includes command lines, labels, mounts, and image metadata.
+    They are useful to Docker, but they obscure the answer a person needs from
+    `lab status`: which services are up, whether they are healthy, and how to
+    reach them.
+    """
+    entries = [entry for entry in lab_common.parse_compose_ps_json(compose_ps) if isinstance(entry, dict)]
+    if not entries:
+        return ["Lab services: none"]
+
+    rows: list[tuple[str, str, str, str, str]] = []
+    for entry in entries:
+        ports: list[str] = []
+        for publisher in entry.get("Publishers") or []:
+            if not isinstance(publisher, dict):
+                continue
+            published = publisher.get("PublishedPort")
+            if not published:
+                continue
+            mapping = f"{published}->{publisher.get('TargetPort', '?')}/{publisher.get('Protocol', 'tcp')}"
+            if mapping not in ports:
+                ports.append(mapping)
+        rows.append(
+            (
+                str(entry.get("Service") or entry.get("Name") or "?"),
+                str(entry.get("State") or "unknown"),
+                str(entry.get("Health") or "-"),
+                str(entry.get("Status") or "-"),
+                ", ".join(ports) or "-",
+            )
+        )
+
+    headings = ("SERVICE", "STATE", "HEALTH", "STATUS", "PORTS")
+    widths = [max(len(heading), *(len(row[index]) for row in rows)) for index, heading in enumerate(headings)]
+    lines = ["Lab services:", "  " + "  ".join(heading.ljust(widths[index]) for index, heading in enumerate(headings))]
+    lines.extend("  " + "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)) for row in rows)
+    return lines
+
+
+def _status_readiness_lines(checks: dict[str, object], passed: bool) -> list[str]:
+    """Make the probe result useful at a glance, without repeating the service table."""
+    lines = ["Readiness:"]
+    for name, check in checks.items():
+        if name == "compose_services" or not isinstance(check, dict):
+            continue
+        ok = "OK" if check.get("ok") else "FAIL"
+        detail = str(check.get("url") or check.get("status") or "")
+        lines.append(f"  {name.upper():<7} {ok:<4} {detail}")
+    lines.append(f"Overall: {'healthy' if passed else 'unhealthy'}")
+    return lines
+
+
 def _wait_for_service(
     values: dict[str, str], project_name: str, service_name: str, *, timeout_seconds: int = 360
 ) -> None:
@@ -1452,13 +1506,15 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
     values = _load_lab_env()
     project_name = _project_name(values, args.project_name, unique=False)
     ps = _compose(values, project_name, "ps", "--all", "--format", "json", profiles=ALL_PROFILES, capture=True)
-    if ps.stdout:
-        print(ps.stdout, end="" if ps.stdout.endswith("\n") else "\n")
     if ps.returncode:
         print(ps.stderr, file=sys.stderr, end="" if ps.stderr.endswith("\n") else "\n")
         return ps.returncode
+    print(f"Project: {project_name}", flush=True)
+    for line in _status_service_lines(ps.stdout):
+        print(line, flush=True)
     checks, passed = _readiness(values, project_name)
-    print(json.dumps({"health": checks}, indent=2), flush=True)
+    for line in _status_readiness_lines(checks, passed):
+        print(line, flush=True)
     return 0 if passed else 1
 
 
