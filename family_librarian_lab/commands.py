@@ -571,6 +571,21 @@ def _print_connection_info(
         )
 
 
+def _service_is_running(checks: dict[str, object], service_name: str) -> bool:
+    """Whether a service reported by readiness is currently running.
+
+    ``status`` gets its service inventory from the same Compose query used by
+    ``_readiness``.  Keeping this small interpretation here prevents the
+    human-facing connection section from advertising a profile whose container
+    is present but stopped.
+    """
+    services = checks.get("compose_services")
+    if not isinstance(services, dict):
+        return False
+    service = services.get(service_name)
+    return isinstance(service, dict) and service.get("state") == "running"
+
+
 def _probe(url: str) -> dict[str, object]:
     try:
         with urlopen(url, timeout=10) as response:  # noqa: S310 - the local URL is constructed above
@@ -1517,6 +1532,18 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
     print(flush=True)
     for line in _status_readiness_lines(checks, passed):
         print(lab_common.colorize_urls(line), flush=True)
+    if _service_is_running(checks, "family-librarian"):
+        print("Connection info:", flush=True)
+        _print_connection_info(
+            values,
+            cwa_running=_service_is_running(checks, clients.CWA_SERVICE),
+            abs_running=_service_is_running(checks, clients.ABS_SERVICE),
+            smtp_running=_service_is_running(checks, clients.SMTP_SERVICE),
+            sftp_wiring=(
+                _service_is_running(checks, clients.CWA_SFTP_SERVICE_KEY)
+                or _service_is_running(checks, clients.CWA_SFTP_SERVICE_PASSWORD)
+            ),
+        )
     return 0 if passed else 1
 
 
