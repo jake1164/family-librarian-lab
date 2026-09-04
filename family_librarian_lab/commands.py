@@ -521,6 +521,7 @@ def _print_connection_info(
     services untouched, so its caller detects the services already in the
     Compose project before invoking this function.
     """
+    print(flush=True)
     connections = [
         lab_common.ConnectionInfo(
             "Family Librarian",
@@ -1513,8 +1514,9 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
     for line in _status_service_lines(ps.stdout):
         print(line, flush=True)
     checks, passed = _readiness(values, project_name)
+    print(flush=True)
     for line in _status_readiness_lines(checks, passed):
-        print(line, flush=True)
+        print(lab_common.colorize_urls(line), flush=True)
     return 0 if passed else 1
 
 
