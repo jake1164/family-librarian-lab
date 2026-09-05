@@ -122,18 +122,13 @@ def existing_item_is_reused_without_a_second_upload(ctx, scenario_factory):
             if scenario.abs_client is None:
                 raise AssertionError("Scenario did not bring up an Audiobookshelf destination.")
 
+            # The destination acquires the item after the ordinary request was made.
+            request_id, format_id = scenario.api.create_demo_audiobook_request()
             seeded_item_id = scenario.abs_client.seed_item(
                 clean_audiobook(), "abs-03-existing-the-hobbit.mp3", "The Hobbit", "J. R. R. Tolkien"
             )
             _require_exactly_one_abs_item(scenario.abs_client, "ABS seed created duplicate matching items")
 
-            # confirm_owned=True: the item seeded just above makes this
-            # work's Audiobook format already-owned in ABS, which
-            # BookRequestService reports as a 409 AlreadyOwned warning
-            # unless the caller explicitly confirms it -- the same
-            # confirmation step a real user would give when the UI shows
-            # "you already own this."
-            request_id, format_id = scenario.api.create_demo_audiobook_request(confirm_owned=True)
             uploaded = scenario.api.upload_manual_audio(
                 request_id, format_id, clean_audiobook(), "abs-03-the-hobbit.mp3"
             )

@@ -1,42 +1,12 @@
-"""Outbound communications dispatcher: the real end-to-end notification
-trigger (family-librarian's own ".ai_docs/Family Librarian — Communications
-and Notification Provider Plan.md", Phase 1 foundation + Phase 2 SMTP
-provider), exercised against a real disposable SMTP server.
+"""Real outbound dispatcher and SMTP delivery, including shared membership.
 
-`test_smtp.py`'s SMTP-01..04 only ever exercise the manual admin "send test
-email" probe (POST .../smtp/test -> MailKitSmtpTestSender). They say nothing
-about the feature that actually motivated building the provider
-abstraction: an administrator transitions a book request to Available or
-NotAvailable, BookRequestService.AdminTransitionAsync enqueues an
-OutboundCommunication, and a separate background hosted service
-(OutboundCommunicationDispatcherHostedService, ~15s poll loop) later picks it
-up and sends it through SmtpOutboundCommunicationProvider -- different code
-(SmtpMailTransport shared, but a distinct provider class), different timing
-(asynchronous, not inline with the HTTP request), and a distinct recipient-
-resolution path (IUserEmailLookup against the request's own owning user, not
-an address supplied by the caller). None of that is proven anywhere: not by
-family-librarian's own C# tests (OutboundCommunicationDispatcherTests uses
-hand-rolled fakes, no real network I/O or background-service timing), and
-not by SMTP-01..04 (which never enqueue anything -- they call the test-send
-endpoint directly).
-
-Requires `admin_transition_request()` (family_librarian_lab/api.py), which
-drives BookRequestService.AdminTransitionAsync directly rather than the real
-upload/CWA-import pipeline CWA-L-02 uses to reach Available -- see that
-method's docstring for why status="Available" is a legitimate, allowed call
-here even though the admin UI never offers it as a button.
-
-Not covered here, deferred:
-  - Multiple simultaneous providers delivering the same communication
-    independently (plan §20) -- moot until a second outbound provider
-    (e.g. Matrix) exists to register alongside SMTP.
-  - Any admin-facing view of the outbound communication/delivery log --
-    no such endpoint exists in the product yet, so there is nothing here to
-    assert against beyond Mailpit's own inbox.
+Admin status transitions enqueue durable communications. Mailpit independently
+checks actual recipients across dispatcher polls and application restarts.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Callable
 
 from agent.suites import suite
@@ -234,3 +204,61 @@ def a_disabled_provider_never_blocks_the_request_transition(ctx, scenario_factor
             return {"request_id": request_id, "status_after_transition": status_after}
 
     _run(ctx, "COMM-03", operation)
+
+
+@SUITE.case("COMM-04")
+def shared_request_emails_only_active_members_after_restart(ctx, scenario_factory):
+    """Exercise durable participant lookup and SMTP dispatch, including withdrawal."""
+    def operation() -> dict[str, object]:
+        with scenario_factory("COMM-04") as scenario:
+            if scenario.smtp_client is None:
+                raise AssertionError("Mailpit destination is missing.")
+            api = scenario.api
+            emails = [f"comm04-reader-{i}@example.test" for i in range(4)]
+            readers = [api.create_reader(email, "Lab-Reader-2026!Pass") for email in emails]
+            work_id = api.resolve_demo_work()
+            requests = [reader.create_request(work_id, ["Ebook"], note=f"Private note {i}")
+                        for i, reader in enumerate(readers[:3])]
+            assert all(response.status == 201 for response in requests)
+            request_id = requests[0].body["id"]
+            assert all(response.body["id"] == request_id for response in requests)
+            assert readers[0].withdraw_request(request_id).status == 200
+            scenario.restart_service("family-librarian")
+            scenario.reauthenticate()
+            for i, reader in enumerate(readers):
+                mine = reader.my_requests()
+                rows = mine["active"] + mine["history"]
+                shared = [row for row in rows if row["id"] == request_id]
+                if i == 3:
+                    assert shared == [], "Unrelated member can see the request"
+                else:
+                    assert len(shared) == 1 and shared[0]["note"] == f"Private note {i}"
+                    assert (shared[0]["status"] == "Cancelled") == (i == 0)
+            _configure_and_enable_smtp(scenario)
+            before = api.admin_request(request_id)["request"]
+            transition = api.admin_transition_request(request_id, "NotAvailable",
+                                                       expected_version=before["version"],
+                                                       reason="No suitable copy is available.")
+            assert transition.status == 200, f"Transition returned HTTP {transition.status}"
+            for email in emails[1:3]:
+                assert scenario.smtp_client.find_message(to=email, subject_contains=before["workTitle"],
+                                                        timeout_seconds=45) is not None, \
+                    f"No shared-request email reached {email}"
+            # A second dispatcher startup must not resend already delivered messages.
+            scenario.restart_service("family-librarian")
+            scenario.reauthenticate()
+            deadline = time.monotonic() + 35
+            while True:
+                messages = scenario.smtp_client.messages()
+                recipients = [address["Address"] for message in messages
+                              for address in message.get("To", [])]
+                assert sorted(recipients) == sorted(emails[1:3]), \
+                    "Missing, duplicate, withdrawn-member, or unrelated-member SMTP delivery"
+                assert all(message.get("Username") == clients.SMTP_AUTH_USERNAME for message in messages)
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(1)
+            return {"request_id": request_id, "recipient_count": 2,
+                    "withdrawn_recipient_count": 0, "unrelated_recipient_count": 0}
+
+    _run(ctx, "COMM-04", operation)

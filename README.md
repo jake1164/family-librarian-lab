@@ -268,3 +268,33 @@ too. Remaining known gaps:
   supports everywhere else.
 - Consider an `agent.status.BaseStatus` subclass for `handle_status` once this lab's own compose
   lifecycle goes through `agent.common` rather than its own `_compose()`.
+
+## Shared requests and specific versions
+
+`ABS-08` uses two separately authenticated members submitting concurrently,
+then the real automatic worker and HTTPS Gutenberg fixture to deliver one
+three-track Audiobookshelf item. A shared narration exception must remain in
+NeedsReview with no provider attempts or delivery through restart, bulk recheck,
+and more than a complete worker polling interval. Both members retain their
+shared request after restart. The ordinary request is the healthy-provider
+positive control; the case does not invoke direct acquisition.
+
+`COMM-04` checks real SMTP fanout to two active participants, excluding a withdrawn
+participant and an unrelated member. It checks private notes and membership after
+restart, then observes dispatcher restart for duplicate or unwanted messages.
+These are integration cases registered with se-lab, not pytest test functions.
+
+After committing the intended product and lab changes, run on `toontown-int-srv2`
+from `/opt/family-librarian-lab`:
+
+```bash
+./lab run <product-branch> --test-group abs --case ABS-08
+./lab run <product-branch> --test-group communications --case COMM-04
+# Compatibility regressions affected by shared-request semantics:
+./lab run <product-branch> --test-group abs --case ABS-03
+./lab run <product-branch> --test-group base --case BASE-03
+```
+
+See the [coverage boundaries](docs/01-family-librarian-integration-test-design.md#shared-request-coverage-boundaries)
+for what these cases do and do not establish. Adding a case is not evidence of a
+passing live run; retain the resulting se-lab report for acceptance.

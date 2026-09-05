@@ -191,3 +191,90 @@ def _poll_delivery(api, abs_client, request_id: str, *, timeout_seconds: float) 
         if time.monotonic() >= deadline:
             return None
         time.sleep(2)
+
+
+@SUITE.case("ABS-08")
+def shared_acquisition_and_version_hold_survive_restart(ctx, scenario_factory):
+    """Real worker + HTTPS source + ABS; no direct-acquisition shortcut."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    def operation() -> dict[str, object]:
+        with scenario_factory("ABS-08") as scenario:
+            if scenario.abs_client is None:
+                raise AssertionError("Audiobookshelf destination is missing.")
+            api = scenario.api
+            assert api.set_provider_enabled("gutendex", False).status == 200
+            _sync_to_completion(api)
+            readers = [api.create_reader(f"abs06-reader-{i}@example.test", "Lab-Reader-2026!Pass")
+                       for i in range(2)]
+            work_id = api.resolve_demo_work()
+            barrier = Barrier(2)
+
+            def submit(reader):
+                barrier.wait(timeout=10)
+                response = reader.create_request(work_id, ["Audiobook"])
+                assert response.status == 201, f"Shared request returned HTTP {response.status}"
+                return response.body
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                requests = list(pool.map(submit, readers))
+            request_id = requests[0]["id"]
+            assert requests[1]["id"] == request_id, "Concurrent members created two requests"
+            assert requests[0]["formats"][0]["formatId"] == requests[1]["formats"][0]["formatId"]
+
+            review = readers[1].create_request(work_id, ["Audiobook"], version_kind="Narration",
+                                               version_details="A different narrator; administrator must verify credits.")
+            assert review.status == 201, f"Version request returned HTTP {review.status}"
+            review_id = review.body["id"]
+            assert review_id != request_id
+            repeated = readers[0].create_request(work_id, ["Audiobook"], version_kind="Narration",
+                                                 version_details="A different narrator; administrator must verify credits.")
+            assert repeated.status == 201 and repeated.body["id"] == review_id
+            _enable_gutendex(api)
+            # A disabled-provider pass may already have moved the ordinary request to review.
+            assert api.recheck_requests().status == 200
+            # Startup runs the real automatic worker immediately, then every two minutes.
+            scenario.restart_service("family-librarian")
+            scenario.reauthenticate()
+            delivery = _poll_delivery(api, scenario.abs_client, request_id, timeout_seconds=180)
+            assert delivery is not None, "Healthy provider failed the ordinary-request positive control"
+            item_id = delivery["externalItemId"]
+            assert _bundle_track_sequences(scenario.abs_client.audio_track_filenames(item_id)) == [1, 2, 3]
+            assert api.provider_attempts(request_id), "Ordinary request has no automatic provider evidence"
+
+            scenario.restart_service("family-librarian")
+            scenario.reauthenticate()
+            assert api.recheck_requests().status == 200
+            held_before = api.admin_request(review_id)["request"]
+            bypass = api.admin_transition_request(review_id, "PendingAcquisition",
+                                                   expected_version=held_before["version"])
+            assert bypass.status == 400, "Individual admin requeue bypassed manual version review"
+            # Observe more than a complete automatic-worker interval after restart/recheck.
+            deadline = time.monotonic() + 130
+            while True:
+                held = api.admin_request(review_id)["request"]
+                assert held["status"] == "NeedsReview", "Version review escaped the admin queue"
+                assert held["requiresManualFulfillment"] is True
+                assert api.provider_attempts(review_id) == [], "Version review reached an automatic provider"
+                queue = api.publishing_queue()
+                assert not any(row.get("requestId") == review_id for row in queue.get("deliveries", []))
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(2)
+            assert scenario.abs_client.find_items("The Hobbit", "J. R. R. Tolkien") == [item_id], \
+                "Shared request or held version produced a duplicate destination item"
+            deliveries = [row for row in api.publishing_queue().get("deliveries", [])
+                          if row.get("requestId") == request_id]
+            assert len(deliveries) == 1, "Shared request produced multiple deliveries"
+            # Existing member cookies and their shared membership must survive both restarts.
+            for reader in readers:
+                mine = reader.my_requests()
+                rows = [row for group in mine.values() if isinstance(group, list) for row in group]
+                ordinary = [row for row in rows if row.get("id") == request_id]
+                assert len(ordinary) == 1 and ordinary[0]["status"] == "Available"
+                assert any(row.get("id") == review_id for row in rows)
+            return {"request_id": request_id, "review_id": review_id, "abs_item_id": item_id,
+                    "review_observation_seconds": 130, "participant_count": 2}
+
+    _run(ctx, "ABS-08", operation)

@@ -97,7 +97,7 @@ def restart_preserves_durable_application_state(ctx, scenario_factory):
             # queue with its scanner/validator evidence, unlike a clean asset
             # that has already moved to trusted storage and is intentionally
             # absent from that queue.
-            evidence_request_id, evidence_format_id = scenario.api.create_demo_ebook_request()
+            evidence_request_id, evidence_format_id = scenario.api.create_demo_ebook_request(slug="project-hail-mary")
             malformed = scenario.api.upload_manual_epub(
                 evidence_request_id, evidence_format_id, invalid_epub(), "base-03-malformed.epub"
             )

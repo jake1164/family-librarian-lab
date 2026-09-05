@@ -483,6 +483,17 @@ class MailpitClient:
         cleared) can never be mistaken for this case's delivery."""
         _http(f"{self.host_base_url}/api/v1/messages", method="DELETE", json_body={})
 
+    def messages(self) -> list[dict[str, Any]]:
+        """Return the entire small fixture inbox, failing on HTTP errors or truncation."""
+        status, body = _http(f"{self.host_base_url}/api/v1/messages?limit=100")
+        if status != 200:
+            raise AssertionError(f"Mailpit inbox returned HTTP {status}")
+        payload = json.loads(body)
+        messages = payload.get("messages", [])
+        if payload.get("total", len(messages)) != len(messages):
+            raise AssertionError("Mailpit fixture inbox exceeded one page")
+        return messages
+
     def find_message(
         self, *, to: str, subject_contains: str | None = None, timeout_seconds: float = 15.0
     ) -> dict[str, Any] | None:

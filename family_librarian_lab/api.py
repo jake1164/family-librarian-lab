@@ -267,33 +267,57 @@ class FamilyLibrarianApi:
         _require_status(enabled, 200, "SMTP enable")
         return self.smtp_settings()
 
-    def create_demo_ebook_request(self, *, confirm_owned: bool = False) -> tuple[str, str]:
-        return self.create_demo_request("Ebook", confirm_owned=confirm_owned)
+    def create_reader(self, email: str, password: str) -> "FamilyLibrarianApi":
+        """Provision a member with an independent cookie jar; never trace credentials."""
+        invitation = self._request("POST", "/api/v1/admin/invitations/",
+                                   json_body={"email": email, "asAdmin": False})
+        _require_status(invitation, 200, "member invitation")
+        reader = FamilyLibrarianApi(self._base_url)
+        reader.trace = self.trace
+        redeemed = reader._request("POST", "/api/v1/invitations/redeem", json_body={
+            "token": _required_string(_object(invitation.body, "invitation"), "token", "invitation"),
+            "displayName": email.split("@")[0], "password": password,
+        })
+        _require_status(redeemed, 204, "member redemption")
+        reader.authenticate(email, password)
+        return reader
 
-    def create_demo_audiobook_request(self, *, confirm_owned: bool = False) -> tuple[str, str]:
-        return self.create_demo_request("Audiobook", confirm_owned=confirm_owned)
+    def create_request(self, work_id: str, formats: list[str], *, note: str | None = None,
+                       version_kind: str | None = None, version_details: str | None = None) -> ApiResponse:
+        return self._request("POST", "/api/v1/requests/", json_body={
+            "workId": work_id, "formats": formats, "note": note,
+            "confirmDuplicate": False, "confirmOwned": False,
+            "versionKind": version_kind, "versionDetails": version_details,
+        })
 
-    def create_demo_request(self, media_type: str, *, confirm_owned: bool = False) -> tuple[str, str]:
-        # BookRequestService.CreateRequestAsync gates on two independent
-        # confirmations: ConfirmDuplicate (an open request for this work
-        # already exists) and ConfirmOwned (a destination already reports
-        # this exact item, e.g. a directly seeded ABS item -- see ABS-03,
-        # the only caller that pre-seeds an owned item and so the only one
-        # that ever needs confirm_owned=True). Every other caller keeps the
-        # product's own default (False) rather than blanket-confirming a
-        # warning no other case is set up to trigger.
-        work_id = self.resolve_demo_work()
-        created = self._request(
-            "POST",
-            "/api/v1/requests/",
-            json_body={
-                "workId": work_id,
-                "formats": [media_type],
-                "note": None,
-                "confirmDuplicate": True,
-                "confirmOwned": confirm_owned,
-            },
-        )
+    def my_requests(self) -> dict[str, Any]:
+        response = self._request("GET", "/api/v1/me/requests")
+        _require_status(response, 200, "member requests")
+        return _object(response.body, "member requests")
+
+    def withdraw_request(self, request_id: str) -> ApiResponse:
+        return self._request("POST", f"/api/v1/requests/{request_id}/transitions",
+                             json_body={"status": "Cancelled", "reason": None})
+
+    def recheck_requests(self) -> ApiResponse:
+        return self._request("POST", "/api/v1/admin/requests/recheck", json_body={})
+
+    def provider_attempts(self, request_id: str) -> list[dict[str, Any]]:
+        response = self._request("GET", f"/api/v1/admin/requests/{request_id}/provider-attempts")
+        _require_status(response, 200, "provider attempts")
+        if not isinstance(response.body, list):
+            raise AssertionError("Provider attempts did not return a list.")
+        return response.body
+
+    def create_demo_ebook_request(self, *, slug: str = "the-hobbit") -> tuple[str, str]:
+        return self.create_demo_request("Ebook", slug=slug)
+
+    def create_demo_audiobook_request(self) -> tuple[str, str]:
+        return self.create_demo_request("Audiobook")
+
+    def create_demo_request(self, media_type: str, *, slug: str = "the-hobbit") -> tuple[str, str]:
+        work_id = self.resolve_demo_work(slug)
+        created = self.create_request(work_id, [media_type])
         _require_status(created, 201, f"{media_type.lower()} request creation")
         request = _object(created.body, "created request")
         formats = request.get("formats")

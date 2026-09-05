@@ -274,3 +274,24 @@ No production code or production deployment configuration is changed by this pla
 - Family Librarian product and domain specifications, especially the CWA topology/verification, security gate, and Audiobookshelf workflow sections.
 - Family Librarian provider contract testing strategy.
 - [Microsoft guidance on testing multi-container ASP.NET Core services](https://learn.microsoft.com/dotnet/architecture/microservices/multi-container-microservice-net-applications/test-aspnet-core-services-web-apps), which distinguishes faked-dependency integration tests from Compose-backed end-to-end service tests.
+
+## Shared-request coverage boundaries
+
+| Case / layer | Evidence | Status |
+| --- | --- | --- |
+| ABS-08 | Concurrent HTTP submissions from independent member sessions share request and format IDs; hosted automatic acquisition produces exactly one ABS item and one delivery with three ordered tracks. Shared narration review remains manual with no provider attempts or delivery across two host restarts, bulk recheck and a 130-second observation window. Both members retain membership and ordinary Available state. | Implemented; live acceptance pending committed product/lab checkouts. |
+| COMM-04 | Durable shared membership and private notes; real SMTP sends to two active members only, excluding a withdrawn member and an unrelated account; dispatcher restart does not duplicate messages during the observation window. | Implemented; live acceptance pending committed product/lab checkouts. |
+| ABS-03 | An item appears in ABS after request creation; publishing reuses it. No obsolete owned-copy override and no invented version intent. | Updated; live regression pending. |
+| BASE-03 | Security evidence uses a different Work from the pending publication, preserving separate restart evidence under shared-request semantics. | Updated; live regression pending. |
+| Product PostgreSQL endpoint / migration tests | Shared-request races, idempotence, format unions, note privacy, permissions, withdrawal/rejoin, version validation and manual hold, historical overlap migration. | Covered in product tests; do not describe these as pure unit tests. |
+
+These lab cases intentionally cover running workers, durable cookies/membership,
+actual destination contents and SMTP recipients. They do not prove that a file
+has the requested narrator, translation, edition or accessibility features:
+that remains an administrator decision until artifact suitability is implemented.
+Equivalent-version sharing is checked; every version-kind validation permutation
+belongs in product tests. Browser rendering, live SignalR updates, mixed-format
+completion across both CWA and ABS, and a full previous-release upgrade deployment
+are not covered by these new cases. Product tests cover the underlying per-member
+format/status and migration behavior, but cannot substitute for those UI/deployment
+checks. Negative timing assertions cover their stated observation windows only.
