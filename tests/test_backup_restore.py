@@ -86,7 +86,11 @@ def backup_then_restore_reverts_to_the_backed_up_state(ctx, scenario_factory):
                 # Created only after the backup: proves restore reverts to
                 # the backed-up snapshot rather than merely that pg_restore
                 # ran without error over already-matching data.
-                post_backup_request_id, _ = scenario.api.create_demo_ebook_request()
+                # Another request for the same Work joins the baseline request.
+                # Use a distinct Work to create actual post-snapshot database state.
+                post_backup_request_id, _ = scenario.api.create_demo_ebook_request(slug="project-hail-mary")
+                if post_backup_request_id == baseline_request_id:
+                    raise AssertionError("Backup test setup reused the baseline request; restore was not attempted.")
                 if not _has_request(scenario.api.list_requests(), post_backup_request_id):
                     raise AssertionError("Post-backup request was not visible before restore.")
 
@@ -103,7 +107,7 @@ def backup_then_restore_reverts_to_the_backed_up_state(ctx, scenario_factory):
             if baseline_request_id not in restored_ids:
                 raise AssertionError("Restore did not bring back the pre-backup request.")
             if post_backup_request_id in restored_ids:
-                raise AssertionError("Restore left the post-backup request in place; PostgreSQL was not actually replaced.")
+                raise AssertionError("Restore left the distinct post-backup request visible; the expected snapshot state was not restored.")
 
             return {
                 "compose_project": scenario.project_name,
