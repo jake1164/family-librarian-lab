@@ -298,3 +298,22 @@ from `/opt/family-librarian-lab`:
 See the [coverage boundaries](docs/01-family-librarian-integration-test-design.md#shared-request-coverage-boundaries)
 for what these cases do and do not establish. Adding a case is not evidence of a
 passing live run; retain the resulting se-lab report for acceptance.
+
+## Harness unit tests versus integration suites
+
+Keep se-lab integration suite modules directly in `tests/`. Its runtime discovery
+imports every `test_*.py` in that directory before selecting cases. Pytest-only
+harness tests belong in `tests/unit/`, so running `./lab run` does not require
+pytest on the deployment host.
+
+For local development with pytest installed:
+
+```bash
+PYTHONPATH=se-lab:. .venv/bin/python -m pytest -q tests/unit
+```
+
+The discovery regression can also run without pytest:
+
+```bash
+PYTHONPATH=se-lab:. .venv/bin/python -m unittest discover -s tests/unit -p test_suite_discovery.py
+```
