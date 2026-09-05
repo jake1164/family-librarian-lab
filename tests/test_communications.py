@@ -6,6 +6,7 @@ checks actual recipients across dispatcher polls and application restarts.
 
 from __future__ import annotations
 
+from collections import Counter
 import time
 from typing import Callable
 
@@ -252,8 +253,12 @@ def shared_request_emails_only_active_members_after_restart(ctx, scenario_factor
                 messages = scenario.smtp_client.messages()
                 recipients = [address["Address"] for message in messages
                               for address in message.get("To", [])]
-                assert sorted(recipients) == sorted(emails[1:3]), \
-                    "Missing, duplicate, withdrawn-member, or unrelated-member SMTP delivery"
+                assert sorted(recipients) == sorted(emails[1:3]), (
+                    "SMTP recipient mismatch after restart: "
+                    f"expected {dict(Counter(emails[1:3]))!r}, "
+                    f"observed {dict(Counter(recipients))!r}; "
+                    f"message IDs: {[message.get('ID') for message in messages]!r}"
+                )
                 assert all(message.get("Username") == clients.SMTP_AUTH_USERNAME for message in messages)
                 if time.monotonic() >= deadline:
                     break
