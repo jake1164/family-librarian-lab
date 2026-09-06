@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Callable
 
+from agent import common as lab_common
 from agent.suites import suite
 
 from family_librarian_lab.api import ApiResponse
@@ -345,12 +346,19 @@ def existing_cwa_item_is_reported_as_owned(ctx, scenario_factory):
                     "CWA-owned fulfillment option did not point to the catalog match: "
                     f"expected {book_ids[0]!r}, got {owned.get('providerResultId')!r}."
                 )
-            # _wire_destinations() now also configures PublicUrl (the lab's own
-            # CwaClient host_base_url, published outside Docker), which Family
-            # Librarian's deep-link builder now prefers over the Docker-internal
+            # _wire_destinations() now also configures PublicUrl, which Family
+            # Librarian's deep-link builder prefers over the Docker-internal
             # OPDS connection URL (opds_base_url/CWA_INTERNAL_URL) -- see
-            # CwaOwnedLibraryProvider.BuildDeepLink in the product repo.
-            expected_link = f"{scenario.cwa_client.host_base_url}/book/{book_ids[0]}"
+            # CwaOwnedLibraryProvider.BuildDeepLink in the product repo. Swap
+            # in LAB_EXTERNAL_HOST rather than reusing cwa_client.host_base_url
+            # directly: that client deliberately always dials 127.0.0.1 (this
+            # script's own probes run on the Docker host itself), but PublicUrl
+            # is what a real browser opens, which is wrong from any other
+            # machine when LAB_EXTERNAL_HOST is set (as it is on toontown-int-srv2).
+            expected_link = (
+                f"{scenario.cwa_client.host_base_url.replace('127.0.0.1', lab_common.external_host())}"
+                f"/book/{book_ids[0]}"
+            )
             if owned.get("externalActionUri") != expected_link:
                 raise AssertionError(
                     "CWA-owned fulfillment option did not expose the expected public CWA deep link: "

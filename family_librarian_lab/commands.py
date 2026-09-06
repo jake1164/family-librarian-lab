@@ -422,6 +422,20 @@ def _client_host_base(values: dict[str, str], default_port: int, env_key: str) -
     return f"http://127.0.0.1:{_port(values, default_port, env_key)}"
 
 
+def _public_url(values: dict[str, str], default_port: int, env_key: str) -> str:
+    """The address a browser on another machine uses to reach a lab service.
+
+    Unlike _client_host_base() (always 127.0.0.1 -- correct for this script's
+    own readiness/API probes, which run on the Docker host itself), this
+    honors se-lab's LAB_EXTERNAL_HOST so a value like PublicUrl -- stored in
+    Family Librarian's own settings and later opened from a real browser
+    elsewhere on the network -- resolves for that browser too. Falls back to
+    127.0.0.1 (via external_host()'s own default) when LAB_EXTERNAL_HOST is
+    unset, matching this lab's printed connection links.
+    """
+    return f"http://{lab_common.external_host()}:{_port(values, default_port, env_key)}"
+
+
 def _port(values: dict[str, str], default_port: int, env_key: str) -> int:
     port = values.get(env_key, str(default_port))
     try:
@@ -461,13 +475,13 @@ def _wire_destinations(
             opds_username=clients.CWA_DEFAULT_USERNAME,
             opds_password=clients.CWA_DEFAULT_PASSWORD,
             # opds_base_url is the Docker-internal hostname Family Librarian's
-            # own backend connects through; a real browser (or this lab's own
-            # CwaClient, driven from the host) needs the published host port
-            # instead -- host_base_url is exactly that, already computed above
-            # for CwaClient's own use. Wiring it as PublicUrl exercises the
-            # same field a real self-hosted deployment must set for its "CWA
-            # library" nav link and book deep links to resolve outside Docker.
-            public_url=cwa_client.host_base_url,
+            # own backend connects through. PublicUrl is what a real browser
+            # opens -- not this script's own 127.0.0.1 (cwa_client.host_base_url
+            # is right for this script's own probes, run on the Docker host
+            # itself, but wrong for anyone testing from another machine), so
+            # this honors LAB_EXTERNAL_HOST the same way the printed connection
+            # links already do.
+            public_url=_public_url(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT"),
         )
     elif clients.CWA_SFTP_PROFILE_KEY in profiles or clients.CWA_SFTP_PROFILE_PASSWORD in profiles:
         is_key_mode = clients.CWA_SFTP_PROFILE_KEY in profiles
@@ -489,7 +503,7 @@ def _wire_destinations(
             opds_base_url=clients.CWA_INTERNAL_URL,
             opds_username=clients.CWA_DEFAULT_USERNAME,
             opds_password=clients.CWA_DEFAULT_PASSWORD,
-            public_url=cwa_client.host_base_url,
+            public_url=_public_url(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT"),
         )
 
     if clients.ABS_PROFILE in profiles:
@@ -502,8 +516,8 @@ def _wire_destinations(
             library_id=library_id,
             folder_id=folder_id,
             api_token=token,
-            # Same Docker-internal-vs-published-port split as CWA above.
-            public_url=abs_client.host_base_url,
+            # Same LAB_EXTERNAL_HOST-aware public URL as CWA above.
+            public_url=_public_url(values, clients.ABS_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ABS_HOST_PORT"),
         )
 
     if clients.SMTP_PROFILE in profiles:
