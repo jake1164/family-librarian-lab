@@ -345,7 +345,12 @@ def existing_cwa_item_is_reported_as_owned(ctx, scenario_factory):
                     "CWA-owned fulfillment option did not point to the catalog match: "
                     f"expected {book_ids[0]!r}, got {owned.get('providerResultId')!r}."
                 )
-            expected_link = f"{clients.CWA_INTERNAL_URL}/book/{book_ids[0]}"
+            # _wire_destinations() now also configures PublicUrl (the lab's own
+            # CwaClient host_base_url, published outside Docker), which Family
+            # Librarian's deep-link builder now prefers over the Docker-internal
+            # OPDS connection URL (opds_base_url/CWA_INTERNAL_URL) -- see
+            # CwaOwnedLibraryProvider.BuildDeepLink in the product repo.
+            expected_link = f"{scenario.cwa_client.host_base_url}/book/{book_ids[0]}"
             if owned.get("externalActionUri") != expected_link:
                 raise AssertionError(
                     "CWA-owned fulfillment option did not expose the expected public CWA deep link: "

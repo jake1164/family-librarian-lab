@@ -429,6 +429,7 @@ class FamilyLibrarianApi:
         opds_base_url: str,
         opds_username: str,
         opds_password: str,
+        public_url: str | None = None,
     ) -> dict[str, Any]:
         settings = self._request(
             "PUT",
@@ -442,6 +443,7 @@ class FamilyLibrarianApi:
                 "sftpIngestPath": None,
                 "sftpAuthenticationMode": "PrivateKey",
                 "opdsBaseUrl": opds_base_url,
+                "publicUrl": public_url,
                 "opdsUsername": opds_username,
             },
         )
@@ -476,6 +478,7 @@ class FamilyLibrarianApi:
         opds_base_url: str,
         opds_username: str,
         opds_password: str,
+        public_url: str | None = None,
     ) -> dict[str, Any]:
         """Configures CWA's SFTP transport and drives the same trust-on-
         first-test flow an administrator would (design doc CWA-S-01): probe
@@ -497,6 +500,7 @@ class FamilyLibrarianApi:
                 "sftpIngestPath": sftp_ingest_path,
                 "sftpAuthenticationMode": auth_mode,
                 "opdsBaseUrl": opds_base_url,
+                "publicUrl": public_url,
                 "opdsUsername": opds_username,
             },
         )
@@ -576,11 +580,17 @@ class FamilyLibrarianApi:
         library_id: str,
         folder_id: str,
         api_token: str,
+        public_url: str | None = None,
     ) -> dict[str, Any]:
         settings = self._request(
             "PUT",
             "/api/v1/admin/publishing/audiobookshelf/",
-            json_body={"baseUrl": base_url, "libraryId": library_id, "folderId": folder_id},
+            json_body={
+                "baseUrl": base_url,
+                "publicUrl": public_url,
+                "libraryId": library_id,
+                "folderId": folder_id,
+            },
         )
         _require_status(settings, 200, "Audiobookshelf settings")
         token = self._request(

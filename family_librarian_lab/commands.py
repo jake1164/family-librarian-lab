@@ -460,6 +460,14 @@ def _wire_destinations(
             opds_base_url=clients.CWA_INTERNAL_URL,
             opds_username=clients.CWA_DEFAULT_USERNAME,
             opds_password=clients.CWA_DEFAULT_PASSWORD,
+            # opds_base_url is the Docker-internal hostname Family Librarian's
+            # own backend connects through; a real browser (or this lab's own
+            # CwaClient, driven from the host) needs the published host port
+            # instead -- host_base_url is exactly that, already computed above
+            # for CwaClient's own use. Wiring it as PublicUrl exercises the
+            # same field a real self-hosted deployment must set for its "CWA
+            # library" nav link and book deep links to resolve outside Docker.
+            public_url=cwa_client.host_base_url,
         )
     elif clients.CWA_SFTP_PROFILE_KEY in profiles or clients.CWA_SFTP_PROFILE_PASSWORD in profiles:
         is_key_mode = clients.CWA_SFTP_PROFILE_KEY in profiles
@@ -481,6 +489,7 @@ def _wire_destinations(
             opds_base_url=clients.CWA_INTERNAL_URL,
             opds_username=clients.CWA_DEFAULT_USERNAME,
             opds_password=clients.CWA_DEFAULT_PASSWORD,
+            public_url=cwa_client.host_base_url,
         )
 
     if clients.ABS_PROFILE in profiles:
@@ -489,7 +498,12 @@ def _wire_destinations(
         )
         token, library_id, folder_id = abs_client.ensure_bootstrapped()
         api.configure_audiobookshelf(
-            base_url=clients.ABS_INTERNAL_URL, library_id=library_id, folder_id=folder_id, api_token=token
+            base_url=clients.ABS_INTERNAL_URL,
+            library_id=library_id,
+            folder_id=folder_id,
+            api_token=token,
+            # Same Docker-internal-vs-published-port split as CWA above.
+            public_url=abs_client.host_base_url,
         )
 
     if clients.SMTP_PROFILE in profiles:
