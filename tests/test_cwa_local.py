@@ -499,6 +499,93 @@ def opds_test_reports_a_rejected_credential(ctx, scenario_factory):
     _run(ctx, "CWA-L-10", operation)
 
 
+# Kindle/e-reader delivery -- folded into this same cwa-local profile (not a
+# separate opt-in one) so a plain scenario always has a working service
+# account, CWA-relay Mailpit, and two seeded readers with distinct Kindle
+# DeliveryTargets (see _wire_destinations() in commands.py and
+# compose.base.yaml's cwa-mailpit service).
+#
+# Not covered here, deferred: an actual end-to-end send (create a request
+# with a DeliveryTargetId, get the book to Available, assert the email lands
+# in cwa-mailpit addressed to the right reader). Confirmed against real code
+# while building this: IEbookDeliveryProvider.SendAsync (CwaEreaderDeliveryProvider,
+# which is what would call CwaEreaderSessionClient.SendSelectedAsync) has no
+# caller anywhere in the app except its own unit tests -- nothing yet
+# triggers an actual send when a request becomes Available, or via any other
+# route. KIN-01/KIN-02 below test everything that field-verified as real
+# today: the configuration auto-wiring and the same login CWA's real
+# /send_selected route would require. Add the full send scenario once the
+# app exposes a trigger for it.
+@SUITE.case("KIN-01")
+def ereader_delivery_configuration_is_auto_wired_and_login_succeeds(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("KIN-01") as scenario:
+            if scenario.cwa_client is None:
+                raise AssertionError("Scenario did not bring up a CWA destination.")
+            if scenario.cwa_reader1 is None or scenario.cwa_reader2 is None:
+                raise AssertionError("Scenario did not seed the two Kindle-testing readers.")
+
+            settings = scenario.api.cwa_settings()
+            if settings.get("ereaderServiceAccountUsername") != clients.CWA_EREADER_SERVICE_ACCOUNT_USERNAME:
+                raise AssertionError(f"Ereader service account username was not auto-wired: {settings!r}")
+            if not settings.get("hasEreaderServiceAccountPassword"):
+                raise AssertionError(f"Ereader service account password was not auto-wired: {settings!r}")
+
+            reader1_target = scenario.cwa_reader1._request("GET", "/api/v1/me/delivery/kindle/")  # noqa: SLF001
+            if reader1_target.status != 200:
+                raise AssertionError(f"Expected reader1's seeded Kindle target to exist: {reader1_target!r}")
+            reader2_target = scenario.cwa_reader2._request("GET", "/api/v1/me/delivery/kindle/")  # noqa: SLF001
+            if reader2_target.status != 200 or (
+                reader2_target.body.get("address") == reader1_target.body.get("address")
+            ):
+                raise AssertionError(f"Expected reader2 to have its own distinct Kindle target: {reader2_target!r}")
+
+            # The same real login CwaEreaderSessionClient.SendSelectedAsync
+            # performs before an actual send -- proves the service account
+            # this scenario auto-created can really authenticate against
+            # CWA's own login form, not just that Family Librarian's settings
+            # look complete.
+            login_test = scenario.cwa_reader1._request(  # noqa: SLF001
+                "POST", "/api/v1/me/delivery/kindle/test", json_body={}
+            )
+            if login_test.status != 200 or not login_test.body.get("succeeded"):
+                raise AssertionError(f"Expected the e-reader service account login test to succeed: {login_test!r}")
+
+            return {
+                "reader1_kindle_address": reader1_target.body.get("address"),
+                "reader2_kindle_address": reader2_target.body.get("address"),
+                "login_test_message": login_test.body.get("message"),
+            }
+
+    _run(ctx, "KIN-01", operation)
+
+
+@SUITE.case("KIN-02")
+def wrong_service_account_credentials_surface_a_real_login_failure(ctx, scenario_factory):
+    def operation() -> dict[str, object]:
+        with scenario_factory("KIN-02") as scenario:
+            if scenario.cwa_reader1 is None:
+                raise AssertionError("Scenario did not seed the Kindle-testing reader.")
+
+            wrong_password = scenario.api._request(  # noqa: SLF001
+                "PUT",
+                "/api/v1/admin/publishing/cwa/ereader-service-account-password",
+                json_body={"value": "definitely-the-wrong-password"},
+            )
+            if wrong_password.status != 200:
+                raise AssertionError(f"Could not set a wrong e-reader service account password: {wrong_password!r}")
+
+            login_test = scenario.cwa_reader1._request(  # noqa: SLF001
+                "POST", "/api/v1/me/delivery/kindle/test", json_body={}
+            )
+            if login_test.status != 200 or login_test.body.get("succeeded"):
+                raise AssertionError(f"Expected the login test to fail with wrong credentials: {login_test!r}")
+
+            return {"message": login_test.body.get("message")}
+
+    _run(ctx, "KIN-02", operation)
+
+
 def _cwa_validation_errors(body: object) -> list[str]:
     if not isinstance(body, dict):
         return []

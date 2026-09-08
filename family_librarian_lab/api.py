@@ -282,6 +282,20 @@ class FamilyLibrarianApi:
         reader.authenticate(email, password)
         return reader
 
+    def ensure_reader(self, email: str, password: str) -> "FamilyLibrarianApi":
+        """Idempotent create_reader() for manual `up`/`down` reuse across a
+        persisted database (unlike every automated scenario's always-fresh
+        one) -- re-inviting an address that's already registered 400s, so
+        this logs straight in with the same fixed password instead when the
+        account already exists."""
+        existing = any(account.get("email") == email for account in self.list_accounts())
+        if not existing:
+            return self.create_reader(email, password)
+        reader = FamilyLibrarianApi(self._base_url)
+        reader.trace = self.trace
+        reader.authenticate(email, password)
+        return reader
+
     def create_request(self, work_id: str, formats: list[str], *, note: str | None = None,
                        version_kind: str | None = None, version_details: str | None = None) -> ApiResponse:
         return self._request("POST", "/api/v1/requests/", json_body={
@@ -430,6 +444,8 @@ class FamilyLibrarianApi:
         opds_username: str,
         opds_password: str,
         public_url: str | None = None,
+        ereader_service_account_username: str | None = None,
+        ereader_service_account_password: str | None = None,
     ) -> dict[str, Any]:
         settings = self._request(
             "PUT",
@@ -445,6 +461,7 @@ class FamilyLibrarianApi:
                 "opdsBaseUrl": opds_base_url,
                 "publicUrl": public_url,
                 "opdsUsername": opds_username,
+                "ereaderServiceAccountUsername": ereader_service_account_username,
             },
         )
         _require_status(settings, 200, "CWA settings")
@@ -452,6 +469,18 @@ class FamilyLibrarianApi:
             "PUT", "/api/v1/admin/publishing/cwa/opds-password", json_body={"value": opds_password}
         )
         _require_status(password, 200, "CWA OPDS password")
+
+        if ereader_service_account_password is not None:
+            # Independent of IsIngestConfigured/enablement (CwaStatus.
+            # IsEreaderDeliveryConfigured only needs the username above plus
+            # this password -- confirmed against real code) -- no test-gate
+            # to satisfy first, unlike OPDS enable below.
+            ereader_password = self._request(
+                "PUT",
+                "/api/v1/admin/publishing/cwa/ereader-service-account-password",
+                json_body={"value": ereader_service_account_password},
+            )
+            _require_status(ereader_password, 200, "CWA e-reader service account password")
 
         # Enabling requires a passing test for this exact saved configuration
         # (docs/01 §12.1.1's enablement invariant) -- test_cwa_ingest()/
@@ -465,6 +494,27 @@ class FamilyLibrarianApi:
         )
         _require_status(enabled, 200, "CWA enable")
         return _object(enabled.body, "CWA settings")
+
+    def set_kindle_address(self, address: str, *, send_by_default: bool = True) -> dict[str, Any]:
+        """Self-service (`/api/v1/me/delivery/kindle/`) -- call on a reader's
+        own authenticated FamilyLibrarianApi instance (e.g. the one
+        create_reader()/ensure_reader() returns), never on the admin's.
+        Idempotent: SetMyKindleAddressAsync treats a null expectedVersion as
+        "this must be a first-time create" and answers Conflict if a target
+        already exists (confirmed against real code) -- reused across manual
+        `up`/`down` cycles, not just a fresh database, so this reads any
+        existing target's current version first and echoes it back rather
+        than assuming expectedVersion: None always means create."""
+        existing = self._request("GET", "/api/v1/me/delivery/kindle/")
+        expected_version = _object(existing.body, "kindle delivery target").get("version") \
+            if existing.status == 200 else None
+        response = self._request(
+            "PUT",
+            "/api/v1/me/delivery/kindle/",
+            json_body={"address": address, "expectedVersion": expected_version, "sendByDefault": send_by_default},
+        )
+        _require_status(response, 200, "kindle delivery target")
+        return _object(response.body, "kindle delivery target")
 
     def configure_cwa_sftp(
         self,

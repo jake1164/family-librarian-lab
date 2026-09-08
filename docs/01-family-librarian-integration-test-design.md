@@ -66,7 +66,7 @@ Instead, one real ClamAV container is brought up once per **suite** (`ensure_sha
 | Profile | Services | Scope |
 | --- | --- | --- |
 | `base` | Family Librarian, PostgreSQL | Deployment/migration/health and security-gate checks (ClamAV is suite-shared, not part of this profile — see "ClamAV lifecycle" above) |
-| `cwa-local` | `base` + CWA with a shared ingest volume | All ebook publishing scenarios on the local/shared-filesystem transport |
+| `cwa-local` | `base` + CWA with a shared ingest volume + a second, dedicated Mailpit relay (`cwa-mailpit`) | All ebook publishing scenarios on the local/shared-filesystem transport, plus CWA Kindle/e-reader delivery configuration (§8) — folded into this same profile, not a separate opt-in one, so a plain `cwa-local` deployment always has working Kindle delivery configured with no extra flags |
 | `cwa-sftp-key` | `base` + CWA + SFTP sidecar using CWA's ingest volume | Remote CWA transport with private-key authentication |
 | `cwa-sftp-password` | Same as key profile | Remote CWA transport with password authentication |
 | `abs` | `base` + Audiobookshelf | Audiobook publishing and library API scenarios |
@@ -209,6 +209,23 @@ The outbound SMTP provider (`feature/smtp-configuration`, the first slice of fam
 | — | Settings-backup HTTP API round trip (`SettingsBackupService`'s encrypted-JSON export/import) | — | **Not covered, for any setting, not just SMTP** — tracked as its own lab gap rather than built here; `BASE-04`'s existing pg_dump-based backup/restore already proves SMTP settings and the encrypted password survive a real backup/restore as part of the whole database. |
 
 Full detail lives in `test_smtp.py`'s own module docstring — read that file before extending this profile.
+
+### 8. CWA Kindle/e-reader delivery
+
+Family Librarian's Kindle delivery (`feature/kindle-delivery`) signs in to CWA's own web application as a dedicated service account and drives its real "send to e-reader" web route — a stateful, CSRF-protected Flask-Login session, not a JSON API (`CwaEreaderSessionClient`). CWA's own SMTP relay and this service account both live inside CWA's own configuration, entirely separate from Family Librarian's own SMTP settings above (§7) — nothing about that profile configures this one, or vice versa.
+
+The `cwa-local` profile provisions all of this automatically through CWA's real admin web UI (`CwaAdminSession` in `clients.py`, verified field-by-field against the actual running image the same way `CwaEreaderSessionClient`'s own doc comment describes): CWA's `/admin/mailsettings` form pointed at a second, dedicated Mailpit instance (`cwa-mailpit`, plaintext `MP_SMTP_AUTH_ALLOW_INSECURE=true` rather than the `smtp` profile's STARTTLS-only instance — confirmed for real that getting a second, separate container to trust that instance's self-signed cert has no real payoff for a disposable local relay), and a fixed e-reader service account (`/admin/user/new`) granted `allow_additional_ereader_emails` (Family Librarian always passes an explicit per-request recipient override rather than relying on the account's own registered `kindle_mail`). Two seeded readers beyond the bootstrap admin each get their own Kindle `DeliveryTarget` (real addresses via `lab.env`'s `FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL`/`_READER2_KINDLE_EMAIL`, fake ones otherwise that only ever reach `cwa-mailpit`) — the admin deliberately gets none.
+
+CWA enforces server-side password complexity (min 8, upper/lower/digit/special) on account creation, confirmed the hard way while building this: a plain lowercase fixed password — the convention every other credential in this lab already uses — is silently rejected ("Password doesn't comply with password validation rules"), and CWA answers HTTP 200 either way, so a bare status check accepts the rejection as success and leaves no usable account behind. `CwaAdminSession.ensure_ereader_service_account()` checks the response body's flash message for exactly this.
+
+| ID | Scenario | Required assertions | Status |
+| --- | --- | --- | --- |
+| KIN-01 | Configuration is auto-wired and the service account can really sign in | `CwaSettings.IsEreaderDeliveryConfigured` is true after `cwa-local` setup; each seeded reader has its own, distinct Kindle `DeliveryTarget`; the self-service "Test Kindle Delivery" (`POST /api/v1/me/delivery/kindle/test`) succeeds — the same real CWA login `CwaEreaderSessionClient.SendSelectedAsync` would perform before an actual send. | Implemented (`test_cwa_local.py`) |
+| KIN-02 | Wrong service-account credentials surface a real login failure | Setting a wrong `ereader-service-account-password` makes the same self-service test endpoint report `succeeded: false`. | Implemented |
+| — | An actual end-to-end send (create a request with a `DeliveryTargetId`, get the book to `Available`, assert the email lands in `cwa-mailpit` addressed to the right reader and not the other one) | — | **Not covered — blocked on the product, not the lab**: confirmed against real code while building this profile that `IEbookDeliveryProvider.SendAsync` (`CwaEreaderDeliveryProvider`, which is what would call `CwaEreaderSessionClient.SendSelectedAsync`) has no caller anywhere in the app except its own unit tests. Nothing yet triggers an actual send when a request becomes `Available`, or via any other route — add this scenario once the app exposes a trigger for it. |
+| — | CWA's own per-account `kindle_mail`/`allow_additional_ereader_emails` permission boundary (whether a service account *without* that checkbox is actually restricted to its own registered address on `/send_selected`) | — | **Not covered**: the checkbox exists on CWA's real `/admin/user/new` form and is granted defensively (see above), but proving what it actually restricts needs a real book in CWA's catalog and a completed send — blocked on the same product gap as the row above. |
+
+Full detail lives in `test_cwa_local.py`'s own KIN-01/KIN-02 cases and their surrounding comment — read that before extending this profile.
 
 ## CWA correctness tests that should be introduced with product fixes
 

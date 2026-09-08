@@ -320,6 +320,38 @@ services:
       retries: 20
       start_period: 5s
 
+  # CWA's own outbound relay for its "send to e-reader" route (the mailpit
+  # service above is not reused here): CWA is a container this lab doesn't
+  # control the trust store of, and mailpit's SMTP listener only ever offers
+  # STARTTLS with a self-signed cert -- getting a second, separate container's
+  # Python/smtplib to trust that cert would mean baking a CA into CWA's own
+  # image or config volume for no real benefit here. Confirmed for real
+  # instead: Mailpit with MP_SMTP_AUTH_ALLOW_INSECURE=true accepts plaintext
+  # SMTP AUTH, and CWA's own mail settings (mail_use_ssl=0) authenticate and
+  # deliver against it with zero cert plumbing -- this is a disposable local
+  # lab relay, not a security boundary. Same AUTH credentials/file as the
+  # `smtp` profile's mailpit purely for reuse; the two are otherwise
+  # unrelated instances.
+  cwa-mailpit:
+    profiles: [cwa-local]
+    image: ${FAMILY_LIBRARIAN_MAILPIT_IMAGE:-axllent/mailpit:latest}
+    environment:
+      MP_SMTP_AUTH_FILE: /data/smtp-auth-file
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    ports:
+      # Only Mailpit's own HTTP API/UI is published, same reasoning as the
+      # `smtp` profile's instance -- CWA reaches the SMTP port by service
+      # name over the Compose network.
+      - "${FAMILY_LIBRARIAN_CWA_MAILPIT_HOST_PORT:-18029}:8025"
+    volumes:
+      - ./docker/mailpit/smtp-auth-file:/data/smtp-auth-file:ro
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
 volumes:
   postgres-data:
   clamav-data:

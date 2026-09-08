@@ -294,7 +294,19 @@ def _compose(
         command += ["--profile", profile]
     command += list(arguments)
     if capture:
-        return subprocess.run(command, env=environment, text=True, capture_output=True, check=False)
+        # encoding/errors explicit, not text=True's platform-default decode:
+        # confirmed for real on Windows (default cp1252) that a single
+        # non-cp1252 byte anywhere in a container's captured log output (a
+        # box-drawing/ANSI byte from CWA's own startup banner, here) crashes
+        # subprocess's reader thread with UnicodeDecodeError, which then
+        # surfaces as `logs.stdout` silently being None back in
+        # _capture_result -- not a decoding problem worth failing a scenario
+        # over. UTF-8 is already Linux's default text encoding, so this is a
+        # no-op there.
+        return subprocess.run(
+            command, env=environment, text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False,
+        )
 
     # Not asked to capture -- normally this inherits the real terminal
     # directly (the right behavior for `up`/`build`/`status`, run
@@ -447,28 +459,53 @@ def _port(values: dict[str, str], default_port: int, env_key: str) -> int:
     return numeric_port
 
 
-def _wire_destinations(
-    values: dict[str, str], profiles: Sequence[str], api: FamilyLibrarianApi
-) -> tuple[
-    "clients.CwaClient | None",
-    "clients.AbsClient | None",
-    "clients.MailpitClient | None",
-    "dict[str, object] | None",
-]:
+@dataclass(slots=True)
+class DestinationWiring:
+    """Return shape for _wire_destinations() -- a dataclass rather than a
+    growing positional tuple now that CWA's Kindle wiring adds several more
+    optional pieces alongside the original four."""
+
+    cwa_client: "clients.CwaClient | None" = None
+    abs_client: "clients.AbsClient | None" = None
+    smtp_client: "clients.MailpitClient | None" = None
+    sftp_wiring: "dict[str, object] | None" = None
+    cwa_mailpit_client: "clients.MailpitClient | None" = None
+    cwa_reader1: "FamilyLibrarianApi | None" = None
+    cwa_reader2: "FamilyLibrarianApi | None" = None
+
+
+def _wire_destinations(values: dict[str, str], profiles: Sequence[str], api: FamilyLibrarianApi) -> DestinationWiring:
     """Configure Family Librarian to point at whichever extra destinations this
     scenario/deployment brought up -- the same call, used by both `up` (manual
     testing) and the cwa-local/abs/cwa-sftp-*/smtp suites' scenario setup
     (automated testing), so both paths exercise the identical wiring rather
     than two hand-maintained copies of it."""
-    cwa_client: clients.CwaClient | None = None
-    abs_client: clients.AbsClient | None = None
-    smtp_client: clients.MailpitClient | None = None
-    sftp_wiring: dict[str, object] | None = None
+    wiring = DestinationWiring()
 
     if clients.CWA_PROFILE in profiles:
-        cwa_client = clients.CwaClient(
+        wiring.cwa_client = clients.CwaClient(
             host_base_url=_client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
         )
+
+        # CWA's own outbound relay for /send_selected -- configured through
+        # its real admin web UI (no REST surface exists for this), pointed at
+        # cwa-mailpit, folded into this same cwa-local profile (see
+        # compose.base.yaml). Independent of the ingest/OPDS wiring below:
+        # CwaStatus.IsEreaderDeliveryConfigured never gates on IsEnabled.
+        cwa_admin = clients.CwaAdminSession(host_base_url=wiring.cwa_client.host_base_url)
+        cwa_admin.configure_mail_settings(
+            smtp_host=clients.CWA_MAILPIT_INTERNAL_HOST,
+            smtp_port=clients.CWA_MAILPIT_INTERNAL_PORT,
+            login=clients.SMTP_AUTH_USERNAME,
+            password=clients.SMTP_AUTH_PASSWORD,
+            from_address="cwa-kindle-lab@example.test",
+        )
+        cwa_admin.ensure_ereader_service_account(
+            username=clients.CWA_EREADER_SERVICE_ACCOUNT_USERNAME,
+            password=clients.CWA_EREADER_SERVICE_ACCOUNT_PASSWORD,
+            email="fl-ereader-service@example.test",
+        )
+
         api.configure_cwa_local(
             local_ingest_path=clients.CWA_INGEST_CONTAINER_PATH,
             opds_base_url=clients.CWA_INTERNAL_URL,
@@ -482,6 +519,30 @@ def _wire_destinations(
             # this honors LAB_EXTERNAL_HOST the same way the printed connection
             # links already do.
             public_url=_public_url(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT"),
+            ereader_service_account_username=clients.CWA_EREADER_SERVICE_ACCOUNT_USERNAME,
+            ereader_service_account_password=clients.CWA_EREADER_SERVICE_ACCOUNT_PASSWORD,
+        )
+
+        wiring.cwa_mailpit_client = clients.MailpitClient(
+            host_base_url=_client_host_base(
+                values, clients.CWA_MAILPIT_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_MAILPIT_HOST_PORT"
+            )
+        )
+
+        # Two seeded readers (the admin gets no Kindle target, matching a real
+        # household's admin usually not being a reader) so Kindle delivery has
+        # real DeliveryTargets to exercise the moment cwa-local is up -- no
+        # manual account/target setup needed either. Real Kindle addresses are
+        # personal secrets: FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL/_READER2_...
+        # in lab.env (gitignored) override the fake fallbacks, which only ever
+        # reach cwa-mailpit above, never a real device.
+        wiring.cwa_reader1 = api.ensure_reader(clients.CWA_READER1_EMAIL, clients.CWA_READER_DEFAULT_PASSWORD)
+        wiring.cwa_reader1.set_kindle_address(
+            values.get("FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL") or clients.CWA_READER1_KINDLE_FALLBACK
+        )
+        wiring.cwa_reader2 = api.ensure_reader(clients.CWA_READER2_EMAIL, clients.CWA_READER_DEFAULT_PASSWORD)
+        wiring.cwa_reader2.set_kindle_address(
+            values.get("FAMILY_LIBRARIAN_READER2_KINDLE_EMAIL") or clients.CWA_READER2_KINDLE_FALLBACK
         )
     elif clients.CWA_SFTP_PROFILE_KEY in profiles or clients.CWA_SFTP_PROFILE_PASSWORD in profiles:
         is_key_mode = clients.CWA_SFTP_PROFILE_KEY in profiles
@@ -490,10 +551,10 @@ def _wire_destinations(
             credential, _ = clients.ensure_sftp_test_keypair(SFTP_KEY_DIR)
         else:
             credential = values["FAMILY_LIBRARIAN_SFTP_PASSWORD"]
-        cwa_client = clients.CwaClient(
+        wiring.cwa_client = clients.CwaClient(
             host_base_url=_client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
         )
-        sftp_wiring = api.configure_cwa_sftp(
+        wiring.sftp_wiring = api.configure_cwa_sftp(
             sftp_host=service,
             sftp_port=clients.CWA_SFTP_PORT,
             sftp_username=clients.CWA_SFTP_USERNAME,
@@ -507,10 +568,10 @@ def _wire_destinations(
         )
 
     if clients.ABS_PROFILE in profiles:
-        abs_client = clients.AbsClient(
+        wiring.abs_client = clients.AbsClient(
             host_base_url=_client_host_base(values, clients.ABS_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ABS_HOST_PORT")
         )
-        token, library_id, folder_id = abs_client.ensure_bootstrapped()
+        token, library_id, folder_id = wiring.abs_client.ensure_bootstrapped()
         api.configure_audiobookshelf(
             base_url=clients.ABS_INTERNAL_URL,
             library_id=library_id,
@@ -527,11 +588,11 @@ def _wire_destinations(
         # something else (nothing gates request creation on SMTP being
         # ready). Just construct the client so callers can reach Mailpit's
         # own API.
-        smtp_client = clients.MailpitClient(
+        wiring.smtp_client = clients.MailpitClient(
             host_base_url=_client_host_base(values, clients.SMTP_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_SMTP_HOST_PORT")
         )
 
-    return cwa_client, abs_client, smtp_client, sftp_wiring
+    return wiring
 
 
 def _print_connection_info(
@@ -569,6 +630,17 @@ def _print_connection_info(
                 note="already wired into Family Librarian",
             )
         )
+        connections.append(
+            lab_common.ConnectionInfo(
+                "Mailpit (CWA Kindle relay)",
+                _port(values, clients.CWA_MAILPIT_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_MAILPIT_HOST_PORT"),
+                credentials=(
+                    f"SMTP host {clients.CWA_MAILPIT_INTERNAL_HOST}:{clients.CWA_MAILPIT_INTERNAL_PORT}, "
+                    "plaintext AUTH"
+                ),
+                note="already configured as CWA's own outbound mail server",
+            )
+        )
     if abs_running:
         connections.append(
             lab_common.ConnectionInfo(
@@ -595,6 +667,21 @@ def _print_connection_info(
         print(
             "  CWA ingest transport: SFTP, trusted and enabled during the original 'up' "
             "(see its output for the trust probe detail).",
+            flush=True,
+        )
+    if cwa_running:
+        print(
+            "  CWA e-reader service account: "
+            f"{clients.CWA_EREADER_SERVICE_ACCOUNT_USERNAME} / {clients.CWA_EREADER_SERVICE_ACCOUNT_PASSWORD} "
+            "(already saved into Family Librarian's CWA settings).",
+            flush=True,
+        )
+        print(
+            f"  Seeded readers: {clients.CWA_READER1_EMAIL} / {clients.CWA_READER_DEFAULT_PASSWORD} and "
+            f"{clients.CWA_READER2_EMAIL} / {clients.CWA_READER_DEFAULT_PASSWORD}, each with a Kindle "
+            "delivery target already configured (real addresses via lab.env's "
+            "FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL/_READER2_KINDLE_EMAIL, otherwise fake addresses "
+            "reaching only the Mailpit relay above).",
             flush=True,
         )
 
@@ -1068,6 +1155,9 @@ class _BaseScenario:
         self.abs_client: clients.AbsClient | None = None
         self.smtp_client: clients.MailpitClient | None = None
         self.cwa_sftp_wiring: dict[str, object] | None = None
+        self.cwa_mailpit_client: clients.MailpitClient | None = None
+        self.cwa_reader1: FamilyLibrarianApi | None = None
+        self.cwa_reader2: FamilyLibrarianApi | None = None
         self._result_directory: Path | None = None
 
     def __enter__(self) -> "_BaseScenario":
@@ -1114,9 +1204,14 @@ class _BaseScenario:
                 self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
             )
             self.api = api
-            self.cwa_client, self.abs_client, self.smtp_client, self.cwa_sftp_wiring = _wire_destinations(
-                self._values, self._profiles, api
-            )
+            wiring = _wire_destinations(self._values, self._profiles, api)
+            self.cwa_client = wiring.cwa_client
+            self.abs_client = wiring.abs_client
+            self.smtp_client = wiring.smtp_client
+            self.cwa_sftp_wiring = wiring.sftp_wiring
+            self.cwa_mailpit_client = wiring.cwa_mailpit_client
+            self.cwa_reader1 = wiring.cwa_reader1
+            self.cwa_reader2 = wiring.cwa_reader2
         except BaseException:
             if not self._keep:
                 result = _compose(
@@ -1532,15 +1627,15 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
 
         api = FamilyLibrarianApi(_host_base(values))
         api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
-        cwa_client, abs_client, smtp_client, sftp_wiring = _wire_destinations(values, profiles, api)
+        wiring = _wire_destinations(values, profiles, api)
 
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
     _print_connection_info(
         values,
-        cwa_running=cwa_client is not None,
-        abs_running=abs_client is not None,
-        smtp_running=smtp_client is not None,
-        sftp_wiring=sftp_wiring is not None,
+        cwa_running=wiring.cwa_client is not None,
+        abs_running=wiring.abs_client is not None,
+        smtp_running=wiring.smtp_client is not None,
+        sftp_wiring=wiring.sftp_wiring is not None,
     )
     return 0
 

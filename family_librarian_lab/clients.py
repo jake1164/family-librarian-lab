@@ -17,10 +17,13 @@ state, and independently verify a published item actually landed in it.
 from __future__ import annotations
 
 import base64
+import http.cookiejar
 import json
 import re
 import subprocess
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +40,54 @@ CWA_DEFAULT_PASSWORD = "admin123"
 # CWA ships this account by default -- unrelated to any real deployment's
 # credentials, and every scenario run is a fresh, disposable CWA instance.
 CWA_INGEST_CONTAINER_PATH = "/cwa-ingest"
+
+# CWA's own outbound relay for Kindle/e-reader delivery -- see compose.base.yaml's
+# cwa-mailpit service comment for why this is a second, separate Mailpit
+# instance rather than the `smtp` profile's STARTTLS-only one. Folded into the
+# `cwa-local` profile itself (not a separate opt-in profile) so a plain
+# `./lab up --profile cwa-local` always has working Kindle delivery with no
+# extra flags.
+CWA_MAILPIT_SERVICE = "cwa-mailpit"
+CWA_MAILPIT_INTERNAL_HOST = "cwa-mailpit"
+CWA_MAILPIT_INTERNAL_PORT = 1025
+CWA_MAILPIT_DEFAULT_HOST_PORT = 18029
+
+# The dedicated CWA account Family Librarian signs in as to invoke CWA's own
+# "send to e-reader" route (see FamilyLibrarian.Domain.Publishing.CwaSettings.
+# EreaderServiceAccountUsername) -- fixed test-only credentials, unrelated to
+# any real deployment's, created fresh in every disposable CWA instance.
+# `allow_additional_ereader_emails` is granted because Family Librarian always
+# passes an explicit per-request recipient override (`selected_emails` on
+# CWA's own /send_selected route) rather than relying on this account's own
+# registered kindle_mail -- confirmed against CWA's real `/admin/user/new`
+# form, which exposes that exact checkbox alongside a per-account kindle_mail
+# field FL's flow never uses (family-librarian's own kindle-delivery-beta-plan
+# doc, "Family Librarian users should not need corresponding CWA user accounts
+# solely for Kindle delivery" -- this is CWA's single shared service account,
+# not one per FL user).
+CWA_EREADER_SERVICE_ACCOUNT_USERNAME = "fl-ereader-service"
+# CWA enforces password complexity server-side on account creation (min 8,
+# upper, lower, digit, special) -- confirmed for real: a plain lowercase
+# fixed-value password like every other lab credential in this file gets
+# silently rejected ("Password doesn't comply with password validation
+# rules"), leaving no account behind and every later sign-in failing.
+CWA_EREADER_SERVICE_ACCOUNT_PASSWORD = "Family-Librarian-Lab-Ereader-1!"
+
+# Two extra seeded member accounts (beyond the bootstrap admin) so Kindle
+# delivery has real per-user DeliveryTargets to exercise -- the admin
+# deliberately gets none (matches how a real household's admin account
+# usually isn't itself a reader with a Kindle). Fixed test-only credentials,
+# same "no lab.env edits required" convention as the bootstrap admin.
+CWA_READER1_EMAIL = "reader1@sydneyelvis.net"
+CWA_READER2_EMAIL = "reader2@sydneyelvis.net"
+CWA_READER_DEFAULT_PASSWORD = "family-librarian-lab-reader-only"
+# Real Kindle "Send to Kindle" addresses are personal, Amazon-account-linked
+# secrets -- never hardcoded. FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL/
+# _READER2_KINDLE_EMAIL in lab.env (gitignored) override these; left unset,
+# every reader's Kindle target still gets configured, just pointed at a fake
+# address that only ever reaches cwa-mailpit above, never a real device.
+CWA_READER1_KINDLE_FALLBACK = "reader1@kindle-lab.test"
+CWA_READER2_KINDLE_FALLBACK = "reader2@kindle-lab.test"
 
 # The SFTP sidecar is the only writer exposed to Family Librarian in these two
 # profiles -- CWA itself sees the same backing `cwa-ingest` volume it already
@@ -179,6 +230,145 @@ class CwaClient:
         if status != 200:
             return []
         return _parse_matching_book_ids(body.decode("utf-8", errors="replace"), title, author)
+
+
+_CSRF_INPUT_PATTERN = re.compile(r"""name=["']csrf_token["'][^>]*value=["']([^"']*)["']""", re.IGNORECASE)
+
+
+@dataclass(slots=True)
+class CwaAdminSession:
+    """Drives CWA's real admin web UI -- a stateful, CSRF-protected
+    Flask-Login session, not a JSON API (CWA exposes no admin REST surface;
+    this mirrors FamilyLibrarian.Infrastructure.Publishing.CwaEreaderSessionClient's
+    own login flow, verified against the same real image: GET /login to scrape
+    a CSRF token and pick up the anonymous session cookie, POST /login, then a
+    fresh CSRF token is available on the now-authenticated page). Used only to
+    provision the fixture CWA instance itself (mail settings, the e-reader
+    service account) -- everything Family Librarian's own delivery *from* CWA
+    goes through is exercised via CwaEreaderSessionClient in the app under
+    test, never duplicated here.
+
+    Unlike the C# client, this relies on urllib's default redirect handling
+    rather than manually inspecting the 302: a cookie-processing opener
+    already follows POST /login's redirect to `/` and returns that page's
+    body directly, so a fresh CSRF token is scraped from wherever redirects
+    land. A failed login re-renders /login (200, with a password field) rather
+    than redirecting, which is what distinguishes failure from success here.
+    """
+
+    host_base_url: str
+    username: str = CWA_DEFAULT_USERNAME
+    password: str = CWA_DEFAULT_PASSWORD
+    _opener: Any = None
+    _csrf_token: str | None = None
+
+    def __post_init__(self) -> None:
+        self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+    def _get(self, path: str) -> tuple[int, str]:
+        request = urllib.request.Request(f"{self.host_base_url}{path}", method="GET")
+        with self._opener.open(request, timeout=15) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+
+    def _post_form(self, path: str, fields: dict[str, str]) -> tuple[int, str]:
+        data = urllib.parse.urlencode(fields).encode("ascii")
+        request = urllib.request.Request(f"{self.host_base_url}{path}", data=data, method="POST")
+        with self._opener.open(request, timeout=15) as response:
+            return response.status, response.read().decode("utf-8", errors="replace")
+
+    def sign_in(self) -> bool:
+        """Idempotent -- safe to call before every admin action since no
+        session is cached across CwaAdminSession instances/runs either."""
+        _, login_page = self._get("/login")
+        pre_login_token = _CSRF_INPUT_PATTERN.search(login_page)
+        if pre_login_token is None:
+            return False
+
+        status, body = self._post_form("/login", {
+            "username": self.username,
+            "password": self.password,
+            "csrf_token": pre_login_token.group(1),
+        })
+        if status != 200 or 'name="password"' in body:
+            return False
+
+        post_login_token = _CSRF_INPUT_PATTERN.search(body)
+        if post_login_token is None:
+            return False
+        self._csrf_token = post_login_token.group(1)
+        return True
+
+    def configure_mail_settings(
+        self, *, smtp_host: str, smtp_port: int, login: str, password: str, from_address: str
+    ) -> None:
+        """POSTs CWA's real /admin/mailsettings form (field names verified
+        against the actual image: mail_server_type=0 is CWA's "Standard Email
+        Account" mode, mail_use_ssl=0 is "None" -- plaintext, matching
+        cwa-mailpit's MP_SMTP_AUTH_ALLOW_INSECURE=true, see compose.base.yaml).
+        Confirmed for real: this exact payload against a real Mailpit produced
+        an authenticated, delivered test email."""
+        if not self.sign_in() or self._csrf_token is None:
+            raise AssertionError("CWA admin sign-in failed while configuring mail settings.")
+
+        status, _ = self._post_form("/admin/mailsettings", {
+            "csrf_token": self._csrf_token,
+            "mail_server_type": "0",
+            "mail_server": smtp_host,
+            "mail_port": str(smtp_port),
+            "mail_use_ssl": "0",
+            "mail_login": login,
+            "mail_password_e": password,
+            "mail_from": from_address,
+            "mail_size": "25",
+            "submit": "submit",
+        })
+        if status != 200:
+            raise AssertionError(f"CWA /admin/mailsettings POST returned HTTP {status}.")
+
+    def ensure_ereader_service_account(self, *, username: str, password: str, email: str) -> None:
+        """POSTs CWA's real /admin/user/new form. Idempotent by construction
+        rather than by checking first: this always posts the same fixed
+        username/password, so a CWA instance that already has the account
+        (a reused volume across manual `up`/`down` cycles) simply gets a
+        harmless "already exists" rejection from CWA, leaving the account
+        exactly as an earlier successful run left it -- a fresh disposable
+        instance (every automated scenario) gets a real create instead.
+        Grants only download_role/viewer_role plus
+        allow_additional_ereader_emails (see the module-level constant's
+        comment) -- deliberately not admin_role/upload_role/edit_role/etc.,
+        since this account only ever needs to sign in and hit
+        /send_selected/<book_id>."""
+        if not self.sign_in() or self._csrf_token is None:
+            raise AssertionError("CWA admin sign-in failed while creating the e-reader service account.")
+
+        status, body = self._post_form("/admin/user/new", {
+            "csrf_token": self._csrf_token,
+            "name": username,
+            "email": email,
+            "password": password,
+            "kindle_mail": "",
+            "kindle_mail_subject": "",
+            "allow_additional_ereader_emails": "on",
+            "locale": "en",
+            "default_language": "all",
+            "theme": "1",
+            "download_role": "on",
+            "viewer_role": "on",
+        })
+        if status != 200:
+            raise AssertionError(f"CWA /admin/user/new POST returned HTTP {status}.")
+
+        # CWA always answers 200 here, success or not -- confirmed for real:
+        # a fresh create flashes flash_success, a validation failure (e.g. the
+        # password complexity rule this account's fixed password must satisfy)
+        # flashes flash_danger with status 200 too, which a bare status check
+        # would silently accept as "done" while leaving no usable account
+        # behind. "Found an existing account" is this method's own expected
+        # idempotent no-op (see docstring); any other flash_danger is real.
+        if 'id="flash_danger"' in body and "existing account" not in body:
+            danger = re.search(r'id="flash_danger"[^>]*>([^<]*)<', body)
+            message = danger.group(1) if danger else "unknown error"
+            raise AssertionError(f"CWA /admin/user/new rejected the e-reader service account: {message}")
 
 
 def _parse_first_matching_book_id(atom_xml: str, title: str, author: str | None) -> str | None:
