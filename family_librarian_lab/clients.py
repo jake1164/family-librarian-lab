@@ -299,14 +299,23 @@ class CwaAdminSession:
         return True
 
     def configure_mail_settings(
-        self, *, smtp_host: str, smtp_port: int, login: str, password: str, from_address: str
+        self, *, smtp_host: str, smtp_port: int, login: str, password: str, from_address: str,
+        encryption: str = "None",
     ) -> None:
         """POSTs CWA's real /admin/mailsettings form (field names verified
         against the actual image: mail_server_type=0 is CWA's "Standard Email
-        Account" mode, mail_use_ssl=0 is "None" -- plaintext, matching
-        cwa-mailpit's MP_SMTP_AUTH_ALLOW_INSECURE=true, see compose.base.yaml).
-        Confirmed for real: this exact payload against a real Mailpit produced
-        an authenticated, delivered test email."""
+        Account" mode). `encryption` is one of "None"/"StartTls"/"SslOnConnect"
+        (CWA's own mail_use_ssl 0/1/2) -- "None" is what cwa-mailpit's
+        MP_SMTP_AUTH_ALLOW_INSECURE=true relay needs (confirmed for real: this
+        exact payload against it produced an authenticated, delivered test
+        email); a real external relay (Gmail and similar) needs "StartTls" or
+        "SslOnConnect" instead -- unlike cwa-mailpit's self-signed cert, a real
+        relay's certificate is already trusted by CWA's own default OS trust
+        store, so no lab-side cert plumbing is needed for that case."""
+        encryption_values = {"None": "0", "StartTls": "1", "SslOnConnect": "2"}
+        if encryption not in encryption_values:
+            raise ValueError(f"encryption must be one of {sorted(encryption_values)}, got {encryption!r}.")
+
         if not self.sign_in() or self._csrf_token is None:
             raise AssertionError("CWA admin sign-in failed while configuring mail settings.")
 
@@ -315,7 +324,7 @@ class CwaAdminSession:
             "mail_server_type": "0",
             "mail_server": smtp_host,
             "mail_port": str(smtp_port),
-            "mail_use_ssl": "0",
+            "mail_use_ssl": encryption_values[encryption],
             "mail_login": login,
             "mail_password_e": password,
             "mail_from": from_address,

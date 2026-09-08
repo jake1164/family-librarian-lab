@@ -472,6 +472,47 @@ class DestinationWiring:
     cwa_mailpit_client: "clients.MailpitClient | None" = None
     cwa_reader1: "FamilyLibrarianApi | None" = None
     cwa_reader2: "FamilyLibrarianApi | None" = None
+    cwa_relay_is_real: bool = False
+
+
+@dataclass(slots=True)
+class _CwaRelaySettings:
+    host: str
+    port: int
+    login: str
+    password: str
+    from_address: str
+    encryption: str
+    is_real: bool
+
+
+def _cwa_relay_settings(values: dict[str, str]) -> _CwaRelaySettings:
+    """Real relay if FAMILY_LIBRARIAN_CWA_SMTP_HOST is set in lab.env
+    (personal relay credentials for an actual device test -- e.g. Gmail SMTP
+    with an app password, and the "from" address added to each Kindle's
+    Approved Personal Document Email list on Amazon; neither of those is
+    this lab's job), else cwa-mailpit -- the disposable local catcher every
+    automated scenario and a plain `up` both get with zero configuration."""
+    real_host = values.get("FAMILY_LIBRARIAN_CWA_SMTP_HOST")
+    if real_host:
+        return _CwaRelaySettings(
+            host=real_host,
+            port=int(values.get("FAMILY_LIBRARIAN_CWA_SMTP_PORT", "587")),
+            login=values.get("FAMILY_LIBRARIAN_CWA_SMTP_LOGIN", ""),
+            password=values.get("FAMILY_LIBRARIAN_CWA_SMTP_PASSWORD", ""),
+            from_address=values.get("FAMILY_LIBRARIAN_CWA_SMTP_FROM", ""),
+            encryption=values.get("FAMILY_LIBRARIAN_CWA_SMTP_ENCRYPTION", "StartTls"),
+            is_real=True,
+        )
+    return _CwaRelaySettings(
+        host=clients.CWA_MAILPIT_INTERNAL_HOST,
+        port=clients.CWA_MAILPIT_INTERNAL_PORT,
+        login=clients.SMTP_AUTH_USERNAME,
+        password=clients.SMTP_AUTH_PASSWORD,
+        from_address="cwa-kindle-lab@example.test",
+        encryption="None",
+        is_real=False,
+    )
 
 
 def _wire_destinations(values: dict[str, str], profiles: Sequence[str], api: FamilyLibrarianApi) -> DestinationWiring:
@@ -489,16 +530,20 @@ def _wire_destinations(values: dict[str, str], profiles: Sequence[str], api: Fam
 
         # CWA's own outbound relay for /send_selected -- configured through
         # its real admin web UI (no REST surface exists for this), pointed at
-        # cwa-mailpit, folded into this same cwa-local profile (see
-        # compose.base.yaml). Independent of the ingest/OPDS wiring below:
-        # CwaStatus.IsEreaderDeliveryConfigured never gates on IsEnabled.
+        # cwa-mailpit by default (see compose.base.yaml) or a real relay if
+        # lab.env sets one (see _cwa_relay_settings()). Independent of the
+        # ingest/OPDS wiring below: CwaStatus.IsEreaderDeliveryConfigured
+        # never gates on IsEnabled.
+        relay = _cwa_relay_settings(values)
+        wiring.cwa_relay_is_real = relay.is_real
         cwa_admin = clients.CwaAdminSession(host_base_url=wiring.cwa_client.host_base_url)
         cwa_admin.configure_mail_settings(
-            smtp_host=clients.CWA_MAILPIT_INTERNAL_HOST,
-            smtp_port=clients.CWA_MAILPIT_INTERNAL_PORT,
-            login=clients.SMTP_AUTH_USERNAME,
-            password=clients.SMTP_AUTH_PASSWORD,
-            from_address="cwa-kindle-lab@example.test",
+            smtp_host=relay.host,
+            smtp_port=relay.port,
+            login=relay.login,
+            password=relay.password,
+            from_address=relay.from_address,
+            encryption=relay.encryption,
         )
         cwa_admin.ensure_ereader_service_account(
             username=clients.CWA_EREADER_SERVICE_ACCOUNT_USERNAME,
@@ -602,6 +647,7 @@ def _print_connection_info(
     abs_running: bool = False,
     smtp_running: bool = False,
     sftp_wiring: bool = False,
+    cwa_relay_is_real: bool = False,
 ) -> None:
     """Print the manual-testing entry points for the services that are up.
 
@@ -630,17 +676,19 @@ def _print_connection_info(
                 note="already wired into Family Librarian",
             )
         )
-        connections.append(
-            lab_common.ConnectionInfo(
-                "Mailpit (CWA Kindle relay)",
-                _port(values, clients.CWA_MAILPIT_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_MAILPIT_HOST_PORT"),
-                credentials=(
-                    f"SMTP host {clients.CWA_MAILPIT_INTERNAL_HOST}:{clients.CWA_MAILPIT_INTERNAL_PORT}, "
-                    "plaintext AUTH"
-                ),
-                note="already configured as CWA's own outbound mail server",
+        if not cwa_relay_is_real:
+            connections.append(
+                lab_common.ConnectionInfo(
+                    "Mailpit (CWA Kindle relay)",
+                    _port(values, clients.CWA_MAILPIT_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_MAILPIT_HOST_PORT"),
+                    credentials=(
+                        f"SMTP host {clients.CWA_MAILPIT_INTERNAL_HOST}:{clients.CWA_MAILPIT_INTERNAL_PORT}, "
+                        "plaintext AUTH"
+                    ),
+                    note="already configured as CWA's own outbound mail server (fake -- set "
+                    "FAMILY_LIBRARIAN_CWA_SMTP_HOST in lab.env for a real relay)",
+                )
             )
-        )
     if abs_running:
         connections.append(
             lab_common.ConnectionInfo(
@@ -684,6 +732,15 @@ def _print_connection_info(
             "reaching only the Mailpit relay above).",
             flush=True,
         )
+        if cwa_relay_is_real:
+            print(
+                "  CWA outbound relay: real -- "
+                f"{values.get('FAMILY_LIBRARIAN_CWA_SMTP_HOST', '')}:"
+                f"{values.get('FAMILY_LIBRARIAN_CWA_SMTP_PORT', '587')} "
+                "(a real send still needs the \"from\" address on each Kindle's Approved Personal "
+                "Document Email list, and the app itself needs a send trigger -- see docs/01 §8).",
+                flush=True,
+            )
 
 
 def _service_is_running(checks: dict[str, object], service_name: str) -> bool:
@@ -1606,6 +1663,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
                 sftp_wiring=(
                     clients.CWA_SFTP_SERVICE_KEY in services or clients.CWA_SFTP_SERVICE_PASSWORD in services
                 ),
+                cwa_relay_is_real=bool(values.get("FAMILY_LIBRARIAN_CWA_SMTP_HOST")),
             )
             return 0
 
@@ -1636,6 +1694,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
         abs_running=wiring.abs_client is not None,
         smtp_running=wiring.smtp_client is not None,
         sftp_wiring=wiring.sftp_wiring is not None,
+        cwa_relay_is_real=wiring.cwa_relay_is_real,
     )
     return 0
 
@@ -1666,6 +1725,7 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
                 _service_is_running(checks, clients.CWA_SFTP_SERVICE_KEY)
                 or _service_is_running(checks, clients.CWA_SFTP_SERVICE_PASSWORD)
             ),
+            cwa_relay_is_real=bool(values.get("FAMILY_LIBRARIAN_CWA_SMTP_HOST")),
         )
     return 0 if passed else 1
 
