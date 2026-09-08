@@ -98,6 +98,25 @@ def _set_valid_settings(scenario, *, from_address: str = _FROM_ADDRESS) -> dict[
     return settings
 
 
+def _send_test(scenario, recipient_address: str, *, from_address: str = _FROM_ADDRESS) -> dict[str, Any]:
+    # SmtpSettingsService.SendTestAsync tests the draft values passed here,
+    # not whatever _set_valid_settings() already saved (see its own remarks
+    # and send_smtp_test()'s docstring) -- every case must resend the same
+    # host/port/securityMode/username/fromAddress/fromName it just saved.
+    # `password` is left out deliberately: it falls back to the currently
+    # saved password, exercising that fallback exactly the way a real "Test"
+    # click without retyping the password would.
+    return scenario.api.send_smtp_test(
+        recipient_address,
+        host=clients.SMTP_INTERNAL_HOST,
+        port=clients.SMTP_INTERNAL_PORT,
+        security_mode="StartTls",
+        username=clients.SMTP_AUTH_USERNAME,
+        from_address=from_address,
+        from_name=_FROM_NAME,
+    )
+
+
 @SUITE.case("SMTP-01")
 def configure_test_and_enable_delivers_a_real_authenticated_email(ctx, scenario_factory):
     def operation() -> dict[str, object]:
@@ -110,7 +129,7 @@ def configure_test_and_enable_delivers_a_real_authenticated_email(ctx, scenario_
             scenario.api.set_smtp_password(clients.SMTP_AUTH_PASSWORD)
 
             recipient = "smtp-01-recipient@example.test"
-            test_result = scenario.api.send_smtp_test(recipient)
+            test_result = _send_test(scenario, recipient)
             if not test_result.get("succeeded"):
                 raise AssertionError(f"SMTP test send did not succeed: {test_result!r}")
 
@@ -154,7 +173,7 @@ def enabling_requires_a_fresh_passing_test_of_the_saved_settings(ctx, scenario_f
 
             _set_valid_settings(scenario)
             scenario.api.set_smtp_password(clients.SMTP_AUTH_PASSWORD)
-            first_test = scenario.api.send_smtp_test("smtp-02-first@example.test")
+            first_test = _send_test(scenario, "smtp-02-first@example.test")
             if not first_test.get("succeeded"):
                 raise AssertionError(f"Initial SMTP test did not succeed: {first_test!r}")
 
@@ -175,7 +194,9 @@ def enabling_requires_a_fresh_passing_test_of_the_saved_settings(ctx, scenario_f
             if status_after_block.get("isEnabled"):
                 raise AssertionError("SMTP reported enabled despite the enable request being rejected.")
 
-            retested = scenario.api.send_smtp_test("smtp-02-second@example.test")
+            retested = _send_test(
+                scenario, "smtp-02-second@example.test", from_address="library-changed@example.test"
+            )
             if not retested.get("succeeded"):
                 raise AssertionError(f"Re-test of the changed settings did not succeed: {retested!r}")
             allowed = scenario.api.set_smtp_enabled(True)
@@ -201,7 +222,7 @@ def wrong_credentials_surface_a_real_authentication_failure(ctx, scenario_factor
             scenario.api.set_smtp_password("definitely-the-wrong-password")
 
             recipient = "smtp-03-recipient@example.test"
-            result = scenario.api.send_smtp_test(recipient)
+            result = _send_test(scenario, recipient)
             if result.get("succeeded"):
                 raise AssertionError(f"Expected the test send to fail with wrong credentials: {result!r}")
             message = (result.get("message") or "").lower()
@@ -237,7 +258,15 @@ def unreachable_host_surfaces_a_real_connection_failure(ctx, scenario_factory):
                 from_name=_FROM_NAME,
             )
 
-            result = scenario.api.send_smtp_test("smtp-04-recipient@example.test")
+            result = scenario.api.send_smtp_test(
+                "smtp-04-recipient@example.test",
+                host=clients.SMTP_INTERNAL_HOST,
+                port=clients.SMTP_UNREACHABLE_PORT,
+                security_mode="StartTls",
+                username=None,
+                from_address=_FROM_ADDRESS,
+                from_name=_FROM_NAME,
+            )
             if result.get("succeeded"):
                 raise AssertionError(f"Expected the test send to fail against an unreachable host: {result!r}")
 

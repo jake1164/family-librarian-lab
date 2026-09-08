@@ -215,16 +215,48 @@ class FamilyLibrarianApi:
         auto-raised assertion."""
         return self._request("PUT", "/api/v1/admin/communications/smtp/enabled", json_body={"enabled": enabled})
 
-    def send_smtp_test(self, recipient_address: str) -> dict[str, Any]:
+    def send_smtp_test(
+        self,
+        recipient_address: str,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        security_mode: str = "StartTls",
+        username: str | None = None,
+        password: str | None = None,
+        from_address: str | None = None,
+        from_name: str | None = None,
+    ) -> dict[str, Any]:
         """Always HTTP 200 for a well-formed request, whether or not the SMTP
         transport itself succeeded -- SmtpSettingsEndpoints.SendTestAsync
         only returns a non-200 for a request-validation failure (e.g. a
-        malformed recipient address). The real transport outcome is the
-        `succeeded`/`message` fields on the returned object; the caller
-        decides what a failed `succeeded` means for its own scenario, the
-        same way test_cwa_ingest()/test_audiobookshelf() already work."""
+        malformed recipient address, or a missing/invalid securityMode). The
+        real transport outcome is the `succeeded`/`message` fields on the
+        returned object; the caller decides what a failed `succeeded` means
+        for its own scenario, the same way test_cwa_ingest()/
+        test_audiobookshelf() already work.
+
+        Unlike CWA/ABS's connection probes, this tests the *draft* values
+        passed here, not whatever is already persisted (SmtpSettingsService.
+        SendTestAsync's own remarks) -- host/port/securityMode/username/
+        fromAddress/fromName have no fallback and must be supplied on every
+        call; `password` is the one exception, falling back to the currently
+        saved password when left None, so a caller that already saved a
+        password via set_smtp_password() need not resend it here.
+        """
         response = self._request(
-            "POST", "/api/v1/admin/communications/smtp/test", json_body={"recipientAddress": recipient_address}
+            "POST",
+            "/api/v1/admin/communications/smtp/test",
+            json_body={
+                "recipientAddress": recipient_address,
+                "host": host,
+                "port": port,
+                "securityMode": security_mode,
+                "username": username,
+                "password": password,
+                "fromAddress": from_address,
+                "fromName": from_name,
+            },
         )
         _require_status(response, 200, "SMTP test send")
         return _object(response.body, "SMTP test send")
@@ -259,7 +291,15 @@ class FamilyLibrarianApi:
         if password is not None:
             self.set_smtp_password(password)
 
-        probe = self.send_smtp_test(f"smtp-configure-probe-{uuid.uuid4().hex}@example.test")
+        probe = self.send_smtp_test(
+            f"smtp-configure-probe-{uuid.uuid4().hex}@example.test",
+            host=host,
+            port=port,
+            security_mode=security_mode,
+            username=username,
+            from_address=from_address,
+            from_name=from_name,
+        )
         if not probe.get("succeeded"):
             raise AssertionError(f"SMTP test send did not succeed before enabling: {probe!r}")
 
