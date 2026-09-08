@@ -19,11 +19,17 @@ SUITE = suite("cwa-local", group="cwa-local", order=20)
 @SUITE.setup
 def _setup(scenario_factory):
     scenario_factory.extra_env = ensure_shared_clamav()
+    # KIN-01/KIN-02 below need the two seeded Kindle-testing readers;
+    # base-security's own cwa-local requirement must NOT get them (see
+    # _wire_destinations()'s docstring in commands.py) -- opt in here rather
+    # than seeding unconditionally whenever cwa-local is up.
+    scenario_factory.seed_readers = True
 
 
 @SUITE.teardown
-def _teardown():
+def _teardown(scenario_factory):
     teardown_shared_clamav()
+    scenario_factory.seed_readers = False
 
 
 def _run(ctx, test_id: str, operation: Callable[[], dict[str, object]]) -> None:

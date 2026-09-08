@@ -515,12 +515,28 @@ def _cwa_relay_settings(values: dict[str, str]) -> _CwaRelaySettings:
     )
 
 
-def _wire_destinations(values: dict[str, str], profiles: Sequence[str], api: FamilyLibrarianApi) -> DestinationWiring:
+def _wire_destinations(
+    values: dict[str, str],
+    profiles: Sequence[str],
+    api: FamilyLibrarianApi,
+    *,
+    seed_readers: bool = True,
+) -> DestinationWiring:
     """Configure Family Librarian to point at whichever extra destinations this
     scenario/deployment brought up -- the same call, used by both `up` (manual
     testing) and the cwa-local/abs/cwa-sftp-*/smtp suites' scenario setup
     (automated testing), so both paths exercise the identical wiring rather
-    than two hand-maintained copies of it."""
+    than two hand-maintained copies of it.
+
+    `seed_readers` defaults on for manual `up` (a human tester wants the two
+    Kindle-testing readers for free) but must be requested explicitly by an
+    automated suite (`test_cwa_local.py`'s KIN-01/KIN-02 need them; nothing
+    else does). `base-security`'s suite also brings up the `cwa-local`
+    profile -- only to satisfy FormatReadinessService's destination-readiness
+    gate for SEC-01, not for Kindle -- so without this flag its BASE-02 case
+    ("fresh deployment contains exactly the bootstrap administrator") failed
+    the moment reader seeding started running unconditionally for every
+    cwa-local scenario, this suite included."""
     wiring = DestinationWiring()
 
     if clients.CWA_PROFILE in profiles:
@@ -581,14 +597,15 @@ def _wire_destinations(values: dict[str, str], profiles: Sequence[str], api: Fam
         # personal secrets: FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL/_READER2_...
         # in lab.env (gitignored) override the fake fallbacks, which only ever
         # reach cwa-mailpit above, never a real device.
-        wiring.cwa_reader1 = api.ensure_reader(clients.CWA_READER1_EMAIL, clients.CWA_READER_DEFAULT_PASSWORD)
-        wiring.cwa_reader1.set_kindle_address(
-            values.get("FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL") or clients.CWA_READER1_KINDLE_FALLBACK
-        )
-        wiring.cwa_reader2 = api.ensure_reader(clients.CWA_READER2_EMAIL, clients.CWA_READER_DEFAULT_PASSWORD)
-        wiring.cwa_reader2.set_kindle_address(
-            values.get("FAMILY_LIBRARIAN_READER2_KINDLE_EMAIL") or clients.CWA_READER2_KINDLE_FALLBACK
-        )
+        if seed_readers:
+            wiring.cwa_reader1 = api.ensure_reader(clients.CWA_READER1_EMAIL, clients.CWA_READER_DEFAULT_PASSWORD)
+            wiring.cwa_reader1.set_kindle_address(
+                values.get("FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL") or clients.CWA_READER1_KINDLE_FALLBACK
+            )
+            wiring.cwa_reader2 = api.ensure_reader(clients.CWA_READER2_EMAIL, clients.CWA_READER_DEFAULT_PASSWORD)
+            wiring.cwa_reader2.set_kindle_address(
+                values.get("FAMILY_LIBRARIAN_READER2_KINDLE_EMAIL") or clients.CWA_READER2_KINDLE_FALLBACK
+            )
     elif clients.CWA_SFTP_PROFILE_KEY in profiles or clients.CWA_SFTP_PROFILE_PASSWORD in profiles:
         is_key_mode = clients.CWA_SFTP_PROFILE_KEY in profiles
         service = clients.CWA_SFTP_SERVICE_KEY if is_key_mode else clients.CWA_SFTP_SERVICE_PASSWORD
@@ -1193,6 +1210,7 @@ class _BaseScenario:
         keep: bool,
         profiles: Sequence[str] = (),
         extra_env: dict[str, str] | None = None,
+        seed_readers: bool = False,
     ) -> None:
         # A per-instance merge, not a mutation of the shared `values` dict
         # every scenario is constructed from. A suite's own @SUITE.setup
@@ -1204,6 +1222,11 @@ class _BaseScenario:
         self._test_id = test_id
         self._keep = keep
         self._profiles = (PROFILE, *profiles)
+        # Opt-in only (default False, unlike manual `up`'s default-True): see
+        # _wire_destinations()'s docstring for why an automated scenario must
+        # ask for the two seeded Kindle readers explicitly rather than
+        # getting them for free just because `cwa-local` is in profiles.
+        self._seed_readers = seed_readers
         suffix = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
         self.project_name = f"family-librarian-lab-{test_id.lower()}-{suffix}"
         self.api: FamilyLibrarianApi | None = None
@@ -1261,7 +1284,7 @@ class _BaseScenario:
                 self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
             )
             self.api = api
-            wiring = _wire_destinations(self._values, self._profiles, api)
+            wiring = _wire_destinations(self._values, self._profiles, api, seed_readers=self._seed_readers)
             self.cwa_client = wiring.cwa_client
             self.abs_client = wiring.abs_client
             self.smtp_client = wiring.smtp_client
@@ -1564,10 +1587,20 @@ class _BaseScenarioFactory:
         # and teardown bracketing every one of its cases is enough; no
         # per-case save/restore wrapping needed the way active_profiles has.
         self.extra_env: dict[str, str] = {}
+        # Same suite-scoped set/clear convention as extra_env above: a
+        # suite's own @SUITE.setup turns this on when its cases need the two
+        # seeded Kindle-testing readers (currently only test_cwa_local.py's
+        # KIN-01/KIN-02); every other suite keeps the default False.
+        self.seed_readers: bool = False
 
     def __call__(self, test_id: str) -> _BaseScenario:
         return _BaseScenario(
-            self._values, test_id, keep=self._keep, profiles=self.active_profiles, extra_env=self.extra_env
+            self._values,
+            test_id,
+            keep=self._keep,
+            profiles=self.active_profiles,
+            extra_env=self.extra_env,
+            seed_readers=self.seed_readers,
         )
 
 
