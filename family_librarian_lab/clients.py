@@ -36,9 +36,13 @@ CWA_INTERNAL_URL = "http://cwa:8083"
 CWA_DEFAULT_IMAGE = "crocodilestick/calibre-web-automated:latest"
 CWA_DEFAULT_HOST_PORT = 18083
 CWA_DEFAULT_USERNAME = "admin"
-CWA_DEFAULT_PASSWORD = "Admin123!"
-# CWA ships this account by default -- unrelated to any real deployment's
-# credentials, and every scenario run is a fresh, disposable CWA instance.
+# CWA ships this account by default with this exact fixed password baked into
+# the image itself -- unrelated to any real deployment's credentials, and
+# every scenario run is a fresh, disposable CWA instance. Not ours to change:
+# confirmed for real that editing this constant alone does NOT change the
+# account CWA actually created (a plain OPDS request with the new value
+# 401s), it just breaks every check/login in this file that relies on it.
+CWA_DEFAULT_PASSWORD = "admin123"
 CWA_INGEST_CONTAINER_PATH = "/cwa-ingest"
 
 # CWA's own outbound relay for Kindle/e-reader delivery -- see compose.base.yaml's

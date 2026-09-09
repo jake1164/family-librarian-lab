@@ -121,7 +121,7 @@ Connection info once up (defaults; override the *_HOST_PORT vars in lab.env).
 Set se-lab's LAB_EXTERNAL_HOST (for example, toontown-int-srv2) to print
 hosted links instead of 127.0.0.1:
   Family Librarian  http://127.0.0.1:18080  FAMILY_LIBRARIAN_ADMIN_EMAIL / _ADMIN_PASSWORD
-  CWA               http://127.0.0.1:18083  admin / Admin123!
+  CWA               http://127.0.0.1:18083  admin / admin123
   Audiobookshelf    http://127.0.0.1:18378  bootstrapped and wired in automatically
   Mailpit (SMTP)    http://127.0.0.1:18025  web UI (user: labmailer / password:
                      Admin123!); SMTP host mailpit:1025, STARTTLS required
