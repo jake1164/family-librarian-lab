@@ -51,7 +51,7 @@ def test_status_prints_running_service_connection_details(monkeypatch: pytest.Mo
     assert "Family Librarian: http://toontown-int-srv2:18080" in output
     assert "user: admin@example.test / password: lab-password" in output
     assert "CWA: http://toontown-int-srv2:18083" in output
-    assert "OPDS user: admin / password: admin123" in output
+    assert f"OPDS user: {clients.CWA_DEFAULT_USERNAME} / password: {clients.CWA_DEFAULT_PASSWORD}" in output
     assert "Audiobookshelf: http://toontown-int-srv2:18378" in output
     assert f"user: {clients.ABS_DEFAULT_USERNAME} / password: {clients.ABS_DEFAULT_PASSWORD}" in output
     assert "CWA ingest transport: SFTP" in output

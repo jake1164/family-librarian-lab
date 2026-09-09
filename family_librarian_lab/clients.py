@@ -36,7 +36,7 @@ CWA_INTERNAL_URL = "http://cwa:8083"
 CWA_DEFAULT_IMAGE = "crocodilestick/calibre-web-automated:latest"
 CWA_DEFAULT_HOST_PORT = 18083
 CWA_DEFAULT_USERNAME = "admin"
-CWA_DEFAULT_PASSWORD = "admin123"
+CWA_DEFAULT_PASSWORD = "Admin123!"
 # CWA ships this account by default -- unrelated to any real deployment's
 # credentials, and every scenario run is a fresh, disposable CWA instance.
 CWA_INGEST_CONTAINER_PATH = "/cwa-ingest"
@@ -71,7 +71,7 @@ CWA_EREADER_SERVICE_ACCOUNT_USERNAME = "fl-ereader-service"
 # fixed-value password like every other lab credential in this file gets
 # silently rejected ("Password doesn't comply with password validation
 # rules"), leaving no account behind and every later sign-in failing.
-CWA_EREADER_SERVICE_ACCOUNT_PASSWORD = "Family-Librarian-Lab-Ereader-1!"
+CWA_EREADER_SERVICE_ACCOUNT_PASSWORD = "Admin123!"
 
 # Two extra seeded member accounts (beyond the bootstrap admin) so Kindle
 # delivery has real per-user DeliveryTargets to exercise -- the admin
@@ -80,7 +80,7 @@ CWA_EREADER_SERVICE_ACCOUNT_PASSWORD = "Family-Librarian-Lab-Ereader-1!"
 # same "no lab.env edits required" convention as the bootstrap admin.
 CWA_READER1_EMAIL = "reader1@sydneyelvis.net"
 CWA_READER2_EMAIL = "reader2@sydneyelvis.net"
-CWA_READER_DEFAULT_PASSWORD = "family-librarian-lab-reader-only"
+CWA_READER_DEFAULT_PASSWORD = "Admin123!"
 # Real Kindle "Send to Kindle" addresses are personal, Amazon-account-linked
 # secrets -- never hardcoded. FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL/
 # _READER2_KINDLE_EMAIL in lab.env (gitignored) override these; left unset,
@@ -105,7 +105,7 @@ CWA_SFTP_DEFAULT_IMAGE = "atmoz/sftp:alpine"
 CWA_SFTP_USERNAME = "cwaftp"
 CWA_SFTP_INGEST_PATH = "/upload"
 CWA_SFTP_PORT = 22
-CWA_SFTP_DEFAULT_PASSWORD = "family-librarian-lab-sftp-only"
+CWA_SFTP_DEFAULT_PASSWORD = "Admin123!"
 # Matches CWA's own PUID/PGID above -- same "Access is denied" class of bug
 # already found and fixed for the local-ingest profile; the sftp sidecar and
 # CWA both write/read the same shared volume and must agree on ownership.
@@ -117,7 +117,7 @@ ABS_INTERNAL_URL = "http://abs:80"
 ABS_DEFAULT_IMAGE = "advplyr/audiobookshelf:latest"
 ABS_DEFAULT_HOST_PORT = 18378
 ABS_DEFAULT_USERNAME = "test-admin"
-ABS_DEFAULT_PASSWORD = "admin123"
+ABS_DEFAULT_PASSWORD = "Admin123!"
 ABS_LIBRARY_NAME = "lab-audiobooks"
 ABS_LIBRARY_FOLDER_PATH = "/audiobooks"
 
@@ -157,7 +157,7 @@ SMTP_DEFAULT_HOST_PORT = 18025
 # deterministic AuthenticationException out of MailKitSmtpTestSender
 # (SMTP-03) rather than faking one.
 SMTP_AUTH_USERNAME = "labmailer"
-SMTP_AUTH_PASSWORD = "family-librarian-lab-smtp-only"
+SMTP_AUTH_PASSWORD = "Admin123!"
 
 _BOOK_ID_PATTERN = re.compile(r"/opds/(?:book|download)/(\d+)")
 

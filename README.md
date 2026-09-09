@@ -101,7 +101,7 @@ or running the automated suites — one code path, not two hand-maintained copie
 ./lab run --test-group abs
 ```
 
-CWA ships a working default admin account (`admin` / `admin123`) — no bootstrap needed.
+CWA ships a working default admin account (`admin` / `Admin123!`) — no bootstrap needed.
 Audiobookshelf needs a first-run root user and a library pointed at its `/audiobooks`
 folder; `AbsClient.ensure_bootstrapped()` does that idempotently before Family Librarian
 is configured. Both images are pinned in `compose.base.yaml`
