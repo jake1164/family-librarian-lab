@@ -1102,6 +1102,13 @@ def ensure_gutenberg_fixture_tls() -> dict[str, str]:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content)
 
+    # GUT-12 fetches book 10009's real EPUB through GutenbergProvider.FetchAsync,
+    # same split-digit mirror-path translation as the audio bundle above.
+    for mirror_path, content in gutenberg_fixtures.foreign_edition_mirror_files():
+        destination = GUTENBERG_FIXTURE_ROOT / mirror_path.lstrip("/")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+
     return {
         "SSL_CERT_FILE": "/etc/ssl/lab-gutenberg-ca-bundle.pem",
         "GutenbergCatalog__ArchiveUrl": f"{clients.GUTENBERG_FIXTURE_INTERNAL_URL}/rdf-files.tar.bz2",

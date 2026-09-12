@@ -518,6 +518,15 @@ def foreign_language_edition_is_excluded_from_owned_matching(ctx, scenario_facto
     product's own code comments as previously unconfirmed against a real
     instance; second, that `DeterministicBookMatcher`/`CwaOwnedLibraryProvider`
     actually act on it once parsed.
+
+    Confirmed live on toontown-int-srv2 (2026-09-12): a seeded EPUB's
+    `<dc:language>es</dc:language>` (ISO 639-1) round-trips through CWA's
+    real OPDS feed as `<dcterms:language>spa</dcterms:language>` -- Calibre
+    normalizes every language to its own ISO 639-2 form internally,
+    confirmed for real rather than assumed. This does not affect
+    `LanguageAcceptance.IsEnglishOrUnspecified`'s own English-only check
+    ("eng".startswith("en") is also true), but it does mean this test must
+    expect "spa", not the "es" the seed itself declared.
     """
     def operation() -> dict[str, object]:
         with scenario_factory("CWA-L-11") as scenario:
@@ -532,8 +541,12 @@ def foreign_language_edition_is_excluded_from_owned_matching(ctx, scenario_facto
             )
             book_id, language = books_with_language[0]
 
-            # Layer 1: what does CWA's real OPDS feed actually say?
-            if language != "es":
+            # Layer 1: what does CWA's real OPDS feed actually say? Calibre
+            # normalizes an ISO 639-1 "es" to ISO 639-2 "spa" internally --
+            # accept either so this stays correct if a future CWA/Calibre
+            # version's normalization changes, but "spa" is the confirmed
+            # real value.
+            if language not in ("es", "spa"):
                 raise AssertionError(
                     "CWA's real OPDS feed did not expose the seeded language the way "
                     f"CwaCatalogClient expects -- got {language!r} for book {book_id!r}. "

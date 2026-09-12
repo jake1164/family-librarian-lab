@@ -19,7 +19,7 @@ import tarfile
 from dataclasses import dataclass, field
 from xml.sax.saxutils import escape
 
-from family_librarian_lab.fixtures import multi_track_audiobook
+from family_librarian_lab.fixtures import clean_epub, multi_track_audiobook
 
 RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 DCTERMS_NS = "http://purl.org/dc/terms/"
@@ -277,3 +277,21 @@ def multi_track_mirror_files() -> tuple[tuple[str, bytes], ...]:
         (f"/1/0/0/0/8/10008/mp3/10008-{index:02}.mp3", content)
         for index, (_, content) in enumerate(multi_track_audiobook(), start=1)
     )
+
+
+def foreign_edition_mirror_files() -> tuple[tuple[str, bytes], ...]:
+    """Real mirror path and payload for GUT-12's book 10009 (see
+    SEARCH_TARGET_BOOKS above) -- same split-digit translation as
+    `multi_track_mirror_files()`, for `/files/10009/10009-images.epub`.
+
+    Without this, GUT-12's "accept the offered candidate" step reaches real
+    acquisition code (`GutenbergProvider.FetchAsync`) but has nothing to
+    download -- exactly the documented, pre-existing gap this suite's own
+    module docstring calls out for GUT-03/04 ("needs a fixture mirror that
+    replicates Gutenberg's real split-digit path convention"). The payload
+    itself is `clean_epub()`'s bytes -- a structurally valid, ClamAV-clean
+    EPUB is all the security/import pipeline needs at this stage; the
+    language exclusion this book exists to test already happened upstream,
+    from the RDF catalogue metadata, before any file is ever fetched.
+    """
+    return (("/1/0/0/0/9/10009/10009-images.epub", clean_epub()),)
