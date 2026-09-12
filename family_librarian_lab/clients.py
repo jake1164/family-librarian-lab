@@ -235,6 +235,28 @@ class CwaClient:
             return []
         return _parse_matching_book_ids(body.decode("utf-8", errors="replace"), title, author)
 
+    def find_books_with_language(self, title: str, author: str | None) -> list[tuple[str, str | None]]:
+        """Same matching as `find_books`, but also returns each entry's
+        declared language (or `None` if the feed carries no language element
+        under either Dublin Core namespace CWA could plausibly use).
+
+        Exists to verify what CWA's *real* OPDS feed emits independently of
+        Family Librarian's own `CwaCatalogClient` -- which only reads
+        `dcterms:language` (http://purl.org/dc/terms/). If a scenario finds a
+        language here under the *other* common Dublin Core namespace
+        (http://purl.org/dc/elements/1.1/, `dc:language`) instead, that is a
+        real product gap (CwaCatalogClient parsing the wrong namespace), not
+        a lab-fixture problem -- keeping the two namespaces distinguishable
+        in the return value is what makes that diagnosable.
+        """
+        import urllib.parse
+
+        url = f"{self.host_base_url}/opds/search/{urllib.parse.quote(title)}"
+        status, body = _http(url, basic_auth=(self.username, self.password))
+        if status != 200:
+            return []
+        return _parse_matching_books_with_language(body.decode("utf-8", errors="replace"), title, author)
+
 
 _CSRF_INPUT_PATTERN = re.compile(r"""name=["']csrf_token["'][^>]*value=["']([^"']*)["']""", re.IGNORECASE)
 
@@ -414,6 +436,51 @@ def _parse_matching_book_ids(atom_xml: str, title: str, author: str | None) -> l
             if match:
                 matches.append(match.group(1))
                 break
+    return matches
+
+
+# The two Dublin Core namespaces a real OPDS feed could plausibly use for a
+# language element -- CwaCatalogClient (Family Librarian's own parser) only
+# reads DCTERMS_LANGUAGE_TAG; DC_ELEMENTS_LANGUAGE_TAG exists here purely so a
+# scenario can tell "CWA emits no language at all" apart from "CWA emits it
+# under the other namespace, which the product doesn't read" -- two very
+# different findings that would otherwise look identical (language: None).
+DCTERMS_LANGUAGE_TAG = "{http://purl.org/dc/terms/}language"
+DC_ELEMENTS_LANGUAGE_TAG = "{http://purl.org/dc/elements/1.1/}language"
+
+
+def _parse_matching_books_with_language(
+    atom_xml: str, title: str, author: str | None
+) -> list[tuple[str, str | None]]:
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(atom_xml)
+    except ET.ParseError:
+        return []
+
+    matches: list[tuple[str, str | None]] = []
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    for entry in root.findall("atom:entry", ns):
+        entry_title = entry.findtext("atom:title", default="", namespaces=ns)
+        if title.lower() not in entry_title.lower():
+            continue
+        if author:
+            author_element = entry.find("atom:author/atom:name", ns)
+            entry_author = author_element.text if author_element is not None else None
+            if entry_author and author.lower() not in entry_author.lower():
+                continue
+        book_id: str | None = None
+        for link in entry.findall("atom:link", ns):
+            href = link.get("href")
+            match = _BOOK_ID_PATTERN.search(href) if href else None
+            if match:
+                book_id = match.group(1)
+                break
+        if book_id is None:
+            continue
+        language = entry.findtext(DCTERMS_LANGUAGE_TAG) or entry.findtext(DC_ELEMENTS_LANGUAGE_TAG)
+        matches.append((book_id, language))
     return matches
 
 

@@ -10,7 +10,7 @@ from agent.suites import suite
 
 from family_librarian_lab.api import ApiResponse
 from family_librarian_lab.commands import ensure_shared_clamav, teardown_shared_clamav
-from family_librarian_lab.fixtures import clean_epub, large_epub
+from family_librarian_lab.fixtures import clean_epub, foreign_language_epub, large_epub
 from family_librarian_lab import clients
 
 SUITE = suite("cwa-local", group="cwa-local", order=20)
@@ -505,6 +505,67 @@ def opds_test_reports_a_rejected_credential(ctx, scenario_factory):
     _run(ctx, "CWA-L-10", operation)
 
 
+@SUITE.case("CWA-L-11")
+def foreign_language_edition_is_excluded_from_owned_matching(ctx, scenario_factory):
+    """ACCURACY-1: a same-title/author CWA entry declared in a non-English
+    language must never be reported "Owned" for an ordinary (English)
+    request -- the product owner's own stated failure example (request Moby
+    Dick, get a Spanish edition), verified against a real CWA OPDS feed
+    rather than a hand-built XML fixture. Two layers, so a failure stays
+    diagnosable: first, that CWA's real OPDS output actually carries the
+    language under the namespace `CwaCatalogClient` reads
+    (`dcterms:language`, http://purl.org/dc/terms/) -- flagged in the
+    product's own code comments as previously unconfirmed against a real
+    instance; second, that `DeterministicBookMatcher`/`CwaOwnedLibraryProvider`
+    actually act on it once parsed.
+    """
+    def operation() -> dict[str, object]:
+        with scenario_factory("CWA-L-11") as scenario:
+            if scenario.cwa_client is None:
+                raise AssertionError("Scenario did not bring up a CWA destination.")
+
+            scenario.seed_cwa_ingest(foreign_language_epub("es"), "cwa-l-11-the-hobbit-es.epub")
+            books_with_language = _poll_cwa_books_with_language(scenario.cwa_client, timeout_seconds=90)
+            _require_exactly_one_book(
+                [book_id for book_id, _ in books_with_language],
+                "CWA did not import exactly one seeded foreign-language item",
+            )
+            book_id, language = books_with_language[0]
+
+            # Layer 1: what does CWA's real OPDS feed actually say?
+            if language != "es":
+                raise AssertionError(
+                    "CWA's real OPDS feed did not expose the seeded language the way "
+                    f"CwaCatalogClient expects -- got {language!r} for book {book_id!r}. "
+                    "If this is not None, CwaCatalogClient may be reading the wrong "
+                    "Dublin Core namespace/element for this CWA build."
+                )
+
+            # Layer 2: does Family Librarian act on it?
+            work_id = scenario.api.resolve_demo_work()
+            options = scenario.api.fulfillment_options(work_id)
+            ebook_options = options.get("ebook")
+            if not isinstance(ebook_options, list):
+                raise AssertionError(f"Fulfillment options did not contain an ebook array: {options!r}")
+            owned = next(
+                (
+                    option
+                    for option in ebook_options
+                    if isinstance(option, dict)
+                    and option.get("providerId") == "cwa"
+                    and option.get("optionKind") == "Owned"
+                ),
+                None,
+            )
+            if owned is not None:
+                raise AssertionError(
+                    f"A Spanish-only CWA edition was reported Owned for an ordinary (English) request: {owned!r}"
+                )
+            return {"work_id": work_id, "opds_book_id": book_id, "opds_language": language}
+
+    _run(ctx, "CWA-L-11", operation)
+
+
 # Kindle/e-reader delivery -- folded into this same cwa-local profile (not a
 # separate opt-in one) so a plain scenario always has a working service
 # account, CWA-relay Mailpit, and two seeded readers with distinct Kindle
@@ -644,6 +705,19 @@ def _poll_cwa_book_ids(cwa_client: clients.CwaClient, *, timeout_seconds: float)
         book_ids = cwa_client.find_books("The Hobbit", "J. R. R. Tolkien")
         if book_ids:
             return book_ids
+        if time.monotonic() >= deadline:
+            return []
+        time.sleep(2)
+
+
+def _poll_cwa_books_with_language(
+    cwa_client: clients.CwaClient, *, timeout_seconds: float
+) -> list[tuple[str, str | None]]:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        books = cwa_client.find_books_with_language("The Hobbit", "J. R. R. Tolkien")
+        if books:
+            return books
         if time.monotonic() >= deadline:
             return []
         time.sleep(2)

@@ -356,6 +356,24 @@ class FamilyLibrarianApi:
     def recheck_requests(self) -> ApiResponse:
         return self._request("POST", "/api/v1/admin/requests/recheck", json_body={})
 
+    def resolve_needs_review(
+        self, request_id: str, *, candidate_id: str | None = None, expected_version: int | None = None
+    ) -> ApiResponse:
+        """SELFSERV-1: resolve a "PreferenceAmbiguity" review as the caller's
+        own authenticated user -- pass `candidate_id` to accept it ("get it
+        anyway"), or omit it to decline every candidate ("keep looking")."""
+        return self._request("POST", f"/api/v1/requests/{request_id}/needs-review/resolve", json_body={
+            "candidateId": candidate_id, "expectedVersion": expected_version,
+        })
+
+    def admin_resolve_needs_review(
+        self, request_id: str, *, candidate_id: str | None = None, expected_version: int | None = None
+    ) -> ApiResponse:
+        """Admin counterpart of `resolve_needs_review` -- additive, not exclusive, per SELFSERV-1."""
+        return self._request("POST", f"/api/v1/admin/requests/{request_id}/needs-review/resolve", json_body={
+            "candidateId": candidate_id, "expectedVersion": expected_version,
+        })
+
     def provider_attempts(self, request_id: str) -> list[dict[str, Any]]:
         response = self._request("GET", f"/api/v1/admin/requests/{request_id}/provider-attempts")
         _require_status(response, 200, "provider attempts")

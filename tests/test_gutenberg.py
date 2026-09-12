@@ -14,7 +14,11 @@ Scope: GUT-01 (first sync from empty state), GUT-02 (local search resolves
 from the synced catalog, never a live Gutendex/gutenberg.org search call --
 GutenbergProvider.FindDirectAcquisitionsAsync only ever queries the local
 Postgres catalog, confirmed by reading it end to end), GUT-06 (a Sound record
-excluded from ebook fulfillment).
+excluded from ebook fulfillment), GUT-11/GUT-12 (ACCURACY-1/SELFSERV-1: a
+same-title/author Gutenberg edition in a language other than English is
+never silently auto-acquired by the real, unattended
+AutomaticRequestFulfillmentHostedService background loop, and is instead
+offered to the requester as a preference choice they can accept or decline).
 
 **A real production incident this suite's own build surfaced**: this
 project's Compose network is NOT actually isolated from the internet --
@@ -205,3 +209,104 @@ def sound_record_excluded_from_ebook_search(ctx, scenario_factory):
             return {"work_id": work_id, "ebook_options": options.get("ebook")}
 
     _run(ctx, "GUT-06", operation)
+
+
+def _poll_request_outcome(api, request_id: str, *, timeout_seconds: float) -> dict[str, object]:
+    """Poll the admin request view until AutomaticRequestFulfillmentHostedService's
+    real, unattended background pass (hardcoded 2-minute interval, not
+    configurable -- confirmed against AutomaticRequestFulfillmentHostedService.PollInterval)
+    moves the request out of PendingAcquisition, or the timeout elapses.
+    Returns the last observed BookRequestResponse either way, so a timeout
+    still gives the caller a useful body to report."""
+    deadline = time.monotonic() + timeout_seconds
+    request: dict[str, object] = {}
+    while True:
+        admin_view = api.admin_request(request_id)
+        candidate = admin_view.get("request")
+        if isinstance(candidate, dict):
+            request = candidate
+            if request.get("status") != "PendingAcquisition":
+                return request
+        if time.monotonic() >= deadline:
+            return request
+        time.sleep(3)
+
+
+@SUITE.case("GUT-11")
+def foreign_only_edition_reaches_a_preference_review_not_silent_acquisition(ctx, scenario_factory):
+    """ACCURACY-1 + SELFSERV-1: book 10009 (see gutenberg_fixtures.py) is the
+    *only* ebook-type Gutenberg record for "The Hobbit" -- a real, unattended
+    automatic-fulfillment pass must recognize it as excluded by language,
+    never silently acquire it, and route it to the requester as a
+    RequestReviewCategory.PreferenceAmbiguity review instead of leaving it
+    an indistinguishable "nothing found yet"."""
+    def operation() -> dict[str, object]:
+        with scenario_factory("GUT-11") as scenario:
+            _sync_to_completion(scenario.api)
+            _enable_gutendex(scenario.api)
+            request_id, format_id = scenario.api.create_demo_ebook_request()
+
+            request = _poll_request_outcome(scenario.api, request_id, timeout_seconds=150)
+            if request.get("status") != "NeedsReview":
+                raise AssertionError(
+                    f"Request did not reach NeedsReview within the automatic pass window: {request!r}"
+                )
+            needs_review = request.get("needsReview")
+            if not isinstance(needs_review, dict) or needs_review.get("category") != "PreferenceAmbiguity":
+                raise AssertionError(f"Request reached NeedsReview for the wrong reason: {request!r}")
+            candidates = needs_review.get("candidates")
+            if not isinstance(candidates, list) or not candidates:
+                raise AssertionError(f"PreferenceAmbiguity review carried no candidates: {needs_review!r}")
+            candidate = candidates[0]
+            if candidate.get("language") != "es":
+                raise AssertionError(f"Offered candidate did not carry the excluded language: {candidate!r}")
+            if not isinstance(candidate.get("candidateId"), str):
+                raise AssertionError(f"Offered candidate had no id: {candidate!r}")
+            return {"request_id": request_id, "format_id": format_id, "needs_review": needs_review}
+
+    _run(ctx, "GUT-11", operation)
+
+
+@SUITE.case("GUT-12")
+def preference_ambiguity_candidate_can_be_accepted(ctx, scenario_factory):
+    """SELFSERV-1's "get it anyway": accepting the offered candidate clears
+    the review and drives real acquisition of that exact Gutenberg edition,
+    through the same security/import pipeline any other acquisition uses."""
+    def operation() -> dict[str, object]:
+        with scenario_factory("GUT-12") as scenario:
+            _sync_to_completion(scenario.api)
+            _enable_gutendex(scenario.api)
+            request_id, _ = scenario.api.create_demo_ebook_request()
+
+            request = _poll_request_outcome(scenario.api, request_id, timeout_seconds=150)
+            needs_review = request.get("needsReview") if isinstance(request, dict) else None
+            if not isinstance(needs_review, dict) or needs_review.get("category") != "PreferenceAmbiguity":
+                raise AssertionError(f"Request did not reach a PreferenceAmbiguity review: {request!r}")
+            candidates = needs_review.get("candidates")
+            if not isinstance(candidates, list) or not candidates:
+                raise AssertionError(f"PreferenceAmbiguity review carried no candidates: {needs_review!r}")
+            candidate_id = candidates[0].get("candidateId")
+            if not isinstance(candidate_id, str):
+                raise AssertionError(f"Offered candidate had no id: {candidates[0]!r}")
+
+            resolved = scenario.api.resolve_needs_review(request_id, candidate_id=candidate_id)
+            if resolved.status != 200:
+                raise AssertionError(f"Accepting the candidate returned HTTP {resolved.status}: {resolved.body!r}")
+            resolved_body = resolved.body if isinstance(resolved.body, dict) else {}
+            if resolved_body.get("needsReview") is not None:
+                raise AssertionError(f"Accepted request still carried a review: {resolved_body!r}")
+
+            # AutomaticRequestFulfillmentService.AcquireOptionAsync runs
+            # synchronously inside the resolve call -- no further polling
+            # needed, the security pipeline has already recorded the attempt.
+            attempts = scenario.api.provider_attempts(request_id)
+            acquired = any(
+                isinstance(attempt, dict) and attempt.get("outcome") == "Acquired" for attempt in attempts
+            )
+            if not acquired:
+                raise AssertionError(
+                    f"Accepting the candidate did not record an Acquired provider attempt: {attempts!r}"
+                )
+            return {"request_id": request_id, "resolved": resolved_body, "provider_attempts": attempts}
+
+    _run(ctx, "GUT-12", operation)

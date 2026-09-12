@@ -248,6 +248,19 @@ SEARCH_TARGET_BOOKS = [
             for index, (_, content) in enumerate(multi_track_audiobook(), start=1)
         ),
     ),
+    # ACCURACY-1/SELFSERV-1's target: the *only* ebook-type Gutenberg record
+    # for "The Hobbit" (10008 above is Sound/audiobook-only, so this claims
+    # no overlapping media type) is Spanish-only -- proves GutenbergProvider
+    # never silently auto-acquires a same-title/author foreign edition when
+    # it is the only thing found, and instead offers it as a SELFSERV-1
+    # preference choice. See test_gutenberg.py's GUT-11/GUT-12.
+    Book(
+        gutenberg_id=10009,
+        title="The Hobbit",
+        authors=(Person("J. R. R. Tolkien"),),
+        languages=("es",),
+        files=(FileEntry("/files/10009/10009-images.epub", "application/epub+zip"),),
+    ),
 ]
 
 

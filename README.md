@@ -164,7 +164,11 @@ certificate only exist for the duration of an automated suite run today.
 
 Implemented: `GUT-01` (first sync from an empty catalog), `GUT-02` (search resolves from
 the local Postgres catalog, never a live network call), `GUT-06` (a Sound-type record
-never surfaces as an ebook option). Not yet implemented, with reasons — see
+never surfaces as an ebook option), `GUT-11`/`GUT-12` (ACCURACY-1/SELFSERV-1: a
+same-title/author Gutenberg edition in a language other than English is never silently
+auto-acquired by the real, unattended `AutomaticRequestFulfillmentHostedService`
+background loop — it reaches a `PreferenceAmbiguity` review the requester can accept or
+decline instead). Not yet implemented, with reasons — see
 [the design doc](docs/01-family-librarian-integration-test-design.md#6-gutenberg-local-catalog-profile)
 and `tests/test_gutenberg.py`'s own module docstring for the full detail: `GUT-05`
 (the API response contract doesn't expose the field needed to verify format preference),

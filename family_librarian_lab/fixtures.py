@@ -85,6 +85,22 @@ def large_epub() -> bytes:
     )
 
 
+def foreign_language_epub(language: str = "es") -> bytes:
+    """Return a valid EPUB with The Hobbit's own title/author but a
+    non-English `<dc:language>` -- ACCURACY-1's exact failure shape (a
+    same-title/author edition that must be excluded from automatic matching
+    by language). Title/author intentionally match `clean_epub()` so a
+    scenario can prove CWA's real OPDS feed round-trips the language value
+    Family Librarian's `CwaCatalogClient` reads, independent of whether the
+    two editions are also distinguishable by identity.
+    """
+    return _build_epub(
+        chapter_text="Una edicion de la biblioteca de pruebas, deliberadamente en otro idioma.",
+        identifier="urn:uuid:family-librarian-lab-the-hobbit-foreign",
+        language=language,
+    )
+
+
 def clean_audiobook(*, repeat: int = 20) -> bytes:
     """Return a deterministic, genuinely ffprobe-decodable MP3 (repeated
     MPEG-1 Layer III frame headers -- silent, not intended for listening).
@@ -182,6 +198,7 @@ def _build_epub(
     title: str = "The Hobbit",
     author: str = "J. R. R. Tolkien",
     identifier: str = "urn:uuid:family-librarian-lab-the-hobbit",
+    language: str = "en",
     extra_payload: bytes | None = None,
     wrap_chapter_in_html: bool = True,
 ) -> bytes:
@@ -205,7 +222,7 @@ def _build_epub(
             b'<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
             + f'<dc:identifier id="book-id">{identifier}</dc:identifier>'.encode("utf-8")
             + f'<dc:title>{title}</dc:title><dc:creator>{author}</dc:creator>'.encode("utf-8")
-            + b'<dc:language>en</dc:language></metadata><manifest>'
+            + f'<dc:language>{language}</dc:language></metadata><manifest>'.encode("utf-8")
             + b'<item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>'
             + b'</manifest><spine><itemref idref="chapter"/></spine></package>',
             ZIP_DEFLATED,
