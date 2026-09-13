@@ -10,7 +10,7 @@ from agent.suites import suite
 
 from family_librarian_lab.api import ApiResponse
 from family_librarian_lab.commands import ensure_shared_clamav, teardown_shared_clamav
-from family_librarian_lab.fixtures import clean_epub, foreign_language_epub, large_epub
+from family_librarian_lab.fixtures import alternate_english_epub, clean_epub, foreign_language_epub, large_epub
 from family_librarian_lab import clients
 
 SUITE = suite("cwa-local", group="cwa-local", order=20)
@@ -574,9 +574,64 @@ def foreign_language_edition_is_excluded_from_owned_matching(ctx, scenario_facto
                 raise AssertionError(
                     f"A Spanish-only CWA edition was reported Owned for an ordinary (English) request: {owned!r}"
                 )
-            return {"work_id": work_id, "opds_book_id": book_id, "opds_language": language}
+            _assert_not_deliverable(scenario, work_id)
+            request_id, _ = scenario.api.create_demo_ebook_request()
+            return {"work_id": work_id, "request_id": request_id, "opds_book_id": book_id, "opds_language": language}
 
     _run(ctx, "CWA-L-11", operation)
+
+
+def _assert_not_deliverable(scenario, work_id):
+    reader = scenario.cwa_reader1
+    if reader is None:
+        raise AssertionError("Scenario did not configure a reader delivery target.")
+    # A regression could send mail. Always confine that failure to this
+    # scenario's catcher, even when lab.env configures a real SMTP relay.
+    clients.CwaAdminSession(host_base_url=scenario.cwa_client.host_base_url).configure_mail_settings(
+        smtp_host=clients.CWA_MAILPIT_INTERNAL_HOST,
+        smtp_port=clients.CWA_MAILPIT_INTERNAL_PORT,
+        login=clients.SMTP_AUTH_USERNAME, password=clients.SMTP_AUTH_PASSWORD,
+        from_address="cwa-kindle-lab@example.test", encryption="None",
+    )
+    reader.set_kindle_address(clients.CWA_READER1_KINDLE_FALLBACK)
+    scenario.cwa_mailpit_client.clear()
+    # Deliberately test the override too: title/author confirmation cannot
+    # authorize an ambiguous result or a language the reader never chose.
+    for confirm in (False, True):
+        response = reader._request("POST", "/api/v1/me/delivery/kindle/send-existing",
+                                   json_body={"workId": work_id, "confirmLowConfidenceMatch": confirm})
+        if response.status != 404:
+            raise AssertionError(f"Unconfirmed library candidate was actionable: {response!r}")
+    attempts = reader._request("GET", "/api/v1/me/delivery/kindle/attempts")
+    if attempts.status != 200 or attempts.body != []:
+        raise AssertionError(f"Unconfirmed candidate created a delivery attempt: {attempts!r}")
+    if scenario.cwa_mailpit_client.messages():
+        raise AssertionError("Unconfirmed candidate sent email to the lab catcher.")
+
+
+@SUITE.case("CWA-L-12")
+def ambiguous_library_editions_allow_request_but_never_send(ctx, scenario_factory):
+    def operation():
+        with scenario_factory("CWA-L-12") as scenario:
+            scenario.seed_cwa_ingest(clean_epub(), "cwa-l-12-original.epub")
+            scenario.seed_cwa_ingest(alternate_english_epub(), "cwa-l-12-illustrated.epub")
+            deadline = time.monotonic() + 120
+            while True:
+                books = scenario.cwa_client.find_books("The Hobbit", "J. R. R. Tolkien")
+                if len(books) == 2:
+                    break
+                if time.monotonic() >= deadline:
+                    raise AssertionError(f"CWA did not retain two distinct editions: {books!r}")
+                time.sleep(2)
+            work_id = scenario.api.resolve_demo_work()
+            _assert_not_deliverable(scenario, work_id)
+            options = scenario.api.fulfillment_options(work_id)
+            if any(option.get("optionKind") == "Owned" for option in options.get("ebook", [])):
+                raise AssertionError(f"Ambiguous library editions reported as owned: {options!r}")
+            request_id, _ = scenario.api.create_demo_ebook_request()
+            return {"request_id": request_id, "opds_books": books}
+
+    _run(ctx, "CWA-L-12", operation)
 
 
 # Kindle/e-reader delivery -- folded into this same cwa-local profile (not a

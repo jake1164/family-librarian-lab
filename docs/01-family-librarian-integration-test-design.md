@@ -104,6 +104,9 @@ Each scenario polls explicit state with bounded deadlines rather than sleeping:
 - Audiobookshelf's library-item API for the unique title and author;
 - Family Librarian request, security-queue, publishing-queue, and provider activity APIs.
 
+Scenario teardown refreshes redacted container logs after the test actions, so
+results include acquisition and destination failures as well as startup logs.
+
 On failure the lab captures Compose configuration with secrets redacted, container logs, health state, the last Family Librarian API responses, CWA OPDS response metadata, ABS response metadata, and an inventory of test-owned volumes. It never write-dumps passwords, API tokens, private keys, protected settings, or full book bytes into results.
 
 ## Required test scenarios
@@ -137,6 +140,13 @@ The happy path is the baseline ebook contract and runs against a completely fres
 | CWA-L-06 | Destination unavailable | Make the ingest directory unwritable or stop CWA at handoff. Approval remains valid, a failed publishing record has a safe reason, the request is not available, and an administrator recheck after repair reaches one verified CWA item. |
 | CWA-L-07 | Existing owned item | Preload a test book through CWA's own supported ingest path, then configure Family Librarian. The owned-library lookup reports the CWA result rather than claiming an acquisition is needed. |
 
+Implemented language/ownership regressions:
+
+| ID | Scenario | Required assertions |
+| --- | --- | --- |
+| CWA-L-11 | Spanish-only owned library | Real OPDS exposes `spa`; FL reports no Owned option, accepts an ordinary ebook request, and refuses Send Existing (including low-confidence override) without creating a delivery attempt. |
+| CWA-L-12 | Two plausible English editions | CWA retains two distinct entries; neither becomes actionable ownership, Send Existing is refused, and ordinary requesting remains possible. |
+
 ### 3. CWA SFTP profiles
 
 Run the entire CWA happy-path family for both SFTP authentication modes. The key profile is the required remote default; the password profile protects the explicitly supported alternative.
@@ -161,6 +171,7 @@ Run the entire CWA happy-path family for both SFTP authentication modes. The key
 | ABS-05 | Multi-track bundle | Direct-acquire an ordered three-track Gutenberg-style fixture through the real HTTPS mirror resolver. ABS receives one item with the expected tracks and order; Family Librarian creates one bundle delivery and does not publish until all tracks have passed the security pipeline. |
 | ABS-06 | API outage and recovery | With ABS unavailable, approval remains successful but delivery records a safe failure and the request stays unavailable. After ABS recovers, recheck reaches one delivered item. |
 | ABS-07 | Destination isolation | A rejected, identity-mismatched, or scanner-held audiobook produces no ABS upload and no available state. |
+| ABS-09 | Two plausible owned editions | Real ABS retains two items; FL reports no Owned option and permits an ordinary audiobook request. |
 
 ### 5. Automated acquisition and provider boundary
 
@@ -191,6 +202,20 @@ The Gutenberg local-catalog feature (product commit `5e9823f`) syncs a `.tar.bz2
 | GUT-07..10 | Corrupted archive; malformed RDF within an archive; below-minimum book count; incremental sync | — | **Not implemented**: need additional fixture archive variants; GUT-08/GUT-10 additionally can't be verified via the public `/status` endpoint as originally envisioned — `ParseErrorCount` and `LastSuccessfulIncrementalSyncUtc` are internal-only (`GutenbergCatalogRepository.ToStatus` does not map them). |
 
 Full detail, including the real config field names, the provider id (`gutendex`, a legacy name — not `gutenberg`), and a real incident this suite's own build surfaced (the background sync service races ahead of an explicit `POST /sync`, taking the incremental path and silently pulling from the live internet unless `EbookRdfBaseUrl` is also overridden), lives in `test_gutenberg.py`'s module docstring rather than duplicated here — read that file before extending this profile.
+
+Language-consent regressions in the Gutenberg profile:
+
+| ID | Scenario | Required assertions |
+| --- | --- | --- |
+| GUT-11 | Foreign offer requires consent | The real automatic worker offers the Spanish candidate for preference review without downloading it. |
+| GUT-12 | Accepted Spanish ebook completes | Both RDF and actual EPUB declare Spanish; acceptance drives real acquisition, the request reaches Available, and CWA exposes the single Spanish item (`es`/`spa`). An Acquired attempt alone is insufficient. |
+| GUT-13 | Provider language differs from bytes | RDF offers Spanish but the downloaded EPUB declares French. After acceptance the clean-scanned asset must be Unmatched, with no destination import/item or Available request. The fixture payload is restored after the case, including failure. |
+
+These are hard failures, never skips for known product defects. To investigate
+locally built changes, `--skip-build` can run a separately tagged image supplied
+through `FAMILY_LIBRARIAN_IMAGE`; record its image ID because the managed source
+checkout metadata may describe a different revision. Shared-host runs use
+committed product and lab branches.
 
 ### 7. SMTP outbound communications profile
 

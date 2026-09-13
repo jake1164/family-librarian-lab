@@ -85,6 +85,15 @@ def large_epub() -> bytes:
     )
 
 
+def alternate_english_epub() -> bytes:
+    """A second plausible edition with distinct identity so CWA keeps both."""
+    return _build_epub(
+        chapter_text="A second harmless edition for ambiguity checks.",
+        title="The Hobbit: Illustrated Edition",
+        identifier="urn:uuid:family-librarian-lab-hobbit-illustrated",
+    )
+
+
 def foreign_language_epub(language: str = "es") -> bytes:
     """Return a valid EPUB with The Hobbit's own title/author but a
     non-English `<dc:language>` -- ACCURACY-1's exact failure shape (a
@@ -95,7 +104,9 @@ def foreign_language_epub(language: str = "es") -> bytes:
     two editions are also distinguishable by identity.
     """
     return _build_epub(
-        chapter_text="Una edicion de la biblioteca de pruebas, deliberadamente en otro idioma.",
+        chapter_text=("Une édition française de la bibliothèque de test."
+                      if language in ("fr", "fra", "fre") else
+                      "Una edicion de la biblioteca de pruebas, deliberadamente en otro idioma."),
         identifier="urn:uuid:family-librarian-lab-the-hobbit-foreign",
         language=language,
     )

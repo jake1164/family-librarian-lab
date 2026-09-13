@@ -55,12 +55,14 @@ Real follow-up work, not cut for convenience.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from typing import Callable
 
 from agent.suites import suite
 
 from family_librarian_lab import clients
-from family_librarian_lab.commands import ensure_gutenberg_fixture_tls, ensure_shared_clamav, teardown_shared_clamav
+from family_librarian_lab.commands import GUTENBERG_FIXTURE_ROOT, ensure_gutenberg_fixture_tls, ensure_shared_clamav, teardown_shared_clamav
+from family_librarian_lab.fixtures import foreign_language_epub
 from family_librarian_lab.gutenberg_fixtures import SEARCH_TARGET_BOOKS, diversity_books
 
 # CWA_PROFILE is here for the same reason test_base_security.py needs it:
@@ -307,6 +309,64 @@ def preference_ambiguity_candidate_can_be_accepted(ctx, scenario_factory):
                 raise AssertionError(
                     f"Accepting the candidate did not record an Acquired provider attempt: {attempts!r}"
                 )
-            return {"request_id": request_id, "resolved": resolved_body, "provider_attempts": attempts}
+            deadline = time.monotonic() + 150
+            while True:
+                current = next(entry["request"] for entry in scenario.api.list_requests()
+                               if entry.get("request", {}).get("id") == request_id)
+                if current.get("status") == "Available":
+                    break
+                if current.get("status") == "NeedsReview" or time.monotonic() >= deadline:
+                    raise AssertionError(f"Accepted Spanish EPUB never reached Available: {current!r}")
+                time.sleep(2)
+            books = scenario.cwa_client.find_books_with_language("The Hobbit", "J. R. R. Tolkien")
+            if len(books) != 1 or books[0][1] not in ("es", "spa"):
+                raise AssertionError(f"CWA did not verify the actual Spanish edition: {books!r}")
+            return {"request_id": request_id, "request": current, "opds_books": books, "provider_attempts": attempts}
 
     _run(ctx, "GUT-12", operation)
+
+
+@contextmanager
+def _downloaded_language(language):
+    """Change only downloaded bytes; preserve the Spanish RDF offer and restore on failure."""
+    path = GUTENBERG_FIXTURE_ROOT / "1/0/0/0/9/10009/10009-images.epub"
+    original = path.read_bytes()
+    try:
+        path.write_bytes(foreign_language_epub(language))
+        yield
+    finally:
+        path.write_bytes(original)
+
+
+@SUITE.case("GUT-13")
+def accepting_spanish_does_not_authorize_french_bytes(ctx, scenario_factory):
+    def operation():
+        with _downloaded_language("fr"), scenario_factory("GUT-13") as scenario:
+            _sync_to_completion(scenario.api)
+            _enable_gutendex(scenario.api)
+            request_id, _ = scenario.api.create_demo_ebook_request()
+            request = _poll_request_outcome(scenario.api, request_id, timeout_seconds=150)
+            review = request.get("needsReview") or {}
+            candidates = review.get("candidates") or []
+            if review.get("category") != "PreferenceAmbiguity" or len(candidates) != 1 or candidates[0].get("language") != "es":
+                raise AssertionError(f"Expected one Spanish choice before downloading: {request!r}")
+            resolved = scenario.api.resolve_needs_review(
+                request_id, candidate_id=candidates[0]["candidateId"], expected_version=request["version"])
+            if resolved.status != 200:
+                raise AssertionError(f"Could not accept Spanish choice: {resolved!r}")
+            current = next(entry["request"] for entry in scenario.api.list_requests()
+                           if entry.get("request", {}).get("id") == request_id)
+            assets = scenario.api.list_assets()
+            if len(assets) != 1 or assets[0].get("storageState") != "Unmatched":
+                raise AssertionError(f"French bytes bypassed Spanish consent: {assets!r}")
+            if (assets[0].get("latestEvaluation") or {}).get("status") != "Passed":
+                raise AssertionError(f"The fixture did not pass scanning before the identity hold: {assets!r}")
+            if current.get("status") == "Available":
+                raise AssertionError(f"Mismatched request became available: {current!r}")
+            imports = [item for item in scenario.api.publishing_queue().get("libraryImports", [])
+                       if item.get("requestId") == request_id]
+            if imports or scenario.cwa_client.find_books("The Hobbit", "J. R. R. Tolkien"):
+                raise AssertionError(f"Mismatched EPUB reached the destination: {imports!r}")
+            return {"request_id": request_id, "request": current, "provider_attempts": scenario.api.provider_attempts(request_id)}
+
+    _run(ctx, "GUT-13", operation)

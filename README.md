@@ -162,6 +162,12 @@ this suite via `SSL_CERT_FILE` — every other suite is unaffected either way:
 There's no `./lab up --profile gutenberg` yet for manual poking — the fixture server and
 certificate only exist for the duration of an automated suite run today.
 
+Language and ownership regressions include `CWA-L-11`/`CWA-L-12`, `ABS-09`,
+and `GUT-11`–`GUT-13`. They check real destination metadata, refusal to send
+uncertain library matches, ordinary request creation, accepted Spanish bytes
+reaching Available, and French bytes being held despite Spanish consent.
+The catalog's language and the EPUB's language are checked separately.
+
 Implemented: `GUT-01` (first sync from an empty catalog), `GUT-02` (search resolves from
 the local Postgres catalog, never a live network call), `GUT-06` (a Sound-type record
 never surfaces as an ebook option), `GUT-11`/`GUT-12` (ACCURACY-1/SELFSERV-1: a

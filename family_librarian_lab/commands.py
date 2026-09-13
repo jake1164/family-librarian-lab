@@ -1314,6 +1314,12 @@ class _BaseScenario:
         if self._result_directory is not None and self.api is not None:
             trace_path = self._result_directory / "api-trace.json"
             trace_path.write_text(json.dumps(self.api.trace, indent=2) + "\n", encoding="utf-8")
+            # Readiness logs predate the scenario's actual actions. Refresh
+            # them before teardown so failures retain acquisition/scan evidence.
+            logs = _compose(self._values, self.project_name, "logs", "--no-color",
+                            profiles=ALL_PROFILES, capture=True)
+            (self._result_directory / "compose-logs.txt").write_text(
+                _redact(logs.stdout + logs.stderr, self._values), encoding="utf-8")
         if not self._keep:
             result = _compose(
                 self._values, self.project_name, "down", "--volumes", "--remove-orphans",

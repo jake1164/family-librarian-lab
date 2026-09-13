@@ -215,6 +215,25 @@ def rejected_audiobook_never_reaches_audiobookshelf(ctx, scenario_factory):
     _run(ctx, "ABS-07", operation)
 
 
+@SUITE.case("ABS-09")
+def ambiguous_library_editions_do_not_block_an_ordinary_request(ctx, scenario_factory):
+    def operation():
+        with scenario_factory("ABS-09") as scenario:
+            scenario.abs_client.seed_item(clean_audiobook(), "abs-09-original.mp3", "The Hobbit", "J. R. R. Tolkien")
+            scenario.abs_client.seed_item(clean_audiobook(), "abs-09-alternate.mp3", "The Hobbit Alternate Edition", "J. R. R. Tolkien")
+            items = scenario.abs_client.find_items("The Hobbit", "J. R. R. Tolkien")
+            if len(items) != 2:
+                raise AssertionError(f"Expected two separate ABS editions: {items!r}")
+            work_id = scenario.api.resolve_demo_work()
+            options = scenario.api.fulfillment_options(work_id)
+            if any(option.get("optionKind") == "Owned" for option in options.get("audiobook", [])):
+                raise AssertionError(f"Ambiguous ABS editions reported as owned: {options!r}")
+            request_id, _ = scenario.api.create_demo_audiobook_request()
+            return {"request_id": request_id, "abs_items": items}
+
+    _run(ctx, "ABS-09", operation)
+
+
 def _poll_delivery(api, abs_client, request_id: str, *, timeout_seconds: float) -> dict[str, object] | None:
     """Drives both sides of Audiobookshelf's eventual consistency directly,
     rather than assuming a background job closes the gap on its own:

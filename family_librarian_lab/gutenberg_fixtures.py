@@ -19,7 +19,7 @@ import tarfile
 from dataclasses import dataclass, field
 from xml.sax.saxutils import escape
 
-from family_librarian_lab.fixtures import clean_epub, multi_track_audiobook
+from family_librarian_lab.fixtures import foreign_language_epub, multi_track_audiobook
 
 RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 DCTERMS_NS = "http://purl.org/dc/terms/"
@@ -284,14 +284,7 @@ def foreign_edition_mirror_files() -> tuple[tuple[str, bytes], ...]:
     SEARCH_TARGET_BOOKS above) -- same split-digit translation as
     `multi_track_mirror_files()`, for `/files/10009/10009-images.epub`.
 
-    Without this, GUT-12's "accept the offered candidate" step reaches real
-    acquisition code (`GutenbergProvider.FetchAsync`) but has nothing to
-    download -- exactly the documented, pre-existing gap this suite's own
-    module docstring calls out for GUT-03/04 ("needs a fixture mirror that
-    replicates Gutenberg's real split-digit path convention"). The payload
-    itself is `clean_epub()`'s bytes -- a structurally valid, ClamAV-clean
-    EPUB is all the security/import pipeline needs at this stage; the
-    language exclusion this book exists to test already happened upstream,
-    from the RDF catalogue metadata, before any file is ever fetched.
+    The EPUB itself declares Spanish. Acceptance must survive file identity
+    verification and Calibre's es-to-spa normalization through Available.
     """
-    return (("/1/0/0/0/9/10009/10009-images.epub", clean_epub()),)
+    return (("/1/0/0/0/9/10009/10009-images.epub", foreign_language_epub("es")),)

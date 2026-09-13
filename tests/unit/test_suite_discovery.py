@@ -24,7 +24,11 @@ sys.meta_path.insert(0, NoPytest())
 from agent.suites import discover_suites, select_suites
 suites = discover_suites(Path("tests"))
 assert suites, "No integration suites discovered"
-for group, case in [("abs", "ABS-08"), ("communications", "COMM-04")]:
+for group, case in [
+    ("abs", "ABS-08"), ("abs", "ABS-09"), ("communications", "COMM-04"),
+    ("cwa-local", "CWA-L-11"), ("cwa-local", "CWA-L-12"),
+    ("gutenberg", "GUT-12"), ("gutenberg", "GUT-13"),
+]:
     selected = select_suites(suites, group=group, case=case)
     assert sum(len(suite.cases) for suite in selected) == 1, case
 assert "pytest" not in sys.modules
