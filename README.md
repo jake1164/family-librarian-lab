@@ -255,6 +255,53 @@ provider-failure-must-not-block-the-business-operation invariant, end to end). S
 `admin_transition_request()` driving `status="Available"` directly is a legitimate call
 even though the admin UI never offers it as a button.
 
+## Matrix (outbound + inbound communications provider)
+
+`matrix` is a Compose profile on top of `base`, adding a real, disposable
+[Continuwuity](https://continuwuity.org/) Matrix homeserver — the actively maintained
+continuation of Conduwuit/Conduit, chosen after the original Conduit image was found, by
+running it, to have a live `/sync` bug (a joined user's own sync kept reporting their room
+under `invite` rather than `join`). family-librarian's own test suite never exercises
+`HttpMatrixClient` for real — `IMatrixClient` is mocked in every in-repo test — so this
+profile is the only place that proves the actual register/create-room/send/`sync` path
+against a real homeserver, and the only place that drives a second, real Matrix client
+acting as an ordinary household member to prove the inbound side too.
+
+Unlike `smtp`, this profile **does** pre-configure and enable Family Librarian's Matrix
+settings automatically, on both `./lab up --profile matrix` and every `matrix` suite case.
+That's not a design inconsistency with SMTP's "leave it for manual exploration" choice — it's
+forced by Continuwuity's own anti-abuse default: the very first account on a fresh instance
+needs a one-time bootstrap token the homeserver prints to its own stdout, so there is no
+"paste a homeserver URL into a blank admin page" state a human could usefully explore by hand
+without lab automation reading that token first. `agent.simulators.matrix` (se-lab) supplies
+both the fixture's env/image configuration and the `MatrixTestClient` used to register the
+bot account, register a household-member test account, and drive the identity-link/reply
+flow:
+
+```bash
+# Manual testing: brings up a real Continuwuity, registers a bot account, and
+# configures+enables Family Librarian's Matrix settings automatically (see
+# above for why, unlike smtp). A household test account and a paired,
+# unlinked FL reader are also seeded -- link them via the Matrix settings
+# page to explore the verification-code flow by hand.
+./lab up --profile matrix
+./lab base down
+
+./lab run --test-group matrix
+```
+
+Implemented: `MTX-01` (configure/test/enable against a real homeserver), `MTX-02` (a wrong
+bot access token surfaces a real connection failure, saved settings untouched), `MTX-03` (a
+household member links their Matrix ID via the verification-code flow — a real bot DM, a
+real reply, an exact-match check), `MTX-04` (the actual multi-provider claim: one
+`RequestStatusChanged` transition independently reaches both a real Mailpit inbox and a real
+Matrix DM for one requester with both providers enabled). See `tests/test_matrix.py`'s own
+module docstring for the full detail. Not covered, same blocker as `cwa-local`'s own
+`KIN-01`/`KIN-02` gap (nothing in the app yet triggers a real Kindle send, so nothing produces
+a real `DeliveryAttempt` to hang a confirmation ask off of): `KindleDeliveryConfirmationRequested`
+actually reaching Matrix, the inbound yes/no reply driving `DeliveryAttemptService`, reply
+idempotency, and the generic response to an unrecognized reply.
+
 se-lab is included as a git submodule at `se-lab/`. After cloning:
 
 ```

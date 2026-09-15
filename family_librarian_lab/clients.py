@@ -213,19 +213,16 @@ MATRIX_READER_PASSWORD = "Admin123!"
 
 
 def wait_for_matrix_ready(base_url: str, *, timeout_seconds: float = 60.0) -> None:
-    """Poll Continuwuity's own Client-Server API until it actually answers.
-    `docker compose up --wait` only proves the container reached "running"
-    -- there's no Docker healthcheck for this image to wait on (see
-    compose.base.yaml's own comment) -- not that the process inside has
-    finished binding its listener."""
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        status, _ = _http(f"{base_url}/_matrix/client/versions")
-        if status == 200:
-            return
-        if time.monotonic() >= deadline:
-            raise AssertionError(f"Matrix homeserver never became ready at {base_url} within {timeout_seconds}s.")
-        time.sleep(0.5)
+    """Thin AssertionError-raising wrapper around se-lab's own
+    matrix_fixture.wait_for_ready() -- that check is protocol-only (does
+    GET /_matrix/client/versions answer 200?), not tied to how the
+    homeserver was launched, so it belongs there rather than duplicated
+    here. `docker compose up --wait` only proves the container reached
+    "running" -- there's no Docker healthcheck for this image to wait on
+    (see compose.base.yaml's own comment) -- not that the process inside
+    has finished binding its listener."""
+    if not matrix_fixture.wait_for_ready(base_url, timeout=timeout_seconds):
+        raise AssertionError(f"Matrix homeserver never became ready at {base_url} within {timeout_seconds}s.")
 
 
 _BOOK_ID_PATTERN = re.compile(r"/opds/(?:book|download)/(\d+)")

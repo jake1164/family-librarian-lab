@@ -109,6 +109,7 @@ Examples:
   ./lab up main                           # check out, build, and deploy `main`
   ./lab up main --profile cwa-local abs   # main, wired to both CWA and Audiobookshelf
   ./lab up --profile cwa-sftp-key         # current branch, CWA over SFTP (key auth)
+  ./lab up --profile matrix               # current branch, wired to a real Matrix homeserver
   ./lab up --refresh                      # rebuild+restart Family Librarian only, current branch
   ./lab base down                         # tear down when done -- NOT `./lab down`
 
@@ -118,7 +119,12 @@ wire the same underlying `cwa` service over a different ingest transport.
 smtp brings up a real disposable SMTP catcher (Mailpit) but does NOT
 pre-configure Family Librarian's SMTP settings -- unlike CWA/ABS, SMTP
 configuration is the thing to manually exercise via the admin UI, not a
-prerequisite for something else.
+prerequisite for something else. matrix brings up a real disposable Matrix
+homeserver (Continuwuity) AND, unlike smtp, does pre-configure and enable
+Family Librarian's Matrix settings -- registering both the bot account and a
+household-member test account is unavoidable setup (Continuwuity's own
+bootstrap-registration-token requirement), so there is no meaningful
+"unconfigured Matrix" manual-testing state the way there is for SMTP.
 
 Connection info once up (defaults; override the *_HOST_PORT vars in lab.env).
 Set se-lab's LAB_EXTERNAL_HOST (for example, toontown-int-srv2) to print
@@ -128,6 +134,9 @@ hosted links instead of 127.0.0.1:
   Audiobookshelf    http://127.0.0.1:18378  bootstrapped and wired in automatically
   Mailpit (SMTP)    http://127.0.0.1:18025  web UI (user: labmailer / password:
                      Admin123!); SMTP host mailpit:1025, STARTTLS required
+  Continuwuity      http://127.0.0.1:18008  bot already wired into Family Librarian;
+                     household test account household-member / household-member-password;
+                     FL reader matrix-reader@example.test / Admin123! (not linked automatically)
 
 `target` is lab-managed and fetched from GitHub -- push a local branch before
 `./lab up <branch>` can see it. `./lab status` reports health at any time.
