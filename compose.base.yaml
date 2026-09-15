@@ -352,6 +352,52 @@ services:
       retries: 20
       start_period: 5s
 
+  # Real, disposable Matrix homeserver (Continuwuity) for the matrix suite --
+  # proves HttpMatrixClient/MatrixOutboundCommunicationProvider/
+  # MatrixInboundSyncHostedService's actual register/create-room/send/sync
+  # path, which family-librarian's own test suite never exercises (IMatrixClient
+  # is mocked in every in-repo test). Image, env var names, and the
+  # bootstrap-registration-token behavior below all come from se-lab's own
+  # MatrixHomeserverFixture (agent.simulators.matrix) -- that module's
+  # docstring has the live-verified detail on both, including why Continuwuity
+  # was chosen over the original Conduit image (a real join/sync bug, found by
+  # running it). This service mirrors that fixture's config as plain Compose
+  # YAML rather than calling MatrixHomeserverFixture.start() directly, the
+  # same "shared Compose network, service-name reachable" choice already made
+  # for mailpit/cwa/abs -- MatrixHomeserverFixture's own standalone/
+  # gateway-IP lifecycle stays available for a lab that doesn't have that
+  # option (e.g. a future m3undle consumer).
+  #
+  # No Docker healthcheck: the image has no shell at all (confirmed for
+  # real -- `docker run --entrypoint sh` fails with "executable file not
+  # found"), so a CMD-based check like mailpit's `readyz` isn't possible
+  # here. `docker compose up --wait` still waits for "running" (Compose
+  # treats a service with no healthcheck as satisfied once running);
+  # clients.wait_for_matrix_ready() polls the real HTTP API afterward before
+  # any suite/manual-up code touches it.
+  matrix:
+    profiles: [matrix]
+    image: ${FAMILY_LIBRARIAN_MATRIX_IMAGE:-ghcr.io/continuwuity/continuwuity:latest}
+    environment:
+      CONTINUWUITY_SERVER_NAME: matrix.example.test
+      CONTINUWUITY_ADDRESS: 0.0.0.0
+      CONTINUWUITY_PORT: "8008"
+      CONTINUWUITY_DATABASE_PATH: /var/lib/continuwuity/
+      CONTINUWUITY_ALLOW_REGISTRATION: "true"
+      # Must match clients.MATRIX_REGISTRATION_TOKEN (sourced from se-lab's
+      # own DEFAULT_REGISTRATION_TOKEN) -- only accepted for accounts after
+      # the instance's own one-time bootstrap account, per Continuwuity's
+      # anti-abuse default (see the fixture's own module docstring).
+      CONTINUWUITY_REGISTRATION_TOKEN: se-lab-matrix-fixture-token
+      CONTINUWUITY_ALLOW_FEDERATION: "false"
+      CONTINUWUITY_ALLOW_CHECK_FOR_UPDATES: "false"
+    ports:
+      # Only Continuwuity's own Client-Server API is published -- the lab's
+      # Python client reaches it over this host port; family-librarian's own
+      # HttpMatrixClient reaches it over the Compose network by service name
+      # (clients.MATRIX_INTERNAL_HOST/_PORT), same split as mailpit above.
+      - "${FAMILY_LIBRARIAN_MATRIX_HOST_PORT:-18008}:8008"
+
 volumes:
   postgres-data:
   clamav-data:

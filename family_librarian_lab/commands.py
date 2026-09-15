@@ -26,6 +26,7 @@ from urllib.request import urlopen
 
 from agent import common as lab_common, registry
 from agent.planning import RunPlan, RunReport
+from agent.simulators import matrix as matrix_fixture
 from agent.suites import CaseFunc, Suite, discover_suites, run_suites, select_suites
 
 from family_librarian_lab import clients, gutenberg_fixtures
@@ -46,6 +47,7 @@ ALL_PROFILES = (
     clients.CWA_SFTP_PROFILE_PASSWORD,
     clients.GUTENBERG_PROFILE,
     clients.SMTP_PROFILE,
+    clients.MATRIX_PROFILE,
 )
 SHARED_CLAMAV_PROFILE = "shared-clamav"
 SHARED_CLAMAV_PROJECT = "family-librarian-lab-shared-clamav"
@@ -85,9 +87,10 @@ def _configure_up(parser: argparse.ArgumentParser) -> None:
             clients.CWA_SFTP_PROFILE_KEY,
             clients.CWA_SFTP_PROFILE_PASSWORD,
             clients.SMTP_PROFILE,
+            clients.MATRIX_PROFILE,
         ],
         help="Extra destination(s) to bring up and wire alongside the base profile "
-        "(cwa-local, abs, cwa-sftp-key, cwa-sftp-password, smtp)",
+        "(cwa-local, abs, cwa-sftp-key, cwa-sftp-password, smtp, matrix)",
     )
     parser.add_argument(
         "--refresh",
@@ -473,6 +476,9 @@ class DestinationWiring:
     cwa_reader1: "FamilyLibrarianApi | None" = None
     cwa_reader2: "FamilyLibrarianApi | None" = None
     cwa_relay_is_real: bool = False
+    matrix_household: "clients.MatrixTestClient | None" = None
+    matrix_bot_user_id: "str | None" = None
+    matrix_reader: "FamilyLibrarianApi | None" = None
 
 
 @dataclass(slots=True)
@@ -517,6 +523,7 @@ def _cwa_relay_settings(values: dict[str, str]) -> _CwaRelaySettings:
 
 def _wire_destinations(
     values: dict[str, str],
+    project_name: str,
     profiles: Sequence[str],
     api: FamilyLibrarianApi,
     *,
@@ -524,9 +531,14 @@ def _wire_destinations(
 ) -> DestinationWiring:
     """Configure Family Librarian to point at whichever extra destinations this
     scenario/deployment brought up -- the same call, used by both `up` (manual
-    testing) and the cwa-local/abs/cwa-sftp-*/smtp suites' scenario setup
-    (automated testing), so both paths exercise the identical wiring rather
-    than two hand-maintained copies of it.
+    testing) and the cwa-local/abs/cwa-sftp-*/smtp/matrix suites' scenario
+    setup (automated testing), so both paths exercise the identical wiring
+    rather than two hand-maintained copies of it.
+
+    `project_name` is only used by the matrix branch, to read that scenario's
+    own `matrix` container's logs for its one-time bootstrap registration
+    token (see clients.MATRIX_REGISTRATION_TOKEN's own comment) -- every
+    other branch ignores it.
 
     `seed_readers` defaults on for manual `up` (a human tester wants the two
     Kindle-testing readers for free) but must be requested explicitly by an
@@ -585,7 +597,7 @@ def _wire_destinations(
         )
 
         wiring.cwa_mailpit_client = clients.MailpitClient(
-            host_base_url=_client_host_base(
+            base_url=_client_host_base(
                 values, clients.CWA_MAILPIT_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_MAILPIT_HOST_PORT"
             )
         )
@@ -651,8 +663,73 @@ def _wire_destinations(
         # ready). Just construct the client so callers can reach Mailpit's
         # own API.
         wiring.smtp_client = clients.MailpitClient(
-            host_base_url=_client_host_base(values, clients.SMTP_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_SMTP_HOST_PORT")
+            base_url=_client_host_base(values, clients.SMTP_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_SMTP_HOST_PORT")
         )
+
+    if clients.MATRIX_PROFILE in profiles:
+        # Unlike SMTP above, this DOES call Family Librarian's own settings
+        # API: almost every matrix suite case needs a working, enabled bot
+        # (identity link, outbound notification dispatch, inbound reply
+        # routing all depend on it), so this configures+enables it as a
+        # prerequisite the same way CWA/ABS do, rather than leaving that to
+        # each case. tests/test_matrix.py's own MTX-01 still exercises the
+        # configure/test/enable flow itself directly -- see that suite's
+        # module docstring for how it does that despite the flow already
+        # having run once here.
+        matrix_base_url = _client_host_base(
+            values, clients.MATRIX_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_MATRIX_HOST_PORT"
+        )
+        clients.wait_for_matrix_ready(matrix_base_url)
+
+        # Continuwuity's one-time bootstrap token, printed to this scenario's
+        # own fresh `matrix` container's stdout -- required for the very
+        # first account regardless of the fixed CONTINUWUITY_REGISTRATION_TOKEN
+        # already configured (see compose.base.yaml's own comment). Polled
+        # rather than read once: the container has only just reached
+        # "running" (docker compose up --wait's own condition, no
+        # healthcheck exists for this image), not necessarily finished
+        # printing its startup banner yet.
+        bootstrap_token = None
+        deadline = time.monotonic() + 15.0
+        while bootstrap_token is None:
+            logs = _compose(
+                values, project_name, "logs", clients.MATRIX_SERVICE, "--no-color",
+                profiles=(clients.MATRIX_PROFILE,), capture=True,
+            )
+            bootstrap_token = matrix_fixture.parse_bootstrap_registration_token(logs.stdout + logs.stderr)
+            if bootstrap_token is not None:
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError("matrix container never printed its bootstrap registration token.")
+            time.sleep(0.5)
+
+        bot = clients.MatrixTestClient(matrix_base_url, clients.MATRIX_SERVER_NAME)
+        bot_user_id, bot_access_token = bot.register_user(
+            clients.MATRIX_BOT_USERNAME, clients.MATRIX_BOT_PASSWORD, registration_token=bootstrap_token
+        )
+
+        household = clients.MatrixTestClient(matrix_base_url, clients.MATRIX_SERVER_NAME)
+        household_user_id, household_access_token = household.register_user(
+            clients.MATRIX_HOUSEHOLD_USERNAME,
+            clients.MATRIX_HOUSEHOLD_PASSWORD,
+            registration_token=clients.MATRIX_REGISTRATION_TOKEN,
+        )
+        household.use_credentials(household_user_id, household_access_token)
+
+        # Internal Compose-network address -- family-librarian's own
+        # HttpMatrixClient calls this by service name, same split as
+        # CWA/ABS's opds_base_url/ABS_INTERNAL_URL above.
+        api.configure_matrix(
+            homeserver_url=f"http://{clients.MATRIX_INTERNAL_HOST}:{clients.MATRIX_INTERNAL_PORT}",
+            bot_user_id=bot_user_id,
+            access_token=bot_access_token,
+        )
+
+        wiring.matrix_household = household
+        wiring.matrix_bot_user_id = bot_user_id
+
+        if seed_readers:
+            wiring.matrix_reader = api.ensure_reader(clients.MATRIX_READER_EMAIL, clients.MATRIX_READER_PASSWORD)
 
     return wiring
 
@@ -663,6 +740,7 @@ def _print_connection_info(
     cwa_running: bool = False,
     abs_running: bool = False,
     smtp_running: bool = False,
+    matrix_running: bool = False,
     sftp_wiring: bool = False,
     cwa_relay_is_real: bool = False,
 ) -> None:
@@ -725,6 +803,22 @@ def _print_connection_info(
                     f"AUTH user: {clients.SMTP_AUTH_USERNAME} / password: {clients.SMTP_AUTH_PASSWORD}"
                 ),
                 note="not wired into Family Librarian; configure it via the Communications admin page",
+            )
+        )
+    if matrix_running:
+        connections.append(
+            lab_common.ConnectionInfo(
+                "Continuwuity (Matrix)",
+                _port(values, clients.MATRIX_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_MATRIX_HOST_PORT"),
+                credentials=(
+                    f"server {clients.MATRIX_SERVER_NAME}, bot {clients.MATRIX_BOT_USERNAME} "
+                    "already wired into Family Librarian; household test account "
+                    f"{clients.MATRIX_HOUSEHOLD_USERNAME} / {clients.MATRIX_HOUSEHOLD_PASSWORD}"
+                ),
+                note=(
+                    f"FL reader {clients.MATRIX_READER_EMAIL} / {clients.MATRIX_READER_PASSWORD} ready to link "
+                    "it via the Matrix settings page -- not linked automatically"
+                ),
             )
         )
     lab_common.print_connection_info(connections)
@@ -1245,6 +1339,9 @@ class _BaseScenario:
         self.cwa_mailpit_client: clients.MailpitClient | None = None
         self.cwa_reader1: FamilyLibrarianApi | None = None
         self.cwa_reader2: FamilyLibrarianApi | None = None
+        self.matrix_household: clients.MatrixTestClient | None = None
+        self.matrix_bot_user_id: str | None = None
+        self.matrix_reader: FamilyLibrarianApi | None = None
         self._result_directory: Path | None = None
 
     def __enter__(self) -> "_BaseScenario":
@@ -1291,7 +1388,9 @@ class _BaseScenario:
                 self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
             )
             self.api = api
-            wiring = _wire_destinations(self._values, self._profiles, api, seed_readers=self._seed_readers)
+            wiring = _wire_destinations(
+                self._values, self.project_name, self._profiles, api, seed_readers=self._seed_readers
+            )
             self.cwa_client = wiring.cwa_client
             self.abs_client = wiring.abs_client
             self.smtp_client = wiring.smtp_client
@@ -1299,6 +1398,9 @@ class _BaseScenario:
             self.cwa_mailpit_client = wiring.cwa_mailpit_client
             self.cwa_reader1 = wiring.cwa_reader1
             self.cwa_reader2 = wiring.cwa_reader2
+            self.matrix_household = wiring.matrix_household
+            self.matrix_bot_user_id = wiring.matrix_bot_user_id
+            self.matrix_reader = wiring.matrix_reader
         except BaseException:
             if not self._keep:
                 result = _compose(
@@ -1706,6 +1808,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
                 cwa_running=clients.CWA_SERVICE in services,
                 abs_running=clients.ABS_SERVICE in services,
                 smtp_running=clients.SMTP_SERVICE in services,
+                matrix_running=clients.MATRIX_SERVICE in services,
                 sftp_wiring=(
                     clients.CWA_SFTP_SERVICE_KEY in services or clients.CWA_SFTP_SERVICE_PASSWORD in services
                 ),
@@ -1731,7 +1834,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
 
         api = FamilyLibrarianApi(_host_base(values))
         api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
-        wiring = _wire_destinations(values, profiles, api)
+        wiring = _wire_destinations(values, project_name, profiles, api)
 
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
     _print_connection_info(
@@ -1739,6 +1842,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
         cwa_running=wiring.cwa_client is not None,
         abs_running=wiring.abs_client is not None,
         smtp_running=wiring.smtp_client is not None,
+        matrix_running=wiring.matrix_household is not None,
         sftp_wiring=wiring.sftp_wiring is not None,
         cwa_relay_is_real=wiring.cwa_relay_is_real,
     )
@@ -1767,6 +1871,7 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
             cwa_running=_service_is_running(checks, clients.CWA_SERVICE),
             abs_running=_service_is_running(checks, clients.ABS_SERVICE),
             smtp_running=_service_is_running(checks, clients.SMTP_SERVICE),
+            matrix_running=_service_is_running(checks, clients.MATRIX_SERVICE),
             sftp_wiring=(
                 _service_is_running(checks, clients.CWA_SFTP_SERVICE_KEY)
                 or _service_is_running(checks, clients.CWA_SFTP_SERVICE_PASSWORD)

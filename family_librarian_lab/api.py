@@ -307,6 +307,94 @@ class FamilyLibrarianApi:
         _require_status(enabled, 200, "SMTP enable")
         return self.smtp_settings()
 
+    def matrix_settings(self) -> dict[str, Any]:
+        response = self._request("GET", "/api/v1/admin/communications/matrix/")
+        _require_status(response, 200, "Matrix settings")
+        return _object(response.body, "Matrix settings")
+
+    def set_matrix_settings(self, *, homeserver_url: str | None, bot_user_id: str | None) -> dict[str, Any]:
+        response = self._request(
+            "PUT",
+            "/api/v1/admin/communications/matrix/",
+            json_body={"homeserverUrl": homeserver_url, "botUserId": bot_user_id},
+        )
+        _require_status(response, 200, "Matrix settings")
+        return _object(response.body, "Matrix settings")
+
+    def set_matrix_access_token(self, access_token: str) -> dict[str, Any]:
+        response = self._request(
+            "PUT", "/api/v1/admin/communications/matrix/access-token", json_body={"accessToken": access_token}
+        )
+        _require_status(response, 200, "Matrix access token")
+        return _object(response.body, "Matrix settings")
+
+    def clear_matrix_access_token(self) -> dict[str, Any]:
+        response = self._request("DELETE", "/api/v1/admin/communications/matrix/access-token")
+        _require_status(response, 200, "Matrix access token clear")
+        return _object(response.body, "Matrix settings")
+
+    def set_matrix_enabled(self, enabled: bool) -> ApiResponse:
+        """Like set_smtp_enabled(), this can legitimately return a
+        validation-problem 400 -- MatrixSettingsService.SetEnabledAsync's own
+        enablement invariant -- so a caller proving that rejection needs the
+        raw response, not an auto-raised assertion."""
+        return self._request("PUT", "/api/v1/admin/communications/matrix/enabled", json_body={"enabled": enabled})
+
+    def send_matrix_test(
+        self, *, homeserver_url: str | None = None, bot_user_id: str | None = None, access_token: str | None = None
+    ) -> dict[str, Any]:
+        """Tests the given draft values, falling back to whatever is already
+        saved for any field left None -- MatrixSettingsEndpoints.SendTestAsync's
+        own contract, the same "draft overrides, no fallback needed for a
+        plain re-test of the saved config" shape as send_smtp_test(), except
+        here every field (not just password) has a real saved fallback."""
+        response = self._request(
+            "POST",
+            "/api/v1/admin/communications/matrix/test",
+            json_body={"homeserverUrl": homeserver_url, "botUserId": bot_user_id, "accessToken": access_token},
+        )
+        _require_status(response, 200, "Matrix test")
+        return _object(response.body, "Matrix test")
+
+    def configure_matrix(self, *, homeserver_url: str, bot_user_id: str, access_token: str) -> dict[str, Any]:
+        """One-shot Matrix admin setup mirroring configure_smtp(): save
+        settings, save the bot's access token, prove a real connection test
+        against the saved config (the enablement invariant every case
+        eventually depends on), then enable."""
+        self.set_matrix_settings(homeserver_url=homeserver_url, bot_user_id=bot_user_id)
+        self.set_matrix_access_token(access_token)
+
+        probe = self.send_matrix_test()
+        if not probe.get("succeeded"):
+            raise AssertionError(f"Matrix test did not succeed before enabling: {probe!r}")
+
+        enabled = self._request("PUT", "/api/v1/admin/communications/matrix/enabled", json_body={"enabled": True})
+        _require_status(enabled, 200, "Matrix enable")
+        return self.matrix_settings()
+
+    def matrix_link_status(self) -> dict[str, Any]:
+        """Household member's own Matrix identity link state -- call on a
+        *reader's* FamilyLibrarianApi instance (create_reader()/ensure_reader()),
+        never the admin's; MatrixIdentityLinkEndpoints requires only plain
+        authentication, not the Admin policy."""
+        response = self._request("GET", "/api/v1/me/communications/matrix/")
+        _require_status(response, 200, "Matrix link status")
+        return _object(response.body, "Matrix link status")
+
+    def request_matrix_link(self, matrix_user_id: str) -> dict[str, Any]:
+        """Triggers the bot to DM `matrix_user_id` a one-time verification
+        code -- call on a reader instance, same as matrix_link_status()."""
+        response = self._request(
+            "POST", "/api/v1/me/communications/matrix/", json_body={"matrixUserId": matrix_user_id}
+        )
+        _require_status(response, 200, "Matrix link request")
+        return _object(response.body, "Matrix link status")
+
+    def unlink_matrix(self) -> dict[str, Any]:
+        response = self._request("DELETE", "/api/v1/me/communications/matrix/")
+        _require_status(response, 200, "Matrix unlink")
+        return _object(response.body, "Matrix link status")
+
     def create_reader(self, email: str, password: str) -> "FamilyLibrarianApi":
         """Provision a member with an independent cookie jar; never trace credentials."""
         invitation = self._request("POST", "/api/v1/admin/invitations/",

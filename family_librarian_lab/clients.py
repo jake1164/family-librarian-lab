@@ -1,5 +1,12 @@
 """Real CWA and Audiobookshelf helpers for the lab's cwa-local/abs profiles.
 
+MailpitClient is re-exported from se-lab (agent.simulators.smtp), not
+redefined here -- it was already 100% Mailpit-protocol-only with zero
+Family Librarian knowledge, so it moved to se-lab as a reusable fixture
+client rather than staying a copy only this lab could import. Import it
+from here (clients.MailpitClient, unchanged for every existing call site)
+or directly from agent.simulators.smtp -- both are the same class.
+
 Not se-lab ClientPlugins: se-lab's generic `clients up/down/reset` commands
 (agent/commands/clients.py) all route through agent.common.compose_up()/
 compose_command(), which requires docker-config/docker-compose.yaml and a
@@ -29,6 +36,11 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from agent.simulators import matrix as matrix_fixture
+from agent.simulators import smtp as smtp_fixture
+from agent.simulators.matrix import MatrixTestClient  # noqa: F401 -- re-exported for suite use
+from agent.simulators.smtp import MailpitClient  # noqa: F401 -- re-exported, see module docstring
 
 CWA_SERVICE = "cwa"
 CWA_PROFILE = "cwa-local"
@@ -159,9 +171,62 @@ SMTP_DEFAULT_HOST_PORT = 18025
 # Must match docker/mailpit/smtp-auth-file's bcrypt entry -- Mailpit rejects
 # any other SMTP AUTH credentials, the only way to get a real,
 # deterministic AuthenticationException out of MailKitSmtpTestSender
-# (SMTP-03) rather than faking one.
-SMTP_AUTH_USERNAME = "labmailer"
-SMTP_AUTH_PASSWORD = "Admin123!"
+# (SMTP-03) rather than faking one. Sourced from se-lab's MailpitFixture
+# (agent.simulators.smtp) rather than redeclared here: that module's
+# DEFAULT_SMTP_AUTH_FILE_CONTENT is the actual bcrypt hash
+# docker/mailpit/smtp-auth-file was generated from, so this stays the one
+# place both could drift from, not two.
+SMTP_AUTH_USERNAME = smtp_fixture.DEFAULT_SMTP_AUTH_USERNAME
+SMTP_AUTH_PASSWORD = smtp_fixture.DEFAULT_SMTP_AUTH_PASSWORD
+
+# Real, disposable Matrix homeserver (Continuwuity) for the matrix suite --
+# proves HttpMatrixClient/MatrixOutboundCommunicationProvider/
+# MatrixInboundSyncHostedService's actual register/create-room/send/sync
+# path, which family-librarian's own test suite never exercises
+# (IMatrixClient is mocked in every in-repo test). See compose.base.yaml's
+# own `matrix` service comment for why there's no Docker healthcheck, and
+# se-lab's agent.simulators.matrix module for the live-verified detail
+# behind the image choice and the bootstrap-registration-token behavior.
+MATRIX_PROFILE = "matrix"
+MATRIX_SERVICE = "matrix"
+MATRIX_INTERNAL_HOST = "matrix"
+MATRIX_INTERNAL_PORT = 8008
+MATRIX_SERVER_NAME = "matrix.example.test"
+MATRIX_DEFAULT_IMAGE = "ghcr.io/continuwuity/continuwuity:latest"
+# Matrix's own Client-Server API -- published so the lab's Python client can
+# register test accounts and drive the two-way (COMM-1 §D) flow directly.
+MATRIX_DEFAULT_HOST_PORT = 18008
+# Must match compose.base.yaml's own `matrix` service
+# CONTINUWUITY_REGISTRATION_TOKEN. Sourced from se-lab's
+# MatrixHomeserverFixture the same way SMTP_AUTH_USERNAME/_PASSWORD are
+# sourced from MailpitFixture above -- one place either could drift from.
+MATRIX_REGISTRATION_TOKEN = matrix_fixture.DEFAULT_REGISTRATION_TOKEN
+# Fixed test accounts -- registered fresh against every scenario's own new
+# homeserver instance (nothing persists across scenarios), same "no
+# lab.env edits required" convention as every other fixed credential here.
+MATRIX_BOT_USERNAME = "fl-bot"
+MATRIX_BOT_PASSWORD = "fl-bot-password"
+MATRIX_HOUSEHOLD_USERNAME = "household-member"
+MATRIX_HOUSEHOLD_PASSWORD = "household-member-password"
+MATRIX_READER_EMAIL = "matrix-reader@example.test"
+MATRIX_READER_PASSWORD = "Admin123!"
+
+
+def wait_for_matrix_ready(base_url: str, *, timeout_seconds: float = 60.0) -> None:
+    """Poll Continuwuity's own Client-Server API until it actually answers.
+    `docker compose up --wait` only proves the container reached "running"
+    -- there's no Docker healthcheck for this image to wait on (see
+    compose.base.yaml's own comment) -- not that the process inside has
+    finished binding its listener."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        status, _ = _http(f"{base_url}/_matrix/client/versions")
+        if status == 200:
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"Matrix homeserver never became ready at {base_url} within {timeout_seconds}s.")
+        time.sleep(0.5)
+
 
 _BOOK_ID_PATTERN = re.compile(r"/opds/(?:book|download)/(\d+)")
 
@@ -728,64 +793,3 @@ def _find_matching_item_ids(list_response: dict[str, Any], title: str, author: s
         if isinstance(item_id, str):
             matches.append(item_id)
     return matches
-
-
-@dataclass(slots=True)
-class MailpitClient:
-    """Drives Mailpit's own HTTP API to independently verify SMTP delivery --
-    the same 'assert against the real destination, not Family Librarian's own
-    state' pattern AbsClient/CwaClient already follow. Mailpit's `Username`
-    field on a stored message is the SMTP-AUTH identity that actually
-    authenticated the send, so a case can confirm both that a message
-    arrived AND that it arrived authenticated as SMTP_AUTH_USERNAME, not
-    merely that *some* connection reached the catcher."""
-
-    host_base_url: str
-
-    def ready(self) -> bool:
-        status, _ = _http(f"{self.host_base_url}/api/v1/messages?limit=1")
-        return status == 200
-
-    def clear(self) -> None:
-        """Delete every stored message -- call at the start of a case so an
-        earlier case's leftover mail (Mailpit's own state persists for the
-        life of the container, shared across every case in the suite unless
-        cleared) can never be mistaken for this case's delivery."""
-        _http(f"{self.host_base_url}/api/v1/messages", method="DELETE", json_body={})
-
-    def messages(self) -> list[dict[str, Any]]:
-        """Return the entire small fixture inbox, failing on HTTP errors or truncation."""
-        status, body = _http(f"{self.host_base_url}/api/v1/messages?limit=100")
-        if status != 200:
-            raise AssertionError(f"Mailpit inbox returned HTTP {status}")
-        payload = json.loads(body)
-        messages = payload.get("messages", [])
-        if payload.get("total", len(messages)) != len(messages):
-            raise AssertionError("Mailpit fixture inbox exceeded one page")
-        return messages
-
-    def find_message(
-        self, *, to: str, subject_contains: str | None = None, timeout_seconds: float = 15.0
-    ) -> dict[str, Any] | None:
-        """Polls Mailpit's message list for one already delivered to `to`
-        (and, if given, whose subject contains `subject_contains`). Returns
-        the message summary (includes `Username`, the authenticated SMTP-AUTH
-        identity) or None if nothing matched within the deadline -- callers
-        proving a *negative* (SMTP-03's rejected-auth case) should pass a
-        short timeout instead of waiting out the full default."""
-        deadline = time.monotonic() + timeout_seconds
-        while True:
-            status, body = _http(f"{self.host_base_url}/api/v1/messages")
-            if status == 200:
-                for summary in json.loads(body).get("messages", []):
-                    recipients = [
-                        address.get("Address")
-                        for address in summary.get("To") or []
-                        if isinstance(address, dict)
-                    ]
-                    subject = summary.get("Subject") or ""
-                    if to in recipients and (subject_contains is None or subject_contains in subject):
-                        return summary
-            if time.monotonic() >= deadline:
-                return None
-            time.sleep(0.5)
