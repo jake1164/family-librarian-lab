@@ -67,6 +67,33 @@ def test_status_prints_running_service_connection_details(monkeypatch: pytest.Mo
     assert "Mailpit (SMTP)" not in output
 
 
+def test_status_prints_matrix_bot_credentials_when_matrix_is_running(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    services = {
+        "family-librarian": {"state": "running"},
+        clients.MATRIX_SERVICE: {"state": "running"},
+    }
+    values = {
+        "FAMILY_LIBRARIAN_ADMIN_EMAIL": "admin@example.test",
+        "FAMILY_LIBRARIAN_ADMIN_PASSWORD": "lab-password",
+    }
+    monkeypatch.setattr(commands, "_load_lab_env", lambda: values)
+    monkeypatch.setattr(commands, "_project_name", lambda *_args, **_kwargs: "family-librarian-lab")
+    monkeypatch.setattr(
+        commands,
+        "_compose",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="[]\n", stderr="", returncode=0),
+    )
+    monkeypatch.setattr(commands, "_readiness", lambda *_args: ({"compose_services": services}, True))
+
+    assert commands.handle_status(SimpleNamespace(project_name=None), config=None) == 0
+
+    output = capsys.readouterr().out
+    assert f"bot {clients.MATRIX_BOT_USERNAME} / {clients.MATRIX_BOT_PASSWORD}" in output
+    assert f"{clients.MATRIX_HOUSEHOLD_USERNAME} / {clients.MATRIX_HOUSEHOLD_PASSWORD}" in output
+
+
 def test_status_hides_connection_details_when_app_is_not_running(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):

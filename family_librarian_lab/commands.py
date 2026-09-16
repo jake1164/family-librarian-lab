@@ -820,9 +820,10 @@ def _print_connection_info(
                 "Continuwuity (Matrix)",
                 _port(values, clients.MATRIX_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_MATRIX_HOST_PORT"),
                 credentials=(
-                    f"server {clients.MATRIX_SERVER_NAME}, bot {clients.MATRIX_BOT_USERNAME} "
-                    "already wired into Family Librarian; household test account "
-                    f"{clients.MATRIX_HOUSEHOLD_USERNAME} / {clients.MATRIX_HOUSEHOLD_PASSWORD}"
+                    f"server {clients.MATRIX_SERVER_NAME}, bot {clients.MATRIX_BOT_USERNAME} / "
+                    f"{clients.MATRIX_BOT_PASSWORD} (already wired into Family Librarian); "
+                    f"household test account {clients.MATRIX_HOUSEHOLD_USERNAME} / "
+                    f"{clients.MATRIX_HOUSEHOLD_PASSWORD}"
                 ),
                 note=(
                     f"FL reader {clients.MATRIX_READER_EMAIL} / {clients.MATRIX_READER_PASSWORD} ready to link "
