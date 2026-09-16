@@ -530,6 +530,25 @@ def _cwa_relay_settings(values: dict[str, str]) -> _CwaRelaySettings:
     )
 
 
+def _register_or_login_matrix_user(
+    client: "clients.MatrixTestClient", username: str, password: str, *, registration_token: str | None
+) -> tuple[str, str]:
+    """register_user(), falling back to login() when the account from a
+    previous `./lab up` against this same not-torn-down matrix container
+    already exists -- either the one-time bootstrap token (the bot) has
+    since been spent, or the fixed token (the household account) is still
+    valid but the username is already taken. `./lab base down` between runs
+    avoids this entirely (a fresh container has neither problem), but this
+    keeps a second `up` against a lingering one working instead of crashing.
+    """
+    try:
+        return client.register_user(username, password, registration_token=registration_token)
+    except matrix_fixture.MatrixApiError as error:
+        if error.errcode not in ("M_FORBIDDEN", "M_USER_IN_USE"):
+            raise
+        return client.login(username, password)
+
+
 def _wire_destinations(
     values: dict[str, str],
     project_name: str,
@@ -713,12 +732,13 @@ def _wire_destinations(
             time.sleep(0.5)
 
         bot = clients.MatrixTestClient(matrix_base_url, clients.MATRIX_SERVER_NAME)
-        bot_user_id, bot_access_token = bot.register_user(
-            clients.MATRIX_BOT_USERNAME, clients.MATRIX_BOT_PASSWORD, registration_token=bootstrap_token
+        bot_user_id, bot_access_token = _register_or_login_matrix_user(
+            bot, clients.MATRIX_BOT_USERNAME, clients.MATRIX_BOT_PASSWORD, registration_token=bootstrap_token
         )
 
         household = clients.MatrixTestClient(matrix_base_url, clients.MATRIX_SERVER_NAME)
-        household_user_id, household_access_token = household.register_user(
+        household_user_id, household_access_token = _register_or_login_matrix_user(
+            household,
             clients.MATRIX_HOUSEHOLD_USERNAME,
             clients.MATRIX_HOUSEHOLD_PASSWORD,
             registration_token=clients.MATRIX_REGISTRATION_TOKEN,
