@@ -205,14 +205,20 @@ MATRIX_REGISTRATION_TOKEN = matrix_fixture.DEFAULT_REGISTRATION_TOKEN
 # homeserver instance (nothing persists across scenarios), same "no
 # lab.env edits required" convention as every other fixed credential here.
 # Password is the one standard test password used everywhere else in this
-# file (ABS/CWA e-reader/readers/matrix reader) -- the sole fixed exception
-# is CWA_DEFAULT_PASSWORD, which is baked into CWA itself, not lab-chosen.
+# file (ABS/CWA e-reader/readers) -- the sole fixed exception is
+# CWA_DEFAULT_PASSWORD, which is baked into CWA itself, not lab-chosen.
 MATRIX_BOT_USERNAME = "fl-bot"
 MATRIX_BOT_PASSWORD = "Admin123!"
-MATRIX_HOUSEHOLD_USERNAME = "household-member"
+# The Matrix-protocol identity (a separate account space, registered
+# straight against Continuwuity) for the same person CWA_READER1_EMAIL
+# already names on the Family Librarian side -- matching usernames so the
+# lab has exactly one "reader1" persona instead of a second, differently
+# named one that only exists for Matrix. FL's own reader account for
+# linking is CWA_READER1_EMAIL/CWA_READER_DEFAULT_PASSWORD directly
+# (ensure_reader() is idempotent, so reusing it here is safe whether or
+# not the cwa-local profile already created it).
+MATRIX_HOUSEHOLD_USERNAME = "reader1"
 MATRIX_HOUSEHOLD_PASSWORD = "Admin123!"
-MATRIX_READER_EMAIL = "matrix-reader@example.test"
-MATRIX_READER_PASSWORD = "Admin123!"
 
 
 def wait_for_matrix_ready(base_url: str, *, timeout_seconds: float = 60.0) -> None:

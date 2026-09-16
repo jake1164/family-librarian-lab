@@ -246,7 +246,7 @@ def request_status_change_reaches_both_smtp_and_a_linked_matrix_user(ctx, scenar
 
             # create_demo_ebook_request() is a member action, fine on the
             # reader (makes the reader the requester, so requesterEmail ==
-            # clients.MATRIX_READER_EMAIL below). admin_request()/
+            # clients.CWA_READER1_EMAIL below). admin_request()/
             # admin_transition_request() are admin-only
             # (RequireAuthorization("Admin")) -- use the scenario's own
             # admin-authenticated api for those instead.

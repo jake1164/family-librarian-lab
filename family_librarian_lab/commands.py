@@ -121,8 +121,8 @@ pre-configure Family Librarian's SMTP settings -- unlike CWA/ABS, SMTP
 configuration is the thing to manually exercise via the admin UI, not a
 prerequisite for something else. matrix brings up a real disposable Matrix
 homeserver (Continuwuity) AND, unlike smtp, does pre-configure and enable
-Family Librarian's Matrix settings -- registering both the bot account and a
-household-member test account is unavoidable setup (Continuwuity's own
+Family Librarian's Matrix settings -- registering both the bot account and
+a reader1 test account is unavoidable setup (Continuwuity's own
 bootstrap-registration-token requirement), so there is no meaningful
 "unconfigured Matrix" manual-testing state the way there is for SMTP.
 
@@ -135,8 +135,8 @@ hosted links instead of 127.0.0.1:
   Mailpit (SMTP)    http://127.0.0.1:18025  web UI (user: labmailer / password:
                      Admin123!); SMTP host mailpit:1025, STARTTLS required
   Continuwuity      http://127.0.0.1:18008  bot fl-bot / Admin123! already wired into Family
-                     Librarian; household test account household-member / Admin123!;
-                     FL reader matrix-reader@example.test / Admin123! (not linked automatically)
+                     Librarian; Matrix account for reader1: reader1 / Admin123!;
+                     FL reader reader1@sydneyelvis.net / Admin123! (not linked automatically)
 
 `target` is lab-managed and fetched from GitHub -- push a local branch before
 `./lab up <branch>` can see it. `./lab status` reports health at any time.
@@ -758,7 +758,7 @@ def _wire_destinations(
         wiring.matrix_bot_user_id = bot_user_id
 
         if seed_readers:
-            wiring.matrix_reader = api.ensure_reader(clients.MATRIX_READER_EMAIL, clients.MATRIX_READER_PASSWORD)
+            wiring.matrix_reader = api.ensure_reader(clients.CWA_READER1_EMAIL, clients.CWA_READER_DEFAULT_PASSWORD)
 
     return wiring
 
@@ -842,11 +842,11 @@ def _print_connection_info(
                 credentials=(
                     f"server {clients.MATRIX_SERVER_NAME}, bot {clients.MATRIX_BOT_USERNAME} / "
                     f"{clients.MATRIX_BOT_PASSWORD} (already wired into Family Librarian); "
-                    f"household test account {clients.MATRIX_HOUSEHOLD_USERNAME} / "
+                    f"Matrix account for reader1: {clients.MATRIX_HOUSEHOLD_USERNAME} / "
                     f"{clients.MATRIX_HOUSEHOLD_PASSWORD}"
                 ),
                 note=(
-                    f"FL reader {clients.MATRIX_READER_EMAIL} / {clients.MATRIX_READER_PASSWORD} ready to link "
+                    f"FL reader {clients.CWA_READER1_EMAIL} / {clients.CWA_READER_DEFAULT_PASSWORD} ready to link "
                     "it via the Matrix settings page -- not linked automatically"
                 ),
             )
