@@ -1867,6 +1867,7 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
         print(ps.stderr, file=sys.stderr, end="" if ps.stderr.endswith("\n") else "\n")
         return ps.returncode
     print(f"Project: {project_name}", flush=True)
+    print(f"Checkout: {lab_common.repo_checkout_summary() or 'none yet'}", flush=True)
     for line in _status_service_lines(ps.stdout):
         print(line, flush=True)
     checks, passed = _readiness(values, project_name)
@@ -2033,10 +2034,9 @@ def _check_no_conflicting_containers(values: dict[str, str]) -> None:
 
 def _describe_run_plan(args: argparse.Namespace) -> RunPlan:
     plan = RunPlan(label="Family Librarian Lab", host=lab_common.current_hostname())
-    if lab_common.is_git_checkout(lab_common.repo_dir()):
-        branch = lab_common.repo_current_branch() or "detached"
-        commit = lab_common.repo_head_commit(short=True) or "unknown"
-        plan.add("Current checkout", f"branch={branch} commit={commit}")
+    checkout = lab_common.repo_checkout_summary()
+    if checkout:
+        plan.add("Current checkout", checkout)
     else:
         plan.add("Current checkout", "none yet")
 

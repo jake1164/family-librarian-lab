@@ -22,6 +22,14 @@ def _disable_terminal_color(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(commands.lab_common, "colorize_urls", lambda text: text, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _stub_repo_checkout(monkeypatch: pytest.MonkeyPatch):
+    """repo_checkout_summary() needs agent.runtime.configure() to have run,
+    which only the real `lab` entry point does -- stub it like every other
+    lab_common call these tests don't exercise for real."""
+    monkeypatch.setattr(commands.lab_common, "repo_checkout_summary", lambda: "branch=main commit=abc1234")
+
+
 def test_status_prints_running_service_connection_details(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
     values = {
         "FAMILY_LIBRARIAN_ADMIN_EMAIL": "admin@example.test",
@@ -47,6 +55,7 @@ def test_status_prints_running_service_connection_details(monkeypatch: pytest.Mo
     assert commands.handle_status(SimpleNamespace(project_name=None), config=None) == 0
 
     output = capsys.readouterr().out
+    assert "Checkout: branch=main commit=abc1234" in output
     assert "Connection info:" in output
     assert "Family Librarian: http://toontown-int-srv2:18080" in output
     assert "user: admin@example.test / password: lab-password" in output
