@@ -204,10 +204,13 @@ MATRIX_REGISTRATION_TOKEN = matrix_fixture.DEFAULT_REGISTRATION_TOKEN
 # Fixed test accounts -- registered fresh against every scenario's own new
 # homeserver instance (nothing persists across scenarios), same "no
 # lab.env edits required" convention as every other fixed credential here.
+# Password is the one standard test password used everywhere else in this
+# file (ABS/CWA e-reader/readers/matrix reader) -- the sole fixed exception
+# is CWA_DEFAULT_PASSWORD, which is baked into CWA itself, not lab-chosen.
 MATRIX_BOT_USERNAME = "fl-bot"
-MATRIX_BOT_PASSWORD = "fl-bot-password"
+MATRIX_BOT_PASSWORD = "Admin123!"
 MATRIX_HOUSEHOLD_USERNAME = "household-member"
-MATRIX_HOUSEHOLD_PASSWORD = "household-member-password"
+MATRIX_HOUSEHOLD_PASSWORD = "Admin123!"
 MATRIX_READER_EMAIL = "matrix-reader@example.test"
 MATRIX_READER_PASSWORD = "Admin123!"
 

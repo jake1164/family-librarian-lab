@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,14 @@ from family_librarian_lab import commands  # noqa: E402
 def _disable_terminal_color(monkeypatch: pytest.MonkeyPatch):
     """Keep output assertions stable with either supported se-lab revision."""
     monkeypatch.setattr(commands.lab_common, "colorize_urls", lambda text: text, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _fixed_terminal_width(monkeypatch: pytest.MonkeyPatch):
+    """print_connection_info()'s box width follows the real terminal;
+    pin it so wrapping (and therefore these substring assertions) doesn't
+    depend on whatever width happens to run the test."""
+    monkeypatch.setattr(commands.lab_common.shutil, "get_terminal_size", lambda fallback=None: os.terminal_size((98, 24)))
 
 
 @pytest.fixture(autouse=True)
@@ -57,13 +66,17 @@ def test_status_prints_running_service_connection_details(monkeypatch: pytest.Mo
     output = capsys.readouterr().out
     assert "Checkout: branch=main commit=abc1234" in output
     assert "Connection info:" in output
-    assert "Family Librarian: http://toontown-int-srv2:18080" in output
+    assert "┌─ Family Librarian " in output
+    assert "http://toontown-int-srv2:18080" in output
     assert "user: admin@example.test / password: lab-password" in output
-    assert "CWA: http://toontown-int-srv2:18083" in output
+    assert "┌─ CWA " in output
+    assert "http://toontown-int-srv2:18083" in output
     assert f"OPDS user: {clients.CWA_DEFAULT_USERNAME} / password: {clients.CWA_DEFAULT_PASSWORD}" in output
-    assert "Audiobookshelf: http://toontown-int-srv2:18378" in output
+    assert "┌─ Audiobookshelf " in output
+    assert "http://toontown-int-srv2:18378" in output
     assert f"user: {clients.ABS_DEFAULT_USERNAME} / password: {clients.ABS_DEFAULT_PASSWORD}" in output
-    assert "CWA ingest transport: SFTP" in output
+    assert "┌─ CWA ingest transport " in output
+    assert "SFTP, trusted and enabled" in output
     assert "Mailpit (SMTP)" not in output
 
 

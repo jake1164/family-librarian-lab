@@ -134,8 +134,8 @@ hosted links instead of 127.0.0.1:
   Audiobookshelf    http://127.0.0.1:18378  bootstrapped and wired in automatically
   Mailpit (SMTP)    http://127.0.0.1:18025  web UI (user: labmailer / password:
                      Admin123!); SMTP host mailpit:1025, STARTTLS required
-  Continuwuity      http://127.0.0.1:18008  bot already wired into Family Librarian;
-                     household test account household-member / household-member-password;
+  Continuwuity      http://127.0.0.1:18008  bot fl-bot / Admin123! already wired into Family
+                     Librarian; household test account household-member / Admin123!;
                      FL reader matrix-reader@example.test / Admin123! (not linked automatically)
 
 `target` is lab-managed and fetched from GitHub -- push a local branch before
@@ -851,37 +851,52 @@ def _print_connection_info(
                 ),
             )
         )
-    lab_common.print_connection_info(connections)
     if sftp_wiring:
-        print(
-            "  CWA ingest transport: SFTP, trusted and enabled during the original 'up' "
-            "(see its output for the trust probe detail).",
-            flush=True,
+        connections.append(
+            lab_common.ConnectionInfo(
+                "CWA ingest transport",
+                note="SFTP, trusted and enabled during the original 'up' (see its output for the trust "
+                "probe detail).",
+            )
         )
     if cwa_running:
-        print(
-            "  CWA e-reader service account: "
-            f"{clients.CWA_EREADER_SERVICE_ACCOUNT_USERNAME} / {clients.CWA_EREADER_SERVICE_ACCOUNT_PASSWORD} "
-            "(already saved into Family Librarian's CWA settings).",
-            flush=True,
+        connections.append(
+            lab_common.ConnectionInfo(
+                "CWA e-reader service account",
+                credentials=(
+                    f"{clients.CWA_EREADER_SERVICE_ACCOUNT_USERNAME} / "
+                    f"{clients.CWA_EREADER_SERVICE_ACCOUNT_PASSWORD}"
+                ),
+                note="already saved into Family Librarian's CWA settings.",
+            )
         )
-        print(
-            f"  Seeded readers: {clients.CWA_READER1_EMAIL} / {clients.CWA_READER_DEFAULT_PASSWORD} and "
-            f"{clients.CWA_READER2_EMAIL} / {clients.CWA_READER_DEFAULT_PASSWORD}, each with a Kindle "
-            "delivery target already configured (real addresses via lab.env's "
-            "FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL/_READER2_KINDLE_EMAIL, otherwise fake addresses "
-            "reaching only the Mailpit relay above).",
-            flush=True,
+        connections.append(
+            lab_common.ConnectionInfo(
+                "Seeded readers",
+                credentials=(
+                    f"{clients.CWA_READER1_EMAIL} / {clients.CWA_READER_DEFAULT_PASSWORD} and "
+                    f"{clients.CWA_READER2_EMAIL} / {clients.CWA_READER_DEFAULT_PASSWORD}"
+                ),
+                note="each with a Kindle delivery target already configured (real addresses via "
+                "lab.env's FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL/_READER2_KINDLE_EMAIL, otherwise "
+                "fake addresses reaching only the Mailpit relay above).",
+            )
         )
         if cwa_relay_is_real:
-            print(
-                "  CWA outbound relay: real -- "
-                f"{values.get('FAMILY_LIBRARIAN_CWA_SMTP_HOST', '')}:"
-                f"{values.get('FAMILY_LIBRARIAN_CWA_SMTP_PORT', '587')} "
-                "(a real send still needs the \"from\" address on each Kindle's Approved Personal "
-                "Document Email list, and the app itself needs a send trigger -- see docs/01 §8).",
-                flush=True,
+            connections.append(
+                lab_common.ConnectionInfo(
+                    "CWA outbound relay",
+                    credentials=(
+                        "real -- "
+                        f"{values.get('FAMILY_LIBRARIAN_CWA_SMTP_HOST', '')}:"
+                        f"{values.get('FAMILY_LIBRARIAN_CWA_SMTP_PORT', '587')}"
+                    ),
+                    note="a real send still needs the \"from\" address on each Kindle's Approved "
+                    "Personal Document Email list, and the app itself needs a send trigger -- see "
+                    "docs/01 §8.",
+                )
             )
+    lab_common.print_connection_info(connections)
 
 
 def _service_is_running(checks: dict[str, object], service_name: str) -> bool:
