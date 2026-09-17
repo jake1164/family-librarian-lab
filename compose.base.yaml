@@ -278,6 +278,40 @@ services:
       retries: 20
       start_period: 5s
 
+  # Real, deployed instance of Family Librarian's own protocol-v2
+  # conformance fixture (repos/family-librarian/samples/
+  # FamilyLibrarian.SampleProvider) -- reused as-is rather than the lab
+  # writing its own server, the same "same-project service" choice
+  # gutenberg-fixture above makes. Built from the checked-out product
+  # source, same as the `family-librarian`/`migrate` services below, since
+  # its Dockerfile's COPY paths are relative to the repo root
+  # (Directory.Build.props etc.), not to the sample project's own
+  # subdirectory -- confirmed against its real Dockerfile.
+  external-provider-fixture:
+    profiles: [external-provider]
+    build:
+      context: ${FAMILY_LIBRARIAN_SOURCE_DIR:?Set FAMILY_LIBRARIAN_SOURCE_DIR in lab.env}
+      dockerfile: samples/FamilyLibrarian.SampleProvider/Dockerfile
+      target: final
+    image: ${FAMILY_LIBRARIAN_EXTERNAL_PROVIDER_IMAGE:-family-librarian-lab-external-provider:dev}
+    ports:
+      # Published so a human (or the lab's Python client) can curl the
+      # fixture directly while debugging a case -- family-librarian itself
+      # reaches it over the Compose network by service name
+      # (clients.EXTERNAL_PROVIDER_INTERNAL_URL), same split as gutenberg/
+      # mailpit/matrix above.
+      - "${FAMILY_LIBRARIAN_EXTERNAL_PROVIDER_HOST_PORT:-18091}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && head -n 1 <&3 | grep -q " 200 "'
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
   # Real, disposable SMTP server for the smtp suite -- family-librarian's own
   # test suite never exercises MailKitSmtpTestSender for real (it's stubbed
   # out for every in-repo test), so this is the only place that proves the

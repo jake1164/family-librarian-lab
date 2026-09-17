@@ -149,6 +149,20 @@ GUTENBERG_PROFILE = "gutenberg"
 GUTENBERG_SERVICE = "gutenberg-fixture"
 GUTENBERG_FIXTURE_INTERNAL_URL = "https://gutenberg-fixture"
 
+# Real, deployed instance of Family Librarian's own protocol-v2 conformance
+# fixture (repos/family-librarian/samples/FamilyLibrarian.SampleProvider),
+# reused here rather than the lab writing its own server -- it already
+# exercises every scenario this lab needs (waiting/user-interaction,
+# CANDIDATE_CHANGED, collection-release rejection, multi-output/checksums).
+# Plain HTTP, unlike gutenberg-fixture: confirmed against real code --
+# ExternalProviderAdminService.CreateAsync only requires an absolute http/
+# https BaseUrl, no HTTPS-only validation exists for external providers the
+# way GutenbergCatalogOptions enforces for its mirrors -- no TLS plumbing
+# needed for this fixture at all.
+EXTERNAL_PROVIDER_PROFILE = "external-provider"
+EXTERNAL_PROVIDER_SERVICE = "external-provider-fixture"
+EXTERNAL_PROVIDER_INTERNAL_URL = "http://external-provider-fixture:8080"
+
 # Real, disposable SMTP catcher (Mailpit) for the smtp suite -- proves
 # MailKitSmtpTestSender's actual connect/STARTTLS/authenticate/send path,
 # which family-librarian's own test suite never exercises (it force-registers

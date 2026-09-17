@@ -534,6 +534,35 @@ class FamilyLibrarianApi:
             "PUT", f"/api/v1/admin/integrations/metadata/{provider_id}/enabled", json_body={"enabled": enabled}
         )
 
+    def create_external_provider(self, provider_id: str, display_name: str, base_url: str) -> dict[str, Any]:
+        """Register an admin-added external provider row (ExternalProviderEndpoints.
+        CreateExternalProviderAsync) -- distinct from the hardcoded metadata-provider
+        allowlist `set_provider_enabled` toggles above. Returns the parsed
+        ExternalProviderResponse, whose `id` (a Guid) is what
+        `set_external_provider_enabled`/`test_external_provider` key off."""
+        response = self._request(
+            "POST", "/api/v1/admin/external-providers/",
+            json_body={"providerId": provider_id, "displayName": display_name, "baseUrl": base_url},
+        )
+        _require_status(response, (200, 201), "external provider registration")
+        return _object(response.body, "external provider")
+
+    def set_external_provider_enabled(self, external_provider_id: str, enabled: bool) -> ApiResponse:
+        return self._request(
+            "PUT", f"/api/v1/admin/external-providers/{external_provider_id}/enabled",
+            json_body={"enabled": enabled},
+        )
+
+    def test_external_provider(self, external_provider_id: str) -> dict[str, Any]:
+        """Drives ExternalProviderAdminService.TestConnectionAsync for real --
+        fetches the fixture's manifest/health and negotiates a protocol
+        version, caching the result on the provider row (CachedInstanceId/
+        CachedHealthStatus/etc.) the same way the admin UI's "Test connection"
+        button does."""
+        response = self._request("POST", f"/api/v1/admin/external-providers/{external_provider_id}/test", data=b"")
+        _require_status(response, 200, "external provider connection test")
+        return _object(response.body, "external provider")
+
     def upload_manual_epub(self, request_id: str, format_id: str, content: bytes, filename: str) -> ApiResponse:
         return self._upload_manual_file(request_id, format_id, content, filename)
 
@@ -541,18 +570,28 @@ class FamilyLibrarianApi:
         return self._upload_manual_file(request_id, format_id, content, filename)
 
     def acquire_direct(
-        self, request_id: str, format_id: str, provider_id: str, provider_result_id: str
+        self, request_id: str, format_id: str, provider_id: str, provider_result_id: str,
+        *, confirm_low_confidence_match: bool = False,
     ) -> ApiResponse:
         """Use the same direct-acquisition route as the admin UI.
 
         This is deliberately separate from manual import: a multi-track
         provider result is staged by DirectAcquisitionService as one bundle,
         whereas the manual-import boundary accepts one file at a time.
+
+        `confirm_low_confidence_match` sets the real `confirmLowConfidenceMatch`
+        query parameter (AdminRequestEndpoints.AcquireDirectAsync) -- required
+        for any TitleAuthor-basis candidate (no overlapping identifier), and
+        also (confirmed against real code: DirectAcquisitionService.AcquireAsync
+        checks both gates against the *same* flag) waives a release-policy
+        concern (collection/sample/abridgement) at the same time. Pass it only
+        when the match-confidence gate is the one under test.
         """
+        query = "?confirmLowConfidenceMatch=true" if confirm_low_confidence_match else ""
         return self._request(
             "POST",
             f"/api/v1/admin/requests/{request_id}/formats/{format_id}/direct-acquisitions/"
-            f"{quote(provider_id, safe='')}/{quote(provider_result_id, safe='')}",
+            f"{quote(provider_id, safe='')}/{quote(provider_result_id, safe='')}{query}",
             data=b"",
             timeout=120,
         )
