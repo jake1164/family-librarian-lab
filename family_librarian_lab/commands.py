@@ -194,6 +194,7 @@ Examples:
   ./lab up main --profile cwa-local abs   # main, wired to both CWA and Audiobookshelf
   ./lab up --profile cwa-sftp-key         # current branch, CWA over SFTP (key auth)
   ./lab up --profile matrix               # current branch, wired to a real Matrix homeserver
+  ./lab up --ep <name>                    # current branch, plus a configured external-provider plugin
   ./lab up --refresh                      # rebuild+restart Family Librarian only, current branch
   ./lab base down                         # tear down when done -- NOT `./lab down`
 
@@ -209,6 +210,14 @@ Family Librarian's Matrix settings -- registering both the bot account and
 a reader1 test account is unavoidable setup (Continuwuity's own
 bootstrap-registration-token requirement), so there is no meaningful
 "unconfigured Matrix" manual-testing state the way there is for SMTP.
+
+--ep brings up a real, private external-provider plugin from
+external-providers.local.yaml (gitignored -- none configured on this host
+means no valid names to pass here). Unlike --profile, it does NOT also
+register the provider with Family Librarian -- that's a separate, opt-in
+step ('./lab base register-external-provider --ep <name>'), since
+registration makes a real, live call against the provider's own upstream.
+See docs/02-external-provider-plugins.md.
 
 Connection info once up (defaults; override the *_HOST_PORT vars in lab.env).
 Set se-lab's LAB_EXTERNAL_HOST (for example, toontown-int-srv2) to print
@@ -1166,6 +1175,26 @@ def _status_service_lines(compose_ps: str) -> list[str]:
     return lines
 
 
+def _status_provider_lines(checks: dict[str, object]) -> list[str]:
+    """External-provider plugins from external-providers.local.yaml.
+
+    Container state comes from the same Compose query _readiness() already
+    ran (checks["compose_services"]) -- docker compose ps matches by Compose
+    project label, not by which -f files this particular invocation passed,
+    so a provider's containers (started under a separate --ep overlay file)
+    already appear there with no extra Compose call needed here. Lists every
+    *configured* provider, not just running ones, so an operator can see at a
+    glance that a provider they expected to be up with --ep isn't."""
+    providers = _load_provider_registry()
+    if not providers:
+        return []
+    lines = ["External providers:"]
+    for provider in sorted(providers.values(), key=lambda p: p.name):
+        state = "running" if _service_is_running(checks, provider.app_service) else "not running"
+        lines.append(f"  {provider.name}: {state} -- {provider.internal_url}")
+    return lines
+
+
 def _status_readiness_lines(checks: dict[str, object], passed: bool) -> list[str]:
     """Make the probe result useful at a glance, without repeating the service table."""
     lines = ["Readiness:"]
@@ -2027,6 +2056,11 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
             ),
             cwa_relay_is_real=bool(values.get("FAMILY_LIBRARIAN_CWA_SMTP_HOST")),
         )
+    provider_lines = _status_provider_lines(checks)
+    if provider_lines:
+        print(flush=True)
+        for line in provider_lines:
+            print(line, flush=True)
     return 0 if passed else 1
 
 

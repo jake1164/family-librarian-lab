@@ -1,0 +1,60 @@
+# Copy this file to external-providers/<name>.local.yaml (gitignored -- the
+# whole external-providers/ directory is ignored) for each entry in
+# external-providers.local.yaml. Service names here are yours to choose; they
+# must match the app_service/vpn_service/internal_url you set in that
+# registry entry. See docs/02-external-provider-plugins.md.
+#
+# This example shows the VPN-gated shape (a Gluetun sidecar the app shares a
+# network namespace with, so all its egress goes through the tunnel). A
+# provider with no VPN requirement is simpler: drop the vpn service
+# entirely, drop vpn_service from the registry entry, point internal_url at
+# the app service directly, and remove network_mode from the app (Compose's
+# own default network is fine).
+#
+# Real container-facing secret env-var names (whatever your provider's own
+# image actually expects) belong ONLY in files like this one -- never in
+# anything tracked. Read them from generic FAMILY_LIBRARIAN_* names that live
+# in lab.env (also gitignored), the same way FL_PROVIDER_API_KEY is read from
+# FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_API_KEY below.
+
+services:
+  example-provider-vpn:
+    image: qmcgaw/gluetun
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    environment:
+      VPN_TYPE: wireguard
+      VPN_SERVICE_PROVIDER: ${FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_VPN_SERVICE_PROVIDER}
+      WIREGUARD_PRIVATE_KEY: ${FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_WIREGUARD_KEY}
+      FIREWALL: "on"
+      # Gluetun's own control server -- moved off :8000 because the app
+      # shares this container's network namespace and listens on :8000 itself.
+      HTTP_CONTROL_SERVER_ADDRESS: ":8001"
+    # No ports: published here on purpose -- if the provider's own /admin (or
+    # similar) is unauthenticated by design, publishing its port would expose
+    # it beyond this lab's private network. Reach it via `docker compose exec`
+    # or a temporary loopback-only ports: line in your own local copy of this
+    # file, never by publishing it in anything tracked.
+
+  example-provider-app:
+    build:
+      context: ${FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_SOURCE_DIR}
+    network_mode: "service:example-provider-vpn"
+    depends_on:
+      example-provider-vpn:
+        condition: service_healthy
+    environment:
+      # Real env var name required by the app's own image on the left;
+      # generic FAMILY_LIBRARIAN_* name from lab.env on the right.
+      FL_PROVIDER_API_KEY: ${FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_API_KEY}
+      VPN_REQUIRED: "true"
+      # Add whatever other real, provider-specific env vars your image
+      # needs here, each sourced from its own generic FAMILY_LIBRARIAN_*
+      # lab.env variable.
+    volumes:
+      - example-provider-data:/data
+      - example-provider-work:/work
+
+volumes:
+  example-provider-data: {}
+  example-provider-work: {}

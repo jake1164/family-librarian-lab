@@ -1,0 +1,34 @@
+# Copy this file to external-providers.local.yaml (gitignored) and add one
+# entry per real external-provider plugin you want this lab to know about.
+# This file's name and every field below are read by
+# family_librarian_lab/commands.py (_load_provider_registry()).
+# See docs/02-external-provider-plugins.md for the full setup walkthrough.
+#
+# Nothing in this file, or in external-providers/<name>.local.yaml (each
+# provider's own Compose overlay -- see external-providers.overlay.local.yaml.example),
+# should ever be committed: both paths are gitignored specifically so a real
+# provider's identity, repo URL, and secrets never appear in this public repo.
+
+providers:
+  - name: example-provider  # short local id, your choice -- this is the value passed to --ep NAME
+    repo_url: git@github.com:you/example-provider.git
+    compose_file: external-providers/example-provider.local.yaml
+    # The address *other* containers (Family Librarian) reach this provider
+    # on. If the provider has a VPN sidecar (network_mode: service:<vpn>),
+    # this must be the sidecar's own service name, not the app's -- the app
+    # has no network identity of its own in that case. See the overlay example.
+    internal_url: http://example-provider-vpn:8000
+    app_service: example-provider-app  # service to `compose exec` for sync/rebuild, and to restart
+    vpn_service: example-provider-vpn  # optional -- omit entirely for a provider with no VPN sidecar
+    source_dir_env: FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_SOURCE_DIR  # var name this provider's overlay reads for build: context:
+    api_key_env: FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_API_KEY  # var name in lab.env holding the bearer token FL sends
+    sync_command: ["python", "-m", "app.metadata.sync"]  # optional -- omit if this provider has no sync step
+    rebuild_command: ["python", "-m", "app.metadata.rebuild"]  # optional -- omit if this provider has no rebuild step
+
+  # - name: a-second-provider
+  #   repo_url: git@github.com:you/a-second-provider.git
+  #   compose_file: external-providers/a-second-provider.local.yaml
+  #   internal_url: http://a-second-provider-app:8000  # no VPN sidecar here, so the app's own service name works
+  #   app_service: a-second-provider-app
+  #   source_dir_env: FAMILY_LIBRARIAN_A_SECOND_PROVIDER_SOURCE_DIR
+  #   api_key_env: FAMILY_LIBRARIAN_A_SECOND_PROVIDER_API_KEY
