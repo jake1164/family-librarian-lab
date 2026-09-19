@@ -64,6 +64,78 @@ _SECRET_NAMES = (
     "FAMILY_LIBRARIAN_POSTGRES_PASSWORD",
     "FAMILY_LIBRARIAN_ADMIN_PASSWORD",
 )
+EXTERNAL_PROVIDERS_REGISTRY_FILE = "external-providers.local.yaml"
+
+
+@dataclass(slots=True, frozen=True)
+class ProviderConfig:
+    """One entry from external-providers.local.yaml (gitignored, never
+    committed -- see that file's own comments for the full field reference).
+    Every real, private external-provider integration this lab supports is
+    data here, not code: this lab's own source never names a specific
+    provider, so adding a second or third one means editing only this
+    untracked registry and dropping in its own untracked Compose overlay."""
+
+    name: str
+    compose_file: str
+    internal_url: str
+    app_service: str
+    repo_url: str | None = None
+    source_dir_env: str | None = None
+    api_key_env: str | None = None
+    vpn_service: str | None = None
+    sync_command: list[str] | None = None
+    rebuild_command: list[str] | None = None
+
+
+def _load_provider_registry() -> dict[str, ProviderConfig]:
+    data = lab_common.load_local_registry(EXTERNAL_PROVIDERS_REGISTRY_FILE)
+    if not data:
+        return {}
+    providers: dict[str, ProviderConfig] = {}
+    for entry in data.get("providers", []):
+        try:
+            cfg = ProviderConfig(
+                name=entry["name"],
+                compose_file=entry["compose_file"],
+                internal_url=entry["internal_url"],
+                app_service=entry["app_service"],
+                repo_url=entry.get("repo_url"),
+                source_dir_env=entry.get("source_dir_env"),
+                api_key_env=entry.get("api_key_env"),
+                vpn_service=entry.get("vpn_service"),
+                sync_command=entry.get("sync_command"),
+                rebuild_command=entry.get("rebuild_command"),
+            )
+        except KeyError as exc:
+            raise SystemExit(
+                f"{EXTERNAL_PROVIDERS_REGISTRY_FILE}: a provider entry is missing required field {exc}. "
+                "Required: name, compose_file, internal_url, app_service."
+            ) from None
+        providers[cfg.name] = cfg
+    return providers
+
+
+def _require_provider(name: str) -> ProviderConfig:
+    providers = _load_provider_registry()
+    try:
+        return providers[name]
+    except KeyError:
+        raise SystemExit(
+            f"No provider named {name!r} in {EXTERNAL_PROVIDERS_REGISTRY_FILE} "
+            f"(known: {', '.join(sorted(providers)) or 'none configured'})."
+        ) from None
+
+
+def _checkout_provider_source(cfg: ProviderConfig, values: dict[str, str]) -> None:
+    """Land a provider plugin's own source at its own keyed checkout dir --
+    se-lab's repo_dir()/ensure_repo_checkout() take a `key` precisely so this
+    doesn't collide with Family Librarian's own checkout (see repo_dir())."""
+    if not cfg.repo_url:
+        return
+    lab_common.ensure_repo_checkout(cfg.repo_url, key=cfg.name)
+    if cfg.source_dir_env:
+        values[cfg.source_dir_env] = str(lab_common.repo_dir(key=cfg.name))
 
 
 def _configure_checkout_target(parser: argparse.ArgumentParser) -> None:
@@ -91,6 +163,18 @@ def _configure_up(parser: argparse.ArgumentParser) -> None:
         ],
         help="Extra destination(s) to bring up and wire alongside the base profile "
         "(cwa-local, abs, cwa-sftp-key, cwa-sftp-password, smtp, matrix)",
+    )
+    provider_choices = sorted(_load_provider_registry())
+    parser.add_argument(
+        "--ep",
+        nargs="+",
+        metavar="NAME",
+        default=[],
+        choices=provider_choices,
+        help="External-provider plugin(s) to bring up alongside the base profile, by name from "
+        "external-providers.local.yaml (gitignored; none configured on this host means no valid "
+        "values here). Registration/enablement with Family Librarian is a separate step -- see "
+        "'./lab base register-external-provider'.",
     )
     parser.add_argument(
         "--refresh",
@@ -192,6 +276,11 @@ def _validate_up_options(args: argparse.Namespace) -> None:
             "--refresh only rebuilds and restarts Family Librarian's own container -- bring up a new "
             "client profile with a plain './lab up --profile ...' first."
         )
+    if args.refresh and args.ep:
+        raise SystemExit(
+            "--refresh only rebuilds and restarts Family Librarian's own container -- bring up a new "
+            "external-provider plugin with a plain './lab up --ep ...' first."
+        )
 
 
 def _validate_run_options(args: argparse.Namespace) -> None:
@@ -288,6 +377,7 @@ def _compose(
     project_name: str,
     *arguments: str,
     profiles: Sequence[str] = (PROFILE,),
+    extra_compose_files: Sequence[Path] = (),
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
@@ -302,6 +392,8 @@ def _compose(
         "--file",
         str(COMPOSE_FILE),
     ]
+    for extra_file in extra_compose_files:
+        command += ["--file", str(extra_file)]
     for profile in profiles:
         command += ["--profile", profile]
     command += list(arguments)
@@ -414,7 +506,11 @@ class _CwaIngestObserver:
 
 
 def _run_or_exit(
-    values: dict[str, str], project_name: str, *arguments: str, profiles: Sequence[str] = (PROFILE,)
+    values: dict[str, str],
+    project_name: str,
+    *arguments: str,
+    profiles: Sequence[str] = (PROFILE,),
+    extra_compose_files: Sequence[Path] = (),
 ) -> None:
     """Run a compose command; raise with a clear message on failure.
 
@@ -430,7 +526,7 @@ def _run_or_exit(
     _BaseScenario.__enter__. _compose() already prints the actual docker
     output above this by the time it's raised.
     """
-    result = _compose(values, project_name, *arguments, profiles=profiles)
+    result = _compose(values, project_name, *arguments, profiles=profiles, extra_compose_files=extra_compose_files)
     if result.returncode:
         raise RuntimeError(
             f"`docker compose {' '.join(arguments)}` failed for project {project_name!r} "
@@ -1869,9 +1965,16 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
             # option), so Mailpit needs a cert the app trusts before manual
             # testing against it can work at all.
             values = {**values, **ensure_smtp_fixture_tls()}
+        providers = [_require_provider(name) for name in args.ep]
+        for provider in providers:
+            _checkout_provider_source(provider, values)
+        extra_compose_files = [REPO_ROOT / provider.compose_file for provider in providers]
         project_name = lab_common.project_name()
         profiles = (PROFILE, *args.profile)
-        _run_or_exit(values, project_name, "up", "--build", "--wait", "--remove-orphans", profiles=profiles)
+        _run_or_exit(
+            values, project_name, "up", "--build", "--wait", "--remove-orphans",
+            profiles=profiles, extra_compose_files=extra_compose_files,
+        )
         checks, passed = _readiness(values, project_name)
         if not passed:
             print(json.dumps(checks, indent=2), file=sys.stderr)
@@ -1944,6 +2047,101 @@ def handle_down(args: argparse.Namespace, config: object) -> int:
     # would otherwise leak past this command's own "stopped" message.
     teardown_shared_clamav()
     print(f"Base profile stopped: {project_name}", flush=True)
+    return 0
+
+
+def _configure_ep(parser: argparse.ArgumentParser) -> None:
+    provider_choices = sorted(_load_provider_registry())
+    parser.add_argument(
+        "--ep",
+        required=True,
+        metavar="NAME",
+        choices=provider_choices,
+        help="External-provider plugin name from external-providers.local.yaml "
+        "(gitignored; none configured on this host means no valid values here).",
+    )
+
+
+@registry.command(
+    "base register-external-provider",
+    help="Register a provider plugin with Family Librarian: create it, set its API key, test it, enable it",
+    configure=_configure_ep,
+)
+def handle_register_external_provider(args: argparse.Namespace, config: object) -> int:
+    """Deliberately a separate, opt-in command rather than folded into './lab
+    up --ep ...': registration is a real, live call against the provider's
+    own upstream (its /manifest, /health), which can be slow or hang
+    (VPN_REQUIRED-style providers refuse rather than bypass a missing VPN) --
+    'up' itself should stay fast and deterministic."""
+    provider = _require_provider(args.ep)
+    values = _load_lab_env()
+    api = FamilyLibrarianApi(_host_base(values))
+    api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+    created = api.create_external_provider(provider.name, provider.name, provider.internal_url)
+    provider_id = created["id"]
+    if provider.api_key_env:
+        api_key = lab_common.resolve_setting(provider.api_key_env, required=True)
+        api.set_external_provider_api_key(provider_id, api_key)
+    tested = api.test_external_provider(provider_id)
+    if tested.get("lastTestSucceeded") is not True:
+        raise SystemExit(f"Connection test failed for provider {provider.name!r}: {tested}")
+    api.set_external_provider_enabled(provider_id, True)
+    print(f"External provider {provider.name!r} registered, tested, and enabled (id={provider_id}).", flush=True)
+    return 0
+
+
+@registry.command(
+    "base sync-external-provider-metadata",
+    help="Run a provider plugin's real metadata sync + rebuild inside its running container",
+    configure=_configure_ep,
+)
+def handle_sync_external_provider_metadata(args: argparse.Namespace, config: object) -> int:
+    """Drives the provider's own sync/rebuild scripts directly via `compose
+    exec` rather than its (unauthenticated-by-design, never network-exposed)
+    /admin HTML forms -- more stable, and needs no port published for this
+    automated path at all. This is a one-time, persistent-volume operation:
+    re-running './lab up'/'./lab run' should reuse the already-populated data
+    volume rather than re-syncing real, slow, live-network data every time."""
+    provider = _require_provider(args.ep)
+    if not provider.sync_command and not provider.rebuild_command:
+        raise SystemExit(
+            f"Provider {provider.name!r} has no sync_command/rebuild_command configured in "
+            f"{EXTERNAL_PROVIDERS_REGISTRY_FILE} -- nothing to run."
+        )
+    values = _load_lab_env()
+    project_name = lab_common.project_name()
+    extra_compose_files = [REPO_ROOT / provider.compose_file]
+    if provider.sync_command:
+        print(f"Running metadata sync for {provider.name!r} (can take a long time against real data)...", flush=True)
+        _run_or_exit(values, project_name, "exec", provider.app_service, *provider.sync_command, extra_compose_files=extra_compose_files)
+    if provider.rebuild_command:
+        print(f"Rebuilding metadata index for {provider.name!r}...", flush=True)
+        _run_or_exit(values, project_name, "exec", provider.app_service, *provider.rebuild_command, extra_compose_files=extra_compose_files)
+    print(f"Metadata sync complete for {provider.name!r}.", flush=True)
+    return 0
+
+
+@registry.command(
+    "base restart-external-provider",
+    help="Restart a provider plugin's VPN sidecar (if any) and app together",
+    configure=_configure_ep,
+)
+def handle_restart_external_provider(args: argparse.Namespace, config: object) -> int:
+    """Known limitation, documented rather than auto-healed: if a provider's
+    VPN sidecar restarts on its own (for any reason), the app container
+    sharing its network namespace (network_mode: service:<vpn>) silently
+    goes network-dead -- that binding doesn't survive the sidecar's
+    container being recreated. Restart the sidecar first, then the app, so
+    the app reattaches to the sidecar's new namespace instance."""
+    provider = _require_provider(args.ep)
+    values = _load_lab_env()
+    project_name = lab_common.project_name()
+    extra_compose_files = [REPO_ROOT / provider.compose_file]
+    if provider.vpn_service:
+        _run_or_exit(values, project_name, "restart", provider.vpn_service, extra_compose_files=extra_compose_files)
+    _run_or_exit(values, project_name, "restart", provider.app_service, extra_compose_files=extra_compose_files)
+    restarted = [s for s in (provider.vpn_service, provider.app_service) if s]
+    print(f"Restarted {', '.join(restarted)} for provider {provider.name!r}.", flush=True)
     return 0
 
 

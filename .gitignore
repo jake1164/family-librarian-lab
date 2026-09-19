@@ -9,3 +9,9 @@ repos/
 runtime/
 .ai_docs/
 
+# External-provider plugin registry and per-provider Compose overlays --
+# entirely untracked so a real/private integration's identity, repo URL, and
+# secrets never appear in this public repo. See docs/ for the registry format.
+external-providers.local.yaml
+external-providers/
+

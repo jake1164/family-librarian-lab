@@ -547,6 +547,16 @@ class FamilyLibrarianApi:
         _require_status(response, (200, 201), "external provider registration")
         return _object(response.body, "external provider")
 
+    def set_external_provider_api_key(self, external_provider_id: str, api_key: str) -> ApiResponse:
+        """Set the bearer token FL sends as `Authorization: Bearer <api_key>` on
+        every protocol route to this provider. Needed for any real provider
+        that checks that header (unlike the sample fixture, which needs no
+        key at all -- see EXTERNAL_PROVIDER_* in clients.py)."""
+        return self._request(
+            "PUT", f"/api/v1/admin/external-providers/{external_provider_id}/api-key",
+            json_body={"apiKey": api_key},
+        )
+
     def set_external_provider_enabled(self, external_provider_id: str, enabled: bool) -> ApiResponse:
         return self._request(
             "PUT", f"/api/v1/admin/external-providers/{external_provider_id}/enabled",
