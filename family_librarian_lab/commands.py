@@ -130,10 +130,16 @@ def _require_provider(name: str) -> ProviderConfig:
 def _checkout_provider_source(cfg: ProviderConfig, values: dict[str, str]) -> None:
     """Land a provider plugin's own source at its own keyed checkout dir --
     se-lab's repo_dir()/ensure_repo_checkout() take a `key` precisely so this
-    doesn't collide with Family Librarian's own checkout (see repo_dir())."""
+    doesn't collide with Family Librarian's own checkout (see repo_dir()).
+
+    ensure_repo_checkout() only clones on the very first run; every run after
+    that must explicitly refresh the keyed checkout's current branch, or
+    `up --ep` silently keeps building whatever commit was cloned the first
+    time instead of the provider's latest source."""
     if not cfg.repo_url:
         return
     lab_common.ensure_repo_checkout(cfg.repo_url, key=cfg.name)
+    lab_common.git_refresh_current_branch(key=cfg.name)
     if cfg.source_dir_env:
         values[cfg.source_dir_env] = str(lab_common.repo_dir(key=cfg.name))
 
