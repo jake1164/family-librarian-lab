@@ -290,6 +290,16 @@ flow:
 ./lab run --test-group matrix
 ```
 
+The lab Compose service leaves Matrix interaction alerts disabled unless
+`FAMILY_LIBRARIAN_PUBLIC_ORIGIN` is set in `lab.env`. Set it to the exact
+Family Librarian origin opened in the browser (for example,
+`http://toontown-int-srv2:18080` on that Development host). Compose passes the
+same origin to both `Interaction:PublicOrigin` and
+`RemoteView:AllowedOrigins`; after changing it, run `./lab up --refresh` so the
+application container receives the settings. Without this value the app still
+records waiting provider jobs and serves the in-app attention queue, but sends
+no Matrix interaction alerts.
+
 Implemented: `MTX-01` (configure/test/enable against a real homeserver), `MTX-02` (a wrong
 bot access token surfaces a real connection failure, saved settings untouched), `MTX-03` (a
 household member links their Matrix ID via the verification-code flow — a real bot DM, a

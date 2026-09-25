@@ -78,6 +78,11 @@ services:
       - MetadataProviders__GoogleBooks__ApiKey=${FAMILY_LIBRARIAN_GOOGLE_BOOKS_API_KEY:-}
       - ADMIN_EMAIL=${FAMILY_LIBRARIAN_ADMIN_EMAIL:?Set FAMILY_LIBRARIAN_ADMIN_EMAIL in lab.env}
       - ADMIN_PASSWORD=${FAMILY_LIBRARIAN_ADMIN_PASSWORD:?Set FAMILY_LIBRARIAN_ADMIN_PASSWORD in lab.env}
+      # HUMAN-ACQ-1 notifications and brokered remote view are opt-in: set
+      # FAMILY_LIBRARIAN_PUBLIC_ORIGIN to the exact browser-facing app origin
+      # in lab.env. The origin is shared by the Matrix link and WebSocket allowlist.
+      - RemoteView__AllowedOrigins__0=${FAMILY_LIBRARIAN_PUBLIC_ORIGIN:-}
+      - Interaction__PublicOrigin=${FAMILY_LIBRARIAN_PUBLIC_ORIGIN:-}
       - Invitations__LifetimeDays=${FAMILY_LIBRARIAN_INVITATIONS_LIFETIME_DAYS:-7}
       - Invitations__RedemptionAttemptsPerMinute=${FAMILY_LIBRARIAN_INVITATIONS_REDEMPTION_ATTEMPTS_PER_MINUTE:-10}
       - Storage__RootPath=/data/family-librarian
