@@ -81,6 +81,7 @@ class ProviderConfig:
     internal_url: str
     app_service: str
     repo_url: str | None = None
+    branch: str | None = None
     source_dir_env: str | None = None
     api_key_env: str | None = None
     vpn_service: str | None = None
@@ -101,6 +102,7 @@ def _load_provider_registry() -> dict[str, ProviderConfig]:
                 internal_url=entry["internal_url"],
                 app_service=entry["app_service"],
                 repo_url=entry.get("repo_url"),
+                branch=entry.get("branch"),
                 source_dir_env=entry.get("source_dir_env"),
                 api_key_env=entry.get("api_key_env"),
                 vpn_service=entry.get("vpn_service"),
@@ -127,19 +129,46 @@ def _require_provider(name: str) -> ProviderConfig:
         ) from None
 
 
-def _checkout_provider_source(cfg: ProviderConfig, values: dict[str, str]) -> None:
+def _parse_ep_spec(spec: str) -> tuple[str, str | None]:
+    """`--ep NAME` or `--ep NAME@BRANCH`. Provider names are local ids from
+    the registry and never contain '@'; branch names may contain '/'."""
+    name, sep, branch = spec.partition("@")
+    if sep and not branch:
+        raise SystemExit(f"--ep {spec!r}: expected NAME@BRANCH, got an empty branch.")
+    return name, branch or None
+
+
+def _git_prepare_keyed_branch(branch: str, key: str) -> None:
+    """Keyed twin of se-lab's git_prepare_branch(), which only ever targets
+    Family Librarian's own (unkeyed) checkout."""
+    target = lab_common.repo_dir(key=key)
+    lab_common.run(["git", "fetch", "--prune", "origin"], cwd=target)
+    lab_common.git_assert_remote_branch(branch, key)
+    lab_common.run(["git", "reset", "--hard"], cwd=target)
+    lab_common.run(["git", "clean", "-ffdx"], cwd=target)
+    lab_common.run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=target)
+    lab_common.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=target)
+
+
+def _checkout_provider_source(cfg: ProviderConfig, values: dict[str, str], branch: str | None = None) -> None:
     """Land a provider plugin's own source at its own keyed checkout dir --
     se-lab's repo_dir()/ensure_repo_checkout() take a `key` precisely so this
     doesn't collide with Family Librarian's own checkout (see repo_dir()).
 
     ensure_repo_checkout() only clones on the very first run; every run after
-    that must explicitly refresh the keyed checkout's current branch, or
-    `up --ep` silently keeps building whatever commit was cloned the first
-    time instead of the provider's latest source."""
+    that must explicitly refresh the keyed checkout, or `up --ep` silently
+    keeps building whatever commit was cloned the first time instead of the
+    provider's latest source. The branch comes from `--ep NAME@BRANCH`, then
+    the registry entry's `branch:`, and otherwise stays whatever the keyed
+    checkout is already on."""
     if not cfg.repo_url:
         return
     lab_common.ensure_repo_checkout(cfg.repo_url, key=cfg.name)
-    lab_common.git_refresh_current_branch(key=cfg.name)
+    branch = branch or cfg.branch
+    if branch:
+        _git_prepare_keyed_branch(branch, cfg.name)
+    else:
+        lab_common.git_refresh_current_branch(key=cfg.name)
     if cfg.source_dir_env:
         values[cfg.source_dir_env] = str(lab_common.repo_dir(key=cfg.name))
 
@@ -174,13 +203,14 @@ def _configure_up(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ep",
         nargs="+",
-        metavar="NAME",
+        metavar="NAME[@BRANCH]",
         default=[],
-        choices=provider_choices,
         help="External-provider plugin(s) to bring up alongside the base profile, by name from "
         "external-providers.local.yaml (gitignored; none configured on this host means no valid "
-        "values here). Registration/enablement with Family Librarian is a separate step -- see "
-        "'./lab base register-external-provider'.",
+        f"values here; configured: {', '.join(provider_choices) or 'none'}). NAME@BRANCH switches "
+        "that provider's checkout to BRANCH; plain NAME uses the registry's branch: if set, else "
+        "refreshes the checkout's current branch. Registration/enablement with Family Librarian "
+        "is a separate step -- see './lab base register-external-provider'.",
     )
     parser.add_argument(
         "--refresh",
@@ -201,6 +231,7 @@ Examples:
   ./lab up --profile cwa-sftp-key         # current branch, CWA over SFTP (key auth)
   ./lab up --profile matrix               # current branch, wired to a real Matrix homeserver
   ./lab up --ep <name>                    # current branch, plus a configured external-provider plugin
+  ./lab up --ep <name>@main               # same, switching that provider's checkout to its `main`
   ./lab up --refresh                      # rebuild+restart Family Librarian only, current branch
   ./lab base down                         # tear down when done -- NOT `./lab down`
 
@@ -2000,9 +2031,10 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
             # option), so Mailpit needs a cert the app trusts before manual
             # testing against it can work at all.
             values = {**values, **ensure_smtp_fixture_tls()}
-        providers = [_require_provider(name) for name in args.ep]
-        for provider in providers:
-            _checkout_provider_source(provider, values)
+        ep_specs = [_parse_ep_spec(spec) for spec in args.ep]
+        providers = [_require_provider(name) for name, _ in ep_specs]
+        for provider, (_, ep_branch) in zip(providers, ep_specs):
+            _checkout_provider_source(provider, values, ep_branch)
         extra_compose_files = [REPO_ROOT / provider.compose_file for provider in providers]
         project_name = lab_common.project_name()
         profiles = (PROFILE, *args.profile)

@@ -12,6 +12,7 @@
 providers:
   - name: example-provider  # short local id, your choice -- this is the value passed to --ep NAME
     repo_url: git@github.com:you/example-provider.git
+    branch: main  # optional -- branch to check out on every `up --ep`; omit to stay on the checkout's current branch. `--ep NAME@BRANCH` overrides it.
     compose_file: external-providers/example-provider.local.yaml
     # The address *other* containers (Family Librarian) reach this provider
     # on. If the provider has a VPN sidecar (network_mode: service:<vpn>),
