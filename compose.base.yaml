@@ -110,6 +110,7 @@ services:
       - GutenbergCatalog__MinimumBookCount
       - GutenbergMirrors__BaseUris__0
       - SSL_CERT_FILE
+      - FAMILY_LIBRARIAN_ANNAS_MANAGEMENT_URL=http://toontown-int-srv2:18100/admin
     # A deliberately non-reserved name, not "host.docker.internal": Docker
     # Desktop already special-cases that literal name with its own built-in
     # DNS entry, which on this Mac resolves to an IPv6 address that is not
