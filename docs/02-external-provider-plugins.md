@@ -25,6 +25,7 @@ This mechanism is for the opposite case: a real, private, third-party provider -
    - `internal_url` -- where Family Librarian reaches this provider over the Compose network. If the provider has a VPN sidecar, this **must** be the sidecar's own service name (`network_mode: "service:<vpn>"` means the app has no network identity of its own -- see the overlay example's comments).
    - `app_service` -- the provider's own app container, used for `compose exec` (metadata sync) and restarts.
    - `vpn_service` -- optional; omit entirely for a provider with no VPN requirement.
+   - `companion_services` -- optional list of *other* services that share the VPN sidecar's network namespace (a provider that ships its own downloader or indexer manager inside the tunnel). Restarted after the sidecar by `restart-external-provider`, and reported by `status` as `degraded` if one is down.
    - `source_dir_env` -- the env var name (pick anything under `FAMILY_LIBRARIAN_<NAME>_*`) that the overlay's `build: context:` reads.
    - `api_key_env` -- the env var name in `lab.env` holding the bearer token Family Librarian should send this provider.
    - `sync_command` / `rebuild_command` -- optional; omit either (or both) if the provider has no such step.
@@ -36,8 +37,17 @@ This mechanism is for the opposite case: a real, private, third-party provider -
 
 ## Known limitation: VPN sidecar restarts
 
-If a provider's VPN sidecar container restarts for any reason, the app container sharing its network namespace goes silently network-dead -- `network_mode: "service:<vpn>"` binds to a specific namespace instance that doesn't survive the sidecar being recreated, and there's no autoheal for this yet. Run `./lab base restart-external-provider --ep <name>` (restarts the sidecar, then the app, in that order) if a provider that was working suddenly can't reach anything.
+If a provider's VPN sidecar container restarts for any reason, the app container sharing its network namespace (and any `companion_services`) goes silently network-dead -- `network_mode: "service:<vpn>"` binds to a specific namespace instance that doesn't survive the sidecar being recreated, and there's no autoheal for this yet. Run `./lab base restart-external-provider --ep <name>` (restarts the sidecar, then each companion service, then the app, in that order) if a provider that was working suddenly can't reach anything.
 
 ## Tearing down
 
 `./lab base down` removes provider containers too, via Compose's own `--remove-orphans` (they're "orphans" relative to a down invocation that doesn't pass the provider's overlay file) -- no separate teardown command needed.
+
+## Providers that bring their own stack
+
+A provider's own repo may ship a `compose.*.yml` for *its* standalone development (its own Compose project name, published ports, helper scripts). Those files are not this lab: this lab never reads them and their project name is unrelated to the `family-librarian-lab` project. Whatever the provider needs at runtime -- extra services, volumes, secrets -- is re-declared in `external-providers/<name>.local.yaml`, so the whole stack joins the lab's project and network and is torn down with `./lab base down`.
+
+A provider that needs more than its own container (e.g. an indexer manager and downloaders that must egress through the same VPN tunnel) lists the extras in `companion_services`. Two things to get right in its overlay:
+
+- Every service that shares the tunnel uses `network_mode: "service:<vpn>"`, so ports are published on the sidecar (Compose refuses `ports:` combined with `network_mode: service:*`) and any two listeners in the namespace need distinct ports.
+- Anything that has to exist before `up --wait` can succeed (a config file, a directory owned by the right uid) must be created by a run-once init service the dependent container waits on with `condition: service_completed_successfully`. A manual post-`up` setup script cannot work: `up` waits for healthchecks and fails first.

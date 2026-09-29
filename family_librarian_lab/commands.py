@@ -84,6 +84,13 @@ class ProviderConfig:
     source_dir_env: str | None = None
     api_key_env: str | None = None
     vpn_service: str | None = None
+    # Other containers that share the VPN sidecar's network namespace
+    # (network_mode: service:<vpn>) besides the app itself -- e.g. a provider
+    # whose downloaders must egress through the same tunnel. They go
+    # network-dead exactly like the app does when the sidecar is recreated, so
+    # restart-external-provider must bounce them too, and status must notice
+    # when one is down.
+    companion_services: list[str] | None = None
     sync_command: list[str] | None = None
     rebuild_command: list[str] | None = None
 
@@ -104,6 +111,7 @@ def _load_provider_registry() -> dict[str, ProviderConfig]:
                 source_dir_env=entry.get("source_dir_env"),
                 api_key_env=entry.get("api_key_env"),
                 vpn_service=entry.get("vpn_service"),
+                companion_services=entry.get("companion_services"),
                 sync_command=entry.get("sync_command"),
                 rebuild_command=entry.get("rebuild_command"),
             )
@@ -1181,6 +1189,13 @@ def _status_service_lines(compose_ps: str) -> list[str]:
     return lines
 
 
+def _provider_state(checks: dict[str, object], provider: ProviderConfig) -> str:
+    if not _service_is_running(checks, provider.app_service):
+        return "not running"
+    down = [s for s in provider.companion_services or [] if not _service_is_running(checks, s)]
+    return f"degraded (not running: {', '.join(down)})" if down else "running"
+
+
 def _status_provider_lines(checks: dict[str, object]) -> list[str]:
     """External-provider plugins from external-providers.local.yaml.
 
@@ -1196,7 +1211,7 @@ def _status_provider_lines(checks: dict[str, object]) -> list[str]:
         return []
     lines = ["External providers:"]
     for provider in sorted(providers.values(), key=lambda p: p.name):
-        state = "running" if _service_is_running(checks, provider.app_service) else "not running"
+        state = _provider_state(checks, provider)
         lines.append(f"  {provider.name}: {state} -- {provider.internal_url}")
     return lines
 
@@ -2163,7 +2178,7 @@ def handle_sync_external_provider_metadata(args: argparse.Namespace, config: obj
 
 @registry.command(
     "base restart-external-provider",
-    help="Restart a provider plugin's VPN sidecar (if any) and app together",
+    help="Restart a provider plugin's VPN sidecar (if any), everything sharing its network, and the app",
     configure=_configure_ep,
 )
 def handle_restart_external_provider(args: argparse.Namespace, config: object) -> int:
@@ -2177,10 +2192,13 @@ def handle_restart_external_provider(args: argparse.Namespace, config: object) -
     values = _load_lab_env()
     project_name = lab_common.project_name()
     extra_compose_files = [REPO_ROOT / provider.compose_file]
-    if provider.vpn_service:
-        _run_or_exit(values, project_name, "restart", provider.vpn_service, extra_compose_files=extra_compose_files)
-    _run_or_exit(values, project_name, "restart", provider.app_service, extra_compose_files=extra_compose_files)
-    restarted = [s for s in (provider.vpn_service, provider.app_service) if s]
+    # Sidecar first, then everything that shares its namespace: each must
+    # re-bind to the sidecar's new namespace instance, not the dead old one.
+    restarted = [
+        s for s in (provider.vpn_service, *(provider.companion_services or ()), provider.app_service) if s
+    ]
+    for service in restarted:
+        _run_or_exit(values, project_name, "restart", service, extra_compose_files=extra_compose_files)
     print(f"Restarted {', '.join(restarted)} for provider {provider.name!r}.", flush=True)
     return 0
 

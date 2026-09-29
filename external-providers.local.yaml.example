@@ -20,6 +20,11 @@ providers:
     internal_url: http://example-provider-vpn:8000
     app_service: example-provider-app  # service to `compose exec` for sync/rebuild, and to restart
     vpn_service: example-provider-vpn  # optional -- omit entirely for a provider with no VPN sidecar
+    # Optional -- other containers that share the VPN sidecar's namespace (network_mode: service:<vpn>)
+    # besides the app, e.g. a downloader that must egress through the same tunnel. They go network-dead
+    # when the sidecar is recreated just like the app, so `restart-external-provider` restarts them too
+    # and `status` reports the provider as degraded if one is down.
+    # companion_services: [example-provider-downloader]
     source_dir_env: FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_SOURCE_DIR  # var name this provider's overlay reads for build: context:
     api_key_env: FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_API_KEY  # var name in lab.env holding the bearer token FL sends
     sync_command: ["python", "-m", "app.metadata.sync"]  # optional -- omit if this provider has no sync step
