@@ -246,6 +246,14 @@ services:
       # Same named volume family-librarian writes into above -- this is the
       # shared ingest transport CWA-L-02 exercises, not two separate copies.
       - cwa-ingest:/cwa-book-ingest
+    # Only the start-up probe rate: the image's own test, interval and
+    # retries are kept (a partial override merges; verified on Compose 2.40 /
+    # Engine 29, 2026-09-30). The image probes every 5 s while starting, so a
+    # boot of 13 s vs 17.5 s (idle vs busy host, measured) cost a full extra
+    # 5 s in every CWA scenario; probing each second costs only the real delay.
+    healthcheck:
+      start_period: 120s
+      start_interval: 1s
 
   abs:
     profiles: [abs]

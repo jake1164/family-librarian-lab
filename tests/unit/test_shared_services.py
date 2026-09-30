@@ -118,3 +118,32 @@ def test_public_builtin_providers_are_off_at_boot_in_every_scenario() -> None:
 
     assert "MetadataProviders__Gutenberg__Enabled=${FAMILY_LIBRARIAN_GUTENBERG_PROVIDER_ENABLED:-false}" in text
     assert "MetadataProviders__LibriVox__Enabled=${FAMILY_LIBRARIAN_LIBRIVOX_PROVIDER_ENABLED:-false}" in text
+
+
+
+def _source_built_services_in_compose() -> set[str]:
+    services: set[str] = set()
+    current = None
+    in_services = False
+    for line in commands.COMPOSE_FILE.read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith(" "):
+            in_services = line.startswith("services:")
+            current = None
+            continue
+        if in_services and line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+            current = line.strip().rstrip(":")
+        elif current and "FAMILY_LIBRARIAN_SOURCE_DIR" in line and not line.lstrip().startswith("#"):
+            services.add(current)
+    return services
+
+
+def test_lab_run_rebuilds_every_image_built_from_the_product_source() -> None:
+    """A source-built image missing from SOURCE_BUILT_SERVICES is never rebuilt:
+    the sample-provider fixture kept a broken EPUB for a day after the fix."""
+    import inspect
+
+    declared = _source_built_services_in_compose()
+
+    assert declared, "found no source-built services; the compose scan is broken"
+    assert declared == set(commands.SOURCE_BUILT_SERVICES)
+    assert "*SOURCE_BUILT_SERVICES" in inspect.getsource(commands.handle_run)

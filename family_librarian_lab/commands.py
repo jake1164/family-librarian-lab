@@ -54,6 +54,12 @@ ALL_PROFILES = (
     # failing EXTPROV-02..04 at `up` (2026-09-30).
     clients.EXTERNAL_PROVIDER_PROFILE,
 )
+EXTERNAL_PROVIDER_FIXTURE_SERVICE = "external-provider-fixture"
+#: Every compose service built from FAMILY_LIBRARIAN_SOURCE_DIR; `lab run`
+#: rebuilds all of them. One left out keeps its first image forever: the
+#: sample-provider fixture ran a broken EPUB for a day after it was fixed
+#: (image dated 2026-09-30 02:10 still in use by the 20:43 run).
+SOURCE_BUILT_SERVICES = ("family-librarian", "migrate", EXTERNAL_PROVIDER_FIXTURE_SERVICE)
 SHARED_CLAMAV_PROFILE = "shared-clamav"
 SHARED_CLAMAV_PROJECT = "family-librarian-lab-shared-clamav"
 DEFAULT_SHARED_CLAMAV_HOST_PORT = "13310"
@@ -2687,7 +2693,10 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         _check_no_conflicting_containers(values)
         if not args.skip_build:
             build_project = lab_common.project_name()
-            _run_or_exit(values, build_project, "build", "family-librarian", "migrate")
+            _run_or_exit(
+                values, build_project, "build", *SOURCE_BUILT_SERVICES,
+                profiles=(PROFILE, clients.EXTERNAL_PROVIDER_PROFILE),
+            )
 
         selector = args.case.lower() if args.case else args.test_group
         run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}-suites-{selector}"
