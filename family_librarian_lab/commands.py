@@ -1144,6 +1144,10 @@ def _compose_service_health(values: dict[str, str], project_name: str) -> tuple[
         "family-librarian": ("running", "healthy"),
         "migrate": ("exited", None),
     }
+    if values.get("FAMILY_LIBRARIAN_LOCAL_DB_PROFILE") == _DISABLED_LOCAL_DB_PROFILE:
+        # Shared-database scenario: the project has neither service by design;
+        # FL's own /health/ready (checked separately) covers database access.
+        del expected["postgres"], expected["migrate"]
     healthy = result.returncode == 0 and all(
         isinstance(services.get(name), dict)
         and services[name].get("state") == state
@@ -1316,11 +1320,134 @@ def teardown_shared_clamav() -> None:
     teardown_fn as a non-fatal warning, but there is no reason to also make
     it a hard compose failure here).
     """
+    if _RUN_OWNS_SHARED_SERVICES:
+        # `lab run` keeps ClamAV up across suites and tears it down once at
+        # the end (see handle_run). Rebuilding it, volume and all, at every
+        # suite boundary cost 23-43 s each time (measured 2026-09-30).
+        return
+    _stop_shared_clamav()
+
+
+def _stop_shared_clamav() -> None:
     values = _load_lab_env()
     _compose(
         values, SHARED_CLAMAV_PROJECT, "down", "--volumes", "--remove-orphans",
         profiles=(SHARED_CLAMAV_PROFILE,), capture=True,
     )
+
+
+#: True while `lab run` owns the shared services' lifetime; suite teardowns
+#: then leave them running for the next suite.
+_RUN_OWNS_SHARED_SERVICES = False
+
+SHARED_POSTGRES_PROFILE = "shared-postgres"
+SHARED_POSTGRES_PROJECT = "family-librarian-lab-shared-postgres"
+SHARED_POSTGRES_SERVICE = "shared-postgres"
+DEFAULT_SHARED_POSTGRES_HOST_PORT = "15432"
+TEMPLATE_DATABASE = "fl_template"
+#: A profile no scenario enables, so a shared-database scenario starts neither
+#: its own `postgres` nor `migrate` (see compose.base.yaml).
+_DISABLED_LOCAL_DB_PROFILE = "local-db"
+
+
+def _docker_bridge_gateway() -> str:
+    """The default bridge's gateway address, reachable from any container.
+
+    The shared database is published only there, so scenario containers can
+    reach it and the LAN cannot.
+    """
+    result = subprocess.run(
+        ["docker", "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"],
+        capture_output=True, text=True, check=False,
+    )
+    address = result.stdout.strip()
+    if result.returncode or not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", address):
+        raise SystemExit(f"Could not determine the Docker bridge gateway address: {result.stderr.strip()}")
+    return address
+
+
+def _shared_psql(values: dict[str, str], sql: str) -> None:
+    result = _compose(
+        values, SHARED_POSTGRES_PROJECT, "exec", "-T", SHARED_POSTGRES_SERVICE,
+        "psql", "-v", "ON_ERROR_STOP=1", "-U", "family_librarian", "-d", "postgres", "-c", sql,
+        profiles=(SHARED_POSTGRES_PROFILE,), capture=True,
+    )
+    if result.returncode:
+        raise AssertionError(f"Shared Postgres command failed ({sql}): {_redact(result.stderr, values).strip()}")
+
+
+def ensure_shared_postgres(values: dict[str, str]) -> dict[str, str]:
+    """Start one Postgres for the run and migrate a template database into it.
+
+    Always starts clean (a stale server from a crashed run could hold an old
+    template), and migrates with the image this run just built, so every
+    scenario starts from exactly the schema under test. Running migrations
+    once per run against an empty database is the same coverage the old
+    per-scenario `migrate` container gave. Returns the environment a scenario
+    needs, minus its own database name (see _BaseScenario).
+    """
+    gateway = values.get("FAMILY_LIBRARIAN_SHARED_POSTGRES_BIND") or _docker_bridge_gateway()
+    port = values.get("FAMILY_LIBRARIAN_SHARED_POSTGRES_HOST_PORT") or DEFAULT_SHARED_POSTGRES_HOST_PORT
+    env = {**values, "FAMILY_LIBRARIAN_SHARED_POSTGRES_BIND": gateway, "FAMILY_LIBRARIAN_SHARED_POSTGRES_HOST_PORT": port}
+    profiles = (SHARED_POSTGRES_PROFILE,)
+    _run_or_exit(env, SHARED_POSTGRES_PROJECT, "down", "--volumes", "--remove-orphans", profiles=profiles)
+    _run_or_exit(env, SHARED_POSTGRES_PROJECT, "up", "-d", "--wait", SHARED_POSTGRES_SERVICE, profiles=profiles)
+    _shared_psql(env, f'CREATE DATABASE "{TEMPLATE_DATABASE}"')
+
+    # The product's own --migrate entry point, on the shared server's network
+    # by service name, not through the published port.
+    image = values.get("FAMILY_LIBRARIAN_IMAGE", "family-librarian-lab:dev")
+    password = values["FAMILY_LIBRARIAN_POSTGRES_PASSWORD"]
+    migrate = subprocess.run(
+        [
+            "docker", "run", "--rm", "--network", f"{SHARED_POSTGRES_PROJECT}_default",
+            "-e", "ConnectionStrings__FamilyLibrarian="
+            f"Host={SHARED_POSTGRES_SERVICE};Port=5432;Database={TEMPLATE_DATABASE};"
+            f"Username=family_librarian;Password={password}",
+            image, "--migrate",
+        ],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    if migrate.returncode:
+        raise SystemExit(
+            f"Migrating the shared template database failed (exit {migrate.returncode}):\n"
+            f"{_redact(migrate.stdout + migrate.stderr, values)}"
+        )
+    return {
+        "FAMILY_LIBRARIAN_LOCAL_DB_PROFILE": _DISABLED_LOCAL_DB_PROFILE,
+        "FAMILY_LIBRARIAN_DB_HOST": gateway,
+        "FAMILY_LIBRARIAN_DB_PORT": port,
+        "FAMILY_LIBRARIAN_SHARED_POSTGRES_BIND": gateway,
+        "FAMILY_LIBRARIAN_SHARED_POSTGRES_HOST_PORT": port,
+    }
+
+
+def create_scenario_database(values: dict[str, str], database: str) -> None:
+    """A fresh, already-migrated database for one scenario; sub-second."""
+    _shared_psql(values, f'CREATE DATABASE "{database}" TEMPLATE "{TEMPLATE_DATABASE}"')
+
+
+def drop_scenario_database(values: dict[str, str], database: str) -> None:
+    """Best-effort: the whole server is discarded at the end of the run anyway."""
+    try:
+        _shared_psql(values, f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
+    except AssertionError as error:
+        print(f"Warning: {error}", file=sys.stderr, flush=True)
+
+
+def _stop_shared_postgres(values: dict[str, str]) -> None:
+    _compose(
+        values, SHARED_POSTGRES_PROJECT, "down", "--volumes", "--remove-orphans",
+        profiles=(SHARED_POSTGRES_PROFILE,), capture=True,
+    )
+
+
+def _scenario_database_name(project_name: str) -> str:
+    """`fl_<case>_<timestamp>`: unique per scenario and under Postgres's 63-byte limit."""
+    name = "fl_" + project_name.removeprefix("family-librarian-lab-").replace("-", "_")
+    if not re.fullmatch(r"[a-z0-9_]{1,63}", name):
+        raise ValueError(f"Cannot derive a database name from project {project_name!r}")
+    return name
 
 
 def ensure_gutenberg_fixture_tls() -> dict[str, str]:
@@ -1562,6 +1689,7 @@ class _BaseScenario:
         profiles: Sequence[str] = (),
         extra_env: dict[str, str] | None = None,
         seed_readers: bool = False,
+        shared_database_env: dict[str, str] | None = None,
     ) -> None:
         # A per-instance merge, not a mutation of the shared `values` dict
         # every scenario is constructed from. A suite's own @SUITE.setup
@@ -1580,6 +1708,11 @@ class _BaseScenario:
         self._seed_readers = seed_readers
         suffix = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
         self.project_name = f"family-librarian-lab-{test_id.lower()}-{suffix}"
+        # None: this scenario brings up its own postgres + migrate.
+        self._database: str | None = None
+        if shared_database_env:
+            self._database = _scenario_database_name(self.project_name)
+            self._values = {**self._values, **shared_database_env, "FAMILY_LIBRARIAN_DB_NAME": self._database}
         self.api: FamilyLibrarianApi | None = None
         self.readiness_passed = False
         self.cwa_client: clients.CwaClient | None = None
@@ -1626,6 +1759,8 @@ class _BaseScenario:
             _run_or_exit(
                 self._values, self.project_name, "down", "--volumes", "--remove-orphans", *_SCENARIO_STOP_TIMEOUT, profiles=ALL_PROFILES
             )
+            if self._database is not None:
+                create_scenario_database(self._values, self._database)
             _run_or_exit(self._values, self.project_name, "up", "--wait", "--remove-orphans", profiles=self._profiles)
             checks, self.readiness_passed = _readiness(self._values, self.project_name)
             outcome = "pass" if self.readiness_passed else "fail"
@@ -1660,8 +1795,14 @@ class _BaseScenario:
                 )
                 if result.returncode:
                     print(_redact(result.stderr, self._values), file=sys.stderr, end="")
+                self._drop_database()
             raise
         return self
+
+    def _drop_database(self) -> None:
+        # After the project is down, so FL holds no connections to it.
+        if self._database is not None:
+            drop_scenario_database(self._values, self._database)
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
         if self._result_directory is not None and self.api is not None:
@@ -1680,6 +1821,7 @@ class _BaseScenario:
             )
             if result.returncode:
                 print(_redact(result.stderr, self._values), file=sys.stderr, end="")
+            self._drop_database()
         return False
 
     def stop_service(self, service_name: str) -> None:
@@ -1958,6 +2100,13 @@ class _BaseScenarioFactory:
         # seeded Kindle-testing readers (currently only test_cwa_local.py's
         # KIN-01/KIN-02); every other suite keeps the default False.
         self.seed_readers: bool = False
+        # Set once by handle_run from ensure_shared_postgres(); None means
+        # every scenario starts its own postgres + migrate (the old behavior).
+        self.shared_database_env: dict[str, str] | None = None
+        # Suite-scoped opt-out, same set/clear convention as seed_readers: a
+        # suite that needs its own database server (backup/restore runs
+        # pg_dump/pg_restore inside the scenario's `postgres`) sets this.
+        self.local_database: bool = False
 
     def __call__(self, test_id: str) -> _BaseScenario:
         return _BaseScenario(
@@ -1967,6 +2116,7 @@ class _BaseScenarioFactory:
             profiles=self.active_profiles,
             extra_env=self.extra_env,
             seed_readers=self.seed_readers,
+            shared_database_env=None if self.local_database else self.shared_database_env,
         )
 
 
@@ -2547,9 +2697,20 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         # suite's own required profile(s) while that suite's own
         # setup/case/teardown is what's actually running.
         factory = _BaseScenarioFactory(values, keep=args.keep)
-        summary = run_suites(
-            _scoped_for_run(suites, factory), results_dir=run_directory, label="Family Librarian Lab", scenario_factory=factory
-        )
+        global _RUN_OWNS_SHARED_SERVICES
+        _RUN_OWNS_SHARED_SERVICES = True
+        try:
+            factory.shared_database_env = ensure_shared_postgres(values)
+            summary = run_suites(
+                _scoped_for_run(suites, factory), results_dir=run_directory, label="Family Librarian Lab",
+                scenario_factory=factory,
+            )
+        finally:
+            _RUN_OWNS_SHARED_SERVICES = False
+            # --keep leaves kept scenarios pointing at these, so keep them too.
+            if not args.keep:
+                _stop_shared_postgres(values)
+                _stop_shared_clamav()
         all_results = summary.results
         failed = summary.failed
 

@@ -38,11 +38,16 @@ SUITE = suite("backup-restore", group="base", order=12, extra_profiles=(clients.
 @SUITE.setup
 def _setup(scenario_factory):
     scenario_factory.extra_env = ensure_shared_clamav()
+    # The product's backup/restore scripts run pg_dump/pg_restore inside the
+    # scenario's own `postgres` service, so this suite cannot use the run's
+    # shared database server.
+    scenario_factory.local_database = True
 
 
 @SUITE.teardown
-def _teardown():
+def _teardown(scenario_factory):
     teardown_shared_clamav()
+    scenario_factory.local_database = False
 
 
 def _run(ctx, test_id: str, operation: Callable[[], dict[str, object]]) -> None:

@@ -1,6 +1,11 @@
 services:
   postgres:
-    profiles: [base]
+    # Per-scenario database server. `lab run` normally leaves it out by
+    # setting FAMILY_LIBRARIAN_LOCAL_DB_PROFILE to a profile nobody enables,
+    # and gives each scenario its own database on `shared-postgres` below
+    # instead. Manual `up` and suites that need their own server (backup/
+    # restore runs pg_dump inside it) leave the variable unset and get this.
+    profiles: ["${FAMILY_LIBRARIAN_LOCAL_DB_PROFILE:-base}"]
     image: ${FAMILY_LIBRARIAN_POSTGRES_IMAGE:-postgres:17.6-alpine}
     environment:
       POSTGRES_DB: family_librarian
@@ -20,7 +25,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   migrate:
-    profiles: [base]
+    profiles: ["${FAMILY_LIBRARIAN_LOCAL_DB_PROFILE:-base}"]
     build:
       context: ${FAMILY_LIBRARIAN_SOURCE_DIR:?Set FAMILY_LIBRARIAN_SOURCE_DIR in lab.env}
       target: final
@@ -32,6 +37,38 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+
+  shared-postgres:
+    # One server for a whole `lab run` (see ensure_shared_postgres() in
+    # commands.py): migrations run once into `fl_template`, and each scenario
+    # gets `CREATE DATABASE ... TEMPLATE fl_template`, dropped when it ends.
+    # Replaces a per-scenario Postgres start plus a full migration run
+    # (~17 s of every scenario, measured 2026-09-30) with a sub-second copy.
+    # Each scenario still gets its own empty, freshly migrated database and a
+    # fresh FL process, so no state is shared between cases.
+    #
+    # Published only on the Docker bridge gateway address that
+    # ensure_shared_postgres() detects, so scenario containers can reach it
+    # but the LAN cannot. Durability is off: every database here is
+    # disposable, and the backup/restore suite keeps its own real server.
+    profiles: [shared-postgres]
+    image: ${FAMILY_LIBRARIAN_POSTGRES_IMAGE:-postgres:17.6-alpine}
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    environment:
+      POSTGRES_DB: family_librarian
+      POSTGRES_USER: family_librarian
+      POSTGRES_PASSWORD: ${FAMILY_LIBRARIAN_POSTGRES_PASSWORD:?Set FAMILY_LIBRARIAN_POSTGRES_PASSWORD in lab.env}
+    ports:
+      - "${FAMILY_LIBRARIAN_SHARED_POSTGRES_BIND:-127.0.0.1}:${FAMILY_LIBRARIAN_SHARED_POSTGRES_HOST_PORT:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U family_librarian -d family_librarian"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+      start_interval: 1s
+    volumes:
+      - shared-postgres-data:/var/lib/postgresql/data
 
   clamav:
     # Own profile, deliberately never included alongside `base`: ClamAV's
@@ -75,7 +112,7 @@ services:
       - "${FAMILY_LIBRARIAN_HOST_PORT:-18080}:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__FamilyLibrarian=Host=postgres;Port=5432;Database=family_librarian;Username=family_librarian;Password=${FAMILY_LIBRARIAN_POSTGRES_PASSWORD:?Set FAMILY_LIBRARIAN_POSTGRES_PASSWORD in lab.env}
+      - ConnectionStrings__FamilyLibrarian=Host=${FAMILY_LIBRARIAN_DB_HOST:-postgres};Port=${FAMILY_LIBRARIAN_DB_PORT:-5432};Database=${FAMILY_LIBRARIAN_DB_NAME:-family_librarian};Username=family_librarian;Password=${FAMILY_LIBRARIAN_POSTGRES_PASSWORD:?Set FAMILY_LIBRARIAN_POSTGRES_PASSWORD in lab.env}
       - MetadataProviders__OpenLibrary__ContactEmail=${FAMILY_LIBRARIAN_OPENLIBRARY_CONTACT_EMAIL:-}
       - MetadataProviders__OpenLibrary__RequestsPerSecond=${FAMILY_LIBRARIAN_OPENLIBRARY_REQUESTS_PER_SECOND:-1}
       - MetadataProviders__GoogleBooks__Enabled=${FAMILY_LIBRARIAN_GOOGLE_BOOKS_ENABLED:-false}
@@ -166,10 +203,15 @@ services:
       # a given scenario, so there's no real benefit to merging them.
       - ${FAMILY_LIBRARIAN_SMTP_CA_BUNDLE:-./runtime/smtp-tls/ca-bundle.pem}:/etc/ssl/lab-smtp-ca-bundle.pem:ro
     depends_on:
+      # required: false -- with a shared database the scenario enables
+      # neither service (see `postgres` above), and FL connects to its own
+      # already-migrated database on shared-postgres instead.
       postgres:
         condition: service_healthy
+        required: false
       migrate:
         condition: service_completed_successfully
+        required: false
       # No clamav entry: it's a separate, suite-shared container outside this
       # project now (see the `clamav` service comment above), so Compose has
       # no dependency to express here. family-librarian's own /health/ready
@@ -452,6 +494,7 @@ services:
 
 volumes:
   postgres-data:
+  shared-postgres-data:
   clamav-data:
   family-librarian-data:
   cwa-ingest:
