@@ -48,6 +48,11 @@ ALL_PROFILES = (
     clients.GUTENBERG_PROFILE,
     clients.SMTP_PROFILE,
     clients.MATRIX_PROFILE,
+    # Must list every profile a scenario can enable: `down` only removes
+    # services in an active profile, so a missing one leaks its containers.
+    # This one was missing, and EXTPROV-01's fixture kept host port 18091,
+    # failing EXTPROV-02..04 at `up` (2026-09-30).
+    clients.EXTERNAL_PROVIDER_PROFILE,
 )
 SHARED_CLAMAV_PROFILE = "shared-clamav"
 SHARED_CLAMAV_PROJECT = "family-librarian-lab-shared-clamav"

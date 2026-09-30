@@ -89,3 +89,22 @@ def test_a_suite_teardown_leaves_clamav_up_while_the_run_owns_it(monkeypatch) ->
     monkeypatch.setattr(commands, "_RUN_OWNS_SHARED_SERVICES", False)
     commands.teardown_shared_clamav()
     assert stopped == [True]
+
+
+def test_teardown_profiles_cover_every_scenario_profile_in_compose() -> None:
+    """`down` only removes services in an active profile. A profile missing
+    from ALL_PROFILES leaks its containers and their host ports into every
+    later case (EXTPROV-02..04 failed this way on 2026-09-30)."""
+    import re
+
+    text = commands.COMPOSE_FILE.read_text(encoding="utf-8")
+    declared = set()
+    for match in re.finditer(r"^\s+profiles:\s*\[([^\]]*)\]", text, re.MULTILINE):
+        for item in match.group(1).split(","):
+            name = item.strip().strip('"').strip("'")
+            if name and not name.startswith("${"):
+                declared.add(name)
+    run_scoped = {commands.SHARED_CLAMAV_PROFILE, commands.SHARED_POSTGRES_PROFILE}
+
+    missing = declared - run_scoped - set(commands.ALL_PROFILES)
+    assert not missing, f"profiles a scenario can enable but teardown never removes: {sorted(missing)}"

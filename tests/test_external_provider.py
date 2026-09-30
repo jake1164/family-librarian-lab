@@ -20,8 +20,11 @@ search + ExternalProviderMatchVerifier's re-verification, DirectAcquisitionServi
 gates, the real AcquisitionJobPollingHostedService background poller, the
 real security pipeline, and (EXTPROV-01) a real landing in CWA.
 
-Every candidate this suite uses resolves as a BookMatchBasis.Identifier
-match, not TitleAuthor: confirmed against real code
+Every candidate this suite uses resolves as a confident match -- Identifier or
+StrictTitleAuthor, never TitleAuthor. Since 2026-09-21 FL reports
+StrictTitleAuthor when the provider's candidate carries no identifier (these
+fixtures carry none); both pass every confidence gate alike
+(DirectAcquisitionService, ExternalProviderRecheckService). Originally confirmed against real code
 (ExternalProviderMatchVerifier.VerifyAsync + DeterministicBookMatcher.ResolveUnique)
 that basis depends only on the *request's own* catalog Work carrying an
 ISBN and the provider's search returning exactly one title/author-corroborated
@@ -66,6 +69,9 @@ JACK_RYAN_OMNIBUS_SLUG = "jack-ryan-omnibus"
 SAMPLE_PROVIDER_ID = "sample-provider"
 SAMPLE_PROVIDER_DISPLAY_NAME = "Sample Provider (lab fixture)"
 
+
+#: Bases FL auto-acquires without a low-confidence confirmation.
+CONFIDENT_MATCH_BASES = ("Identifier", "StrictTitleAuthor")
 
 @SUITE.setup
 def _setup(scenario_factory):
@@ -164,8 +170,8 @@ def happy_path_acquisition_lands_in_cwa(ctx, scenario_factory):
             option = _sample_provider_ebook_option(options)
             if option is None:
                 raise AssertionError(f"No sample-provider ebook option was found: {options!r}")
-            if option.get("matchBasis") != "Identifier":
-                raise AssertionError(f"Expected an Identifier-basis match: {option!r}")
+            if option.get("matchBasis") not in CONFIDENT_MATCH_BASES:
+                raise AssertionError(f"Expected a confident (non-TitleAuthor) match: {option!r}")
 
             acquired = scenario.api.acquire_direct(
                 request_id, format_id, option["providerId"], option["providerResultId"])
@@ -288,7 +294,7 @@ def collection_release_is_rejected_despite_an_identifier_match(ctx, scenario_fac
     """The fixture's "jack-ryan-omnibus" candidate declares isCollection=true.
     ExternalReleasePolicy must flag it and DirectAcquisitionService must
     refuse it -- and, per this module's docstring, this candidate is an
-    Identifier-basis match, so the refusal must be the release-policy gate
+    confident match (see CONFIDENT_MATCH_BASES), so the refusal must be the release-policy gate
     itself, not a side effect of the separate low-confidence-match gate
     (which never fires here)."""
     def operation() -> dict[str, object]:
@@ -300,8 +306,8 @@ def collection_release_is_rejected_despite_an_identifier_match(ctx, scenario_fac
             option = _sample_provider_ebook_option(options)
             if option is None:
                 raise AssertionError(f"No sample-provider ebook option was found: {options!r}")
-            if option.get("matchBasis") != "Identifier":
-                raise AssertionError(f"Expected an Identifier-basis match: {option!r}")
+            if option.get("matchBasis") not in CONFIDENT_MATCH_BASES:
+                raise AssertionError(f"Expected a confident (non-TitleAuthor) match: {option!r}")
 
             acquired = scenario.api.acquire_direct(
                 request_id, format_id, option["providerId"], option["providerResultId"])
