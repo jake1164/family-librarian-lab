@@ -12,6 +12,10 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+      # Probe every second while starting instead of waiting a full interval:
+      # Postgres is ready in ~2 s but was reported healthy only at the first
+      # 5 s probe, and migrate/FL are queued behind it.
+      start_interval: 1s
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
@@ -132,7 +136,11 @@ services:
       interval: 3s
       timeout: 5s
       retries: 30
-      start_period: 5s
+      # FL needs ~6 s to listen. Failed probes inside start_period do not count
+      # toward retries, so a longer period with a 1 s start_interval reports
+      # healthy about 1 s after it is up instead of up to 3 s.
+      start_period: 20s
+      start_interval: 1s
     volumes:
       - family-librarian-data:/data/family-librarian
       # Always mounted, even when neither client profile is active: harmless
@@ -283,6 +291,7 @@ services:
       timeout: 5s
       retries: 20
       start_period: 5s
+      start_interval: 1s
 
   # Real, deployed instance of Family Librarian's own protocol-v2
   # conformance fixture (repos/family-librarian/samples/
@@ -317,6 +326,7 @@ services:
       timeout: 5s
       retries: 20
       start_period: 5s
+      start_interval: 1s
 
   # Real, disposable SMTP server for the smtp suite -- family-librarian's own
   # test suite never exercises MailKitSmtpTestSender for real (it's stubbed
@@ -359,6 +369,7 @@ services:
       timeout: 5s
       retries: 20
       start_period: 5s
+      start_interval: 1s
 
   # CWA's own outbound relay for its "send to e-reader" route (the mailpit
   # service above is not reused here): CWA is a container this lab doesn't
@@ -391,6 +402,7 @@ services:
       timeout: 5s
       retries: 20
       start_period: 5s
+      start_interval: 1s
 
   # Real, disposable Matrix homeserver (Continuwuity) for the matrix suite --
   # proves HttpMatrixClient/MatrixOutboundCommunicationProvider/

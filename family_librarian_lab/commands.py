@@ -1526,6 +1526,11 @@ def ensure_smtp_fixture_tls() -> dict[str, str]:
 #: public service.
 _LIVE_PROVIDERS_OFF_BY_DEFAULT = ("librivox",)
 
+#: A scenario's containers and volumes are thrown away, so waiting Docker's
+#: default 10 s for each container to exit on SIGTERM buys nothing. Logs and
+#: the API trace are captured before teardown. Measured on 2026-09-30: cases
+#: with almost no work (CWA-L-08/09/10) spent ~10 s of a ~34 s run tearing down.
+_SCENARIO_STOP_TIMEOUT = ("--timeout", "2")
 
 def _disable_live_providers(api: FamilyLibrarianApi) -> None:
     for provider_id in _LIVE_PROVIDERS_OFF_BY_DEFAULT:
@@ -1619,7 +1624,7 @@ class _BaseScenario:
         # nothing behind, `--keep` still honored.
         try:
             _run_or_exit(
-                self._values, self.project_name, "down", "--volumes", "--remove-orphans", profiles=ALL_PROFILES
+                self._values, self.project_name, "down", "--volumes", "--remove-orphans", *_SCENARIO_STOP_TIMEOUT, profiles=ALL_PROFILES
             )
             _run_or_exit(self._values, self.project_name, "up", "--wait", "--remove-orphans", profiles=self._profiles)
             checks, self.readiness_passed = _readiness(self._values, self.project_name)
@@ -1650,7 +1655,7 @@ class _BaseScenario:
         except BaseException:
             if not self._keep:
                 result = _compose(
-                    self._values, self.project_name, "down", "--volumes", "--remove-orphans",
+                    self._values, self.project_name, "down", "--volumes", "--remove-orphans", *_SCENARIO_STOP_TIMEOUT,
                     profiles=ALL_PROFILES, capture=True,
                 )
                 if result.returncode:
@@ -1670,7 +1675,7 @@ class _BaseScenario:
                 _redact(logs.stdout + logs.stderr, self._values), encoding="utf-8")
         if not self._keep:
             result = _compose(
-                self._values, self.project_name, "down", "--volumes", "--remove-orphans",
+                self._values, self.project_name, "down", "--volumes", "--remove-orphans", *_SCENARIO_STOP_TIMEOUT,
                 profiles=ALL_PROFILES, capture=True,
             )
             if result.returncode:
