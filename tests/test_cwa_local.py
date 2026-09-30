@@ -67,7 +67,7 @@ def configuration_probes_are_independent(ctx, scenario_factory):
             )
             opds = scenario.api.test_cwa_opds(
                 {
-                    "opdsBaseUrl": clients.CWA_INTERNAL_URL,
+                    "opdsBaseUrl": scenario.cwa_internal_url,
                     "opdsUsername": clients.CWA_DEFAULT_USERNAME,
                     "opdsPassword": clients.CWA_DEFAULT_PASSWORD,
                 }
@@ -429,7 +429,7 @@ def enabling_requires_opds_url_and_a_passing_test(ctx, scenario_factory):
             if not any("OPDS catalog URL is required" in message for message in no_opds_errors):
                 raise AssertionError(f"Expected the OPDS-required message, got {no_opds_errors!r}")
 
-            restored = put_settings(opds_base_url=clients.CWA_INTERNAL_URL)
+            restored = put_settings(opds_base_url=scenario.cwa_internal_url)
             if restored.status != 200:
                 raise AssertionError(f"Could not restore the OPDS URL: {restored!r}")
 
@@ -493,7 +493,7 @@ def opds_test_reports_a_rejected_credential(ctx, scenario_factory):
 
             probe = scenario.api.test_cwa_opds(
                 {
-                    "opdsBaseUrl": clients.CWA_INTERNAL_URL,
+                    "opdsBaseUrl": scenario.cwa_internal_url,
                     "opdsUsername": clients.CWA_DEFAULT_USERNAME,
                     "opdsPassword": "definitely-the-wrong-password",
                 }

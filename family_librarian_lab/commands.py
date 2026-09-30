@@ -770,7 +770,7 @@ def _wire_destinations(
 
         api.configure_cwa_local(
             local_ingest_path=clients.CWA_INGEST_CONTAINER_PATH,
-            opds_base_url=clients.CWA_INTERNAL_URL,
+            opds_base_url=cwa_internal_url(values),
             opds_username=clients.CWA_DEFAULT_USERNAME,
             opds_password=clients.CWA_DEFAULT_PASSWORD,
             # opds_base_url is the Docker-internal hostname Family Librarian's
@@ -824,7 +824,7 @@ def _wire_destinations(
             sftp_ingest_path=clients.CWA_SFTP_INGEST_PATH,
             auth_mode="PrivateKey" if is_key_mode else "Password",
             credential=credential,
-            opds_base_url=clients.CWA_INTERNAL_URL,
+            opds_base_url=cwa_internal_url(values),
             opds_username=clients.CWA_DEFAULT_USERNAME,
             opds_password=clients.CWA_DEFAULT_PASSWORD,
             public_url=_public_url(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT"),
@@ -1453,6 +1453,130 @@ def _stop_shared_postgres(values: dict[str, str]) -> None:
     )
 
 
+SHARED_CWA_PROJECT = "family-librarian-lab-shared-cwa"
+#: Services that live in the shared CWA project instead of each scenario's.
+SHARED_CWA_SERVICES = (clients.CWA_SERVICE, clients.CWA_MAILPIT_SERVICE)
+SHARED_CWA_INGEST_DIR = REPO_ROOT / "runtime" / "shared-cwa-ingest"
+#: Scenario profiles that include CWA; only those scenarios use the shared one.
+_CWA_SCENARIO_PROFILES = (clients.CWA_PROFILE, clients.CWA_SFTP_PROFILE_KEY, clients.CWA_SFTP_PROFILE_PASSWORD)
+_DISABLED_CWA_PROFILE = "shared-cwa-elsewhere"
+
+# Runs inside the shared CWA as its own user. Clears the watched ingest folder
+# first so nothing new is imported mid-reset, removes every book through
+# Calibre's own CLI (CWA's catalog reflects removals immediately; measured
+# 0.96 s on 2026-09-30), then reports what is left so the lab can refuse to
+# run a case against a library that is not empty.
+_CWA_RESET_SCRIPT = r"""
+set -e
+find /cwa-book-ingest -mindepth 1 -delete
+ids=$(calibredb list --library-path /calibre-library -f id --for-machine 2>/dev/null   | python3 -c 'import json,sys; print(",".join(str(b["id"]) for b in json.load(sys.stdin)))')
+if [ -n "$ids" ]; then calibredb remove --permanent --library-path /calibre-library "$ids" >/dev/null 2>&1; fi
+calibredb list --library-path /calibre-library -f id --for-machine 2>/dev/null   | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'
+"""
+
+
+def cwa_internal_url(values: dict[str, str]) -> str:
+    """The CWA address Family Librarian's container uses. `cwa:8083` only
+    resolves inside a scenario's own project; the shared CWA is reached
+    through the host gateway, where it publishes its port."""
+    if values.get("FAMILY_LIBRARIAN_SHARED_CWA_ACTIVE"):
+        return f"http://lab-host-gateway:{_port(values, clients.CWA_DEFAULT_HOST_PORT, 'FAMILY_LIBRARIAN_CWA_HOST_PORT')}"
+    return clients.CWA_INTERNAL_URL
+
+
+def shared_cwa_enabled(values: dict[str, str]) -> bool:
+    """On by default; FAMILY_LIBRARIAN_SHARED_CWA=false in lab.env restores a
+    fresh CWA per scenario (the old behaviour) without a code change."""
+    return values.get("FAMILY_LIBRARIAN_SHARED_CWA", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _shared_cwa_project_values(values: dict[str, str]) -> dict[str, str]:
+    """Environment for commands against the shared CWA project itself: the
+    lab's normal values (so its CWA profiles stay enabled) plus the shared
+    ingest directory. Never the scenario overrides, which disable CWA."""
+    return {**values, "FAMILY_LIBRARIAN_CWA_INGEST_SOURCE": str(SHARED_CWA_INGEST_DIR)}
+
+
+def ensure_shared_cwa(values: dict[str, str]) -> dict[str, str] | None:
+    """Start one CWA (and its mail relay) for the whole run.
+
+    Returns the environment a CWA scenario merges in, or None when disabled.
+    Every scenario still starts from an empty library (reset_shared_cwa());
+    what it no longer pays for is CWA's ~15 s first boot.
+    """
+    if not shared_cwa_enabled(values):
+        return None
+    project_values = _shared_cwa_project_values(values)
+    profiles = (clients.CWA_PROFILE,)
+    _run_or_exit(project_values, SHARED_CWA_PROJECT, "down", "--volumes", "--remove-orphans", profiles=profiles)
+    _prepare_shared_cwa_ingest_dir(values)
+    _run_or_exit(project_values, SHARED_CWA_PROJECT, "up", "-d", "--wait", *SHARED_CWA_SERVICES, profiles=profiles)
+    return {
+        "FAMILY_LIBRARIAN_SCENARIO_CWA_PROFILE": _DISABLED_CWA_PROFILE,
+        "FAMILY_LIBRARIAN_SCENARIO_CWA_SFTP_KEY_PROFILE": _DISABLED_CWA_PROFILE,
+        "FAMILY_LIBRARIAN_SCENARIO_CWA_SFTP_PASSWORD_PROFILE": _DISABLED_CWA_PROFILE,
+        "FAMILY_LIBRARIAN_CWA_INGEST_SOURCE": str(SHARED_CWA_INGEST_DIR),
+        "FAMILY_LIBRARIAN_SHARED_CWA_ACTIVE": "1",
+    }
+
+
+def _prepare_shared_cwa_ingest_dir(values: dict[str, str]) -> None:
+    """An empty host directory owned by the uid FL, CWA and the SFTP sidecars
+    all write as (1654). Ownership is set from a container because the lab
+    user cannot chown to another uid."""
+    SHARED_CWA_INGEST_DIR.mkdir(parents=True, exist_ok=True)
+    image = values.get("FAMILY_LIBRARIAN_CWA_IMAGE") or clients.CWA_DEFAULT_IMAGE
+    uid = str(clients.CWA_SFTP_UID_GID)
+    result = subprocess.run(
+        [
+            "docker", "run", "--rm", "--entrypoint", "sh", "-v", f"{SHARED_CWA_INGEST_DIR}:/ingest", image,
+            "-c", f"find /ingest -mindepth 1 -delete && chown {uid}:{uid} /ingest && chmod 775 /ingest",
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode:
+        raise SystemExit(f"Could not prepare the shared CWA ingest directory: {result.stderr.strip()}")
+
+
+def reset_shared_cwa(values: dict[str, str]) -> None:
+    """Give the next case an empty, running CWA and an empty CWA mail relay.
+
+    `up --wait` first: a previous case may have stopped CWA (fault cases do)
+    and failed before starting it again; it is a no-op when already running.
+    """
+    project_values = _shared_cwa_project_values(values)
+    profiles = (clients.CWA_PROFILE,)
+    _run_or_exit(project_values, SHARED_CWA_PROJECT, "up", "-d", "--wait", *SHARED_CWA_SERVICES, profiles=profiles)
+    remaining = ""
+    # An ingest a previous case started can land between the removal and the
+    # count, so retry a few times before refusing to run the case.
+    for _ in range(5):
+        result = _compose(
+            project_values, SHARED_CWA_PROJECT, "exec", "-T", "-u", str(clients.CWA_SFTP_UID_GID),
+            "-e", "HOME=/tmp", clients.CWA_SERVICE, "sh", "-c", _CWA_RESET_SCRIPT,
+            profiles=profiles, capture=True,
+        )
+        remaining = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+        if result.returncode == 0 and remaining == "0":
+            break
+        time.sleep(1)
+    else:
+        raise AssertionError(
+            f"Could not empty the shared CWA library (remaining={remaining!r}): {_redact(result.stderr, values).strip()}"
+        )
+    mailpit = clients.MailpitClient(
+        _client_host_base(values, clients.CWA_MAILPIT_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_MAILPIT_HOST_PORT")
+    )
+    mailpit.clear()
+
+
+def _stop_shared_cwa(values: dict[str, str]) -> None:
+    _compose(
+        _shared_cwa_project_values(values), SHARED_CWA_PROJECT, "down", "--volumes", "--remove-orphans",
+        *_SCENARIO_STOP_TIMEOUT, profiles=(clients.CWA_PROFILE,), capture=True,
+    )
+
+
 def _scenario_database_name(project_name: str) -> str:
     """`fl_<case>_<timestamp>`: unique per scenario and under Postgres's 63-byte limit."""
     name = "fl_" + project_name.removeprefix("family-librarian-lab-").replace("-", "_")
@@ -1701,6 +1825,7 @@ class _BaseScenario:
         extra_env: dict[str, str] | None = None,
         seed_readers: bool = False,
         shared_database_env: dict[str, str] | None = None,
+        shared_cwa_env: dict[str, str] | None = None,
     ) -> None:
         # A per-instance merge, not a mutation of the shared `values` dict
         # every scenario is constructed from. A suite's own @SUITE.setup
@@ -1724,6 +1849,13 @@ class _BaseScenario:
         if shared_database_env:
             self._database = _scenario_database_name(self.project_name)
             self._values = {**self._values, **shared_database_env, "FAMILY_LIBRARIAN_DB_NAME": self._database}
+        # The lab's own values, before any scenario override: what commands
+        # against the shared CWA project need.
+        self._lab_values = {**values, **(extra_env or {})}
+        self._shared_cwa = bool(shared_cwa_env) and any(p in _CWA_SCENARIO_PROFILES for p in profiles)
+        if self._shared_cwa:
+            self._values = {**self._values, **(shared_cwa_env or {})}
+        self._started_at = datetime.now(UTC)
         self.api: FamilyLibrarianApi | None = None
         self.readiness_passed = False
         self.cwa_client: clients.CwaClient | None = None
@@ -1772,6 +1904,8 @@ class _BaseScenario:
             )
             if self._database is not None:
                 create_scenario_database(self._values, self._database)
+            if self._shared_cwa:
+                reset_shared_cwa(self._lab_values)
             _run_or_exit(self._values, self.project_name, "up", "--wait", "--remove-orphans", profiles=self._profiles)
             checks, self.readiness_passed = _readiness(self._values, self.project_name)
             outcome = "pass" if self.readiness_passed else "fail"
@@ -1823,8 +1957,17 @@ class _BaseScenario:
             # them before teardown so failures retain acquisition/scan evidence.
             logs = _compose(self._values, self.project_name, "logs", "--no-color",
                             profiles=ALL_PROFILES, capture=True)
-            (self._result_directory / "compose-logs.txt").write_text(
-                _redact(logs.stdout + logs.stderr, self._values), encoding="utf-8")
+            text = logs.stdout + logs.stderr
+            if self._shared_cwa:
+                # CWA lives in the shared project; keep this case's slice of
+                # its log with the case, where failures are investigated.
+                shared = _compose(
+                    _shared_cwa_project_values(self._lab_values), SHARED_CWA_PROJECT, "logs", "--no-color",
+                    "--since", self._started_at.strftime("%Y-%m-%dT%H:%M:%SZ"), *SHARED_CWA_SERVICES,
+                    profiles=(clients.CWA_PROFILE,), capture=True,
+                )
+                text += "\n# ---- shared CWA project, this case only ----\n" + shared.stdout + shared.stderr
+            (self._result_directory / "compose-logs.txt").write_text(_redact(text, self._values), encoding="utf-8")
         if not self._keep:
             result = _compose(
                 self._values, self.project_name, "down", "--volumes", "--remove-orphans", *_SCENARIO_STOP_TIMEOUT,
@@ -1835,14 +1978,30 @@ class _BaseScenario:
             self._drop_database()
         return False
 
+    @property
+    def cwa_internal_url(self) -> str:
+        """What a case must give FL as the CWA/OPDS address (see cwa_internal_url())."""
+        return cwa_internal_url(self._values)
+
+    def _target(self, service_name: str) -> tuple[dict[str, str], str, tuple[str, ...]]:
+        """(values, project, profiles) for Compose commands aimed at a service:
+        the shared CWA project for CWA and its relay when this scenario uses
+        the shared CWA, otherwise this scenario's own project."""
+        if self._shared_cwa and service_name in SHARED_CWA_SERVICES:
+            return _shared_cwa_project_values(self._lab_values), SHARED_CWA_PROJECT, (clients.CWA_PROFILE,)
+        return self._values, self.project_name, self._profiles
+
     def stop_service(self, service_name: str) -> None:
         """Stop one service in this scenario's isolated Compose project.
 
         Fault scenarios deliberately use Compose lifecycle operations rather
         than mocks, so the same helper works for ClamAV, Family Librarian,
-        CWA, Audiobookshelf, and either SFTP sidecar.
+        CWA, Audiobookshelf, and either SFTP sidecar. CWA is the run's shared
+        instance when enabled; the next case's reset starts it again if a case
+        leaves it stopped.
         """
-        _run_or_exit(self._values, self.project_name, "stop", service_name, profiles=self._profiles)
+        values, project, profiles = self._target(service_name)
+        _run_or_exit(values, project, "stop", service_name, profiles=profiles)
 
     def kill_service(self, service_name: str) -> None:
         """Abruptly terminate one disposable scenario service.
@@ -1851,11 +2010,13 @@ class _BaseScenario:
         shutdown window. Fault tests use this only when they need a genuine
         in-flight transport disconnect.
         """
-        _run_or_exit(self._values, self.project_name, "kill", service_name, profiles=self._profiles)
+        values, project, profiles = self._target(service_name)
+        _run_or_exit(values, project, "kill", service_name, profiles=profiles)
 
     def start_service(self, service_name: str) -> None:
-        _run_or_exit(self._values, self.project_name, "up", "--wait", service_name, profiles=self._profiles)
-        _wait_for_service(self._values, self.project_name, service_name)
+        values, project, profiles = self._target(service_name)
+        _run_or_exit(values, project, "up", "--wait", service_name, profiles=profiles)
+        _wait_for_service(values, project, service_name)
 
     def restart_service(self, service_name: str) -> None:
         self.stop_service(service_name)
@@ -1904,28 +2065,29 @@ class _BaseScenario:
             )
         return result.stdout
 
+    def _cwa_exec(self, *arguments: str) -> tuple[list[str], dict[str, str]]:
+        """`docker compose exec -T cwa ...` aimed at wherever this scenario's
+        CWA runs (its own project, or the run's shared one), with the
+        environment to run it in."""
+        values, project, profiles = self._target(clients.CWA_SERVICE)
+        command = [
+            "docker", "compose", "--env-file", str(LAB_ENV_FILE), "--project-name", project,
+            "--file", str(COMPOSE_FILE),
+        ]
+        for profile in profiles:
+            command += ["--profile", profile]
+        command += ["exec", "-T", clients.CWA_SERVICE, *arguments]
+        environment = os.environ.copy()
+        environment.update(values)
+        return command, environment
+
     def observe_cwa_ingest(self) -> _CwaIngestObserver:
         """Poll CWA's read-only view of the shared ingest volume.
 
         This deliberately observes only filenames and byte lengths.  CWA's
         OPDS catalog remains the proof of a successful import.
         """
-        command = [
-            "docker",
-            "compose",
-            "--env-file",
-            str(LAB_ENV_FILE),
-            "--project-name",
-            self.project_name,
-            "--file",
-            str(COMPOSE_FILE),
-        ]
-        for profile in self._profiles:
-            command += ["--profile", profile]
-        command += [
-            "exec",
-            "-T",
-            clients.CWA_SERVICE,
+        command, environment = self._cwa_exec(
             "sh",
             "-c",
             """
@@ -1940,9 +2102,7 @@ while kill -0 "$stopper" 2>/dev/null; do
   sleep 0.01
 done
 """,
-        ]
-        environment = os.environ.copy()
-        environment.update(self._values)
+        )
         observer = _CwaIngestObserver(
             subprocess.Popen(
                 command,
@@ -1965,18 +2125,7 @@ done
         """
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.epub", filename):
             raise ValueError("CWA seed filenames must be a simple .epub basename.")
-        command = [
-            "docker", "compose", "--env-file", str(LAB_ENV_FILE), "--project-name", self.project_name,
-            "--file", str(COMPOSE_FILE),
-        ]
-        for profile in self._profiles:
-            command += ["--profile", profile]
-        command += [
-            "exec", "-T", clients.CWA_SERVICE, "sh", "-c",
-            f"base64 -d > /cwa-book-ingest/{filename}",
-        ]
-        environment = os.environ.copy()
-        environment.update(self._values)
+        command, environment = self._cwa_exec("sh", "-c", f"base64 -d > /cwa-book-ingest/{filename}")
         result = subprocess.run(
             command,
             env=environment,
@@ -1991,18 +2140,10 @@ done
     def cwa_ingest_filenames(self) -> list[str]:
         """Read only the CWA-facing shared ingest mount for fault diagnostics.
         Catalog visibility remains the success assertion for every CWA test."""
-        command = [
-            "docker", "compose", "--env-file", str(LAB_ENV_FILE), "--project-name", self.project_name,
-            "--file", str(COMPOSE_FILE),
-        ]
-        for profile in self._profiles:
-            command += ["--profile", profile]
-        command += [
-            "exec", "-T", clients.CWA_SERVICE, "sh", "-c",
+        command, environment = self._cwa_exec(
+            "sh", "-c",
             "for path in /cwa-book-ingest/.*.uploading /cwa-book-ingest/*.epub; do [ -f \"$path\" ] && basename \"$path\"; done; exit 0",
-        ]
-        environment = os.environ.copy()
-        environment.update(self._values)
+        )
         result = subprocess.run(command, env=environment, text=True, capture_output=True, check=False)
         if result.returncode:
             raise AssertionError(f"Could not inspect CWA ingest files: {_redact(result.stderr, self._values).strip()}")
@@ -2118,6 +2259,9 @@ class _BaseScenarioFactory:
         # suite that needs its own database server (backup/restore runs
         # pg_dump/pg_restore inside the scenario's `postgres`) sets this.
         self.local_database: bool = False
+        # Set once by handle_run from ensure_shared_cwa(); None means every
+        # CWA scenario starts its own CWA (FAMILY_LIBRARIAN_SHARED_CWA=false).
+        self.shared_cwa_env: dict[str, str] | None = None
 
     def __call__(self, test_id: str) -> _BaseScenario:
         return _BaseScenario(
@@ -2128,6 +2272,7 @@ class _BaseScenarioFactory:
             extra_env=self.extra_env,
             seed_readers=self.seed_readers,
             shared_database_env=None if self.local_database else self.shared_database_env,
+            shared_cwa_env=self.shared_cwa_env,
         )
 
 
@@ -2532,6 +2677,10 @@ def _check_no_conflicting_containers(values: dict[str, str]) -> None:
         name, _, ports = line.partition("\t")
         if not name:
             continue
+        if name.startswith((SHARED_CWA_PROJECT, SHARED_POSTGRES_PROJECT, SHARED_CLAMAV_PROJECT)):
+            # The run's own shared services: ensure_shared_*() takes these
+            # down and starts them fresh, so a leftover is not a conflict.
+            continue
         for label, port in fixed_ports.items():
             if f":{port}->" in ports:
                 conflicts.append(f"  {name}  (holding {label}'s port {port})")
@@ -2715,6 +2864,7 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         _RUN_OWNS_SHARED_SERVICES = True
         try:
             factory.shared_database_env = ensure_shared_postgres(values)
+            factory.shared_cwa_env = ensure_shared_cwa(values)
             summary = run_suites(
                 _scoped_for_run(suites, factory), results_dir=run_directory, label="Family Librarian Lab",
                 scenario_factory=factory,
@@ -2723,6 +2873,7 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
             _RUN_OWNS_SHARED_SERVICES = False
             # --keep leaves kept scenarios pointing at these, so keep them too.
             if not args.keep:
+                _stop_shared_cwa(values)
                 _stop_shared_postgres(values)
                 _stop_shared_clamav()
         all_results = summary.results

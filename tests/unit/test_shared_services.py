@@ -147,3 +147,69 @@ def test_lab_run_rebuilds_every_image_built_from_the_product_source() -> None:
     assert declared, "found no source-built services; the compose scan is broken"
     assert declared == set(commands.SOURCE_BUILT_SERVICES)
     assert "*SOURCE_BUILT_SERVICES" in inspect.getsource(commands.handle_run)
+
+
+# ---- shared CWA ----------------------------------------------------------
+
+_SHARED_CWA_ENV = {
+    "FAMILY_LIBRARIAN_SCENARIO_CWA_PROFILE": "shared-cwa-elsewhere",
+    "FAMILY_LIBRARIAN_SCENARIO_CWA_SFTP_KEY_PROFILE": "shared-cwa-elsewhere",
+    "FAMILY_LIBRARIAN_SCENARIO_CWA_SFTP_PASSWORD_PROFILE": "shared-cwa-elsewhere",
+    "FAMILY_LIBRARIAN_CWA_INGEST_SOURCE": "/lab/runtime/shared-cwa-ingest",
+    "FAMILY_LIBRARIAN_SHARED_CWA_ACTIVE": "1",
+}
+
+
+def _cwa_scenario(profile: str = "cwa-local", env=_SHARED_CWA_ENV) -> commands._BaseScenario:
+    return commands._BaseScenario({}, "CWA-L-01", keep=False, profiles=(profile,), shared_cwa_env=env)
+
+
+@pytest.mark.parametrize("profile", ["cwa-local", "cwa-sftp-key", "cwa-sftp-password"])
+def test_every_cwa_profile_uses_the_shared_cwa(profile: str) -> None:
+    scenario = _cwa_scenario(profile)
+
+    assert scenario._shared_cwa is True
+    assert scenario._values["FAMILY_LIBRARIAN_SCENARIO_CWA_PROFILE"] == "shared-cwa-elsewhere"
+
+
+def test_a_scenario_without_cwa_is_left_alone() -> None:
+    scenario = _cwa_scenario("abs")
+
+    assert scenario._shared_cwa is False
+    assert "FAMILY_LIBRARIAN_CWA_INGEST_SOURCE" not in scenario._values
+
+
+def test_cwa_operations_go_to_the_shared_project_and_others_stay_local() -> None:
+    scenario = _cwa_scenario()
+
+    for service in ("cwa", "cwa-mailpit"):
+        values, project, profiles = scenario._target(service)
+        assert project == commands.SHARED_CWA_PROJECT
+        assert profiles == ("cwa-local",)
+        # The shared project must see its CWA profiles enabled, never the
+        # scenario overrides that disable them.
+        assert "FAMILY_LIBRARIAN_SCENARIO_CWA_PROFILE" not in values
+    _, project, _ = scenario._target("family-librarian")
+    assert project == scenario.project_name
+
+
+def test_exec_into_cwa_targets_the_shared_project() -> None:
+    command, _ = _cwa_scenario()._cwa_exec("true")
+
+    assert command[command.index("--project-name") + 1] == commands.SHARED_CWA_PROJECT
+    assert command[-2:] == ["cwa", "true"]
+
+
+def test_fl_reaches_the_shared_cwa_through_the_host_gateway() -> None:
+    assert _cwa_scenario().cwa_internal_url == "http://lab-host-gateway:18083"
+    assert _cwa_scenario(env=None).cwa_internal_url == "http://cwa:8083"
+
+
+@pytest.mark.parametrize(("setting", "enabled"), [(None, True), ("true", True), ("false", False), ("0", False)])
+def test_shared_cwa_can_be_switched_off_in_lab_env(setting, enabled, monkeypatch) -> None:
+    values = {} if setting is None else {"FAMILY_LIBRARIAN_SHARED_CWA": setting}
+    monkeypatch.setattr(commands, "_run_or_exit", lambda *a, **k: pytest.fail("must not start anything"))
+
+    assert commands.shared_cwa_enabled(values) is enabled
+    if not enabled:
+        assert commands.ensure_shared_cwa(values) is None

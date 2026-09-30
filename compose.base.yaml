@@ -193,7 +193,8 @@ services:
       # (an unused, unread volume) and keeps this one image usable for
       # cwa-local without a separate compose file, matching what --profile
       # brings up.
-      - cwa-ingest:/cwa-ingest
+      # A host directory shared with the run's one CWA when set (see `cwa`).
+      - ${FAMILY_LIBRARIAN_CWA_INGEST_SOURCE:-cwa-ingest}:/cwa-ingest
       # Always mounted (same "harmless when unused" pattern as cwa-ingest
       # above): an empty placeholder file for every suite but gutenberg (see
       # _load_lab_env()'s ensure_gutenberg_ca_bundle_placeholder()), the real
@@ -228,7 +229,16 @@ services:
       # readiness poll still correctly waits for real ClamAV reachability.
 
   cwa:
-    profiles: [cwa-local, cwa-sftp-key, cwa-sftp-password]
+    # `lab run` starts one CWA for the whole run (ensure_shared_cwa() in
+    # commands.py) and resets its library between cases instead of booting a
+    # fresh one per case (~15 s each, measured 2026-09-30). It then points
+    # these at a profile nobody enables, so a scenario starts no CWA of its
+    # own. Unset (manual `up`, or FAMILY_LIBRARIAN_SHARED_CWA=false), each
+    # scenario gets its own CWA exactly as before.
+    profiles:
+      - "${FAMILY_LIBRARIAN_SCENARIO_CWA_PROFILE:-cwa-local}"
+      - "${FAMILY_LIBRARIAN_SCENARIO_CWA_SFTP_KEY_PROFILE:-cwa-sftp-key}"
+      - "${FAMILY_LIBRARIAN_SCENARIO_CWA_SFTP_PASSWORD_PROFILE:-cwa-sftp-password}"
     image: ${FAMILY_LIBRARIAN_CWA_IMAGE:-crocodilestick/calibre-web-automated:latest}
     environment:
       # Matches family-librarian's own non-root app user (the .NET base
@@ -245,7 +255,7 @@ services:
       - cwa-library:/calibre-library
       # Same named volume family-librarian writes into above -- this is the
       # shared ingest transport CWA-L-02 exercises, not two separate copies.
-      - cwa-ingest:/cwa-book-ingest
+      - ${FAMILY_LIBRARIAN_CWA_INGEST_SOURCE:-cwa-ingest}:/cwa-book-ingest
     # Only the start-up probe rate: the image's own test, interval and
     # retries are kept (a partial override merges; verified on Compose 2.40 /
     # Engine 29, 2026-09-30). The image probes every 5 s while starting, so a
@@ -297,7 +307,7 @@ services:
     profiles: [cwa-sftp-key]
     image: ${FAMILY_LIBRARIAN_SFTP_IMAGE:-atmoz/sftp:alpine}
     volumes:
-      - cwa-ingest:/home/cwaftp/upload
+      - ${FAMILY_LIBRARIAN_CWA_INGEST_SOURCE:-cwa-ingest}:/home/cwaftp/upload
       - ${FAMILY_LIBRARIAN_SFTP_KEY_DIR:?Set FAMILY_LIBRARIAN_SFTP_KEY_DIR in lab.env}:/home/cwaftp/.ssh/keys:ro
       # atmoz/sftp only chowns a home subdirectory when IT creates it; a
       # pre-existing Docker-volume mount point at the same path (cwa-ingest,
@@ -313,7 +323,7 @@ services:
     profiles: [cwa-sftp-password]
     image: ${FAMILY_LIBRARIAN_SFTP_IMAGE:-atmoz/sftp:alpine}
     volumes:
-      - cwa-ingest:/home/cwaftp/upload
+      - ${FAMILY_LIBRARIAN_CWA_INGEST_SOURCE:-cwa-ingest}:/home/cwaftp/upload
       - ./docker/sftp/fix-ingest-permissions.sh:/etc/sftp.d/fix-ingest-permissions.sh:ro
     command: cwaftp:${FAMILY_LIBRARIAN_SFTP_PASSWORD:?Set FAMILY_LIBRARIAN_SFTP_PASSWORD in lab.env}:1654:1654:upload
 
@@ -443,7 +453,9 @@ services:
   # `smtp` profile's mailpit purely for reuse; the two are otherwise
   # unrelated instances.
   cwa-mailpit:
-    profiles: [cwa-local]
+    # Shared with CWA (see the `cwa` service): CWA reaches this relay by
+    # service name, so both live in the shared project together.
+    profiles: ["${FAMILY_LIBRARIAN_SCENARIO_CWA_PROFILE:-cwa-local}"]
     image: ${FAMILY_LIBRARIAN_MAILPIT_IMAGE:-axllent/mailpit:latest}
     environment:
       MP_SMTP_AUTH_FILE: /data/smtp-auth-file
