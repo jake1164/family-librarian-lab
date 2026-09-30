@@ -1515,6 +1515,29 @@ def ensure_smtp_fixture_tls() -> dict[str, str]:
     }
 
 
+#: Built-in providers that call a live third-party service and are on by
+#: default. No case here exercises them, and FL's fulfillment-options endpoint
+#: queries every enabled provider in turn, so a slow public API turns into a
+#: 30-second client socket timeout in an unrelated case (CWA-L-11/CWA-L-12,
+#: 2026-09-30: librivox.org took 10-15 s per call from the lab host, and the
+#: same call passed in CWA-L-07). A scenario starts with these off so its result
+#: depends only on services the lab itself runs. A suite that needs one must
+#: enable it after setup, and should point it at a fixture rather than the
+#: public service.
+_LIVE_PROVIDERS_OFF_BY_DEFAULT = ("librivox",)
+
+
+def _disable_live_providers(api: FamilyLibrarianApi) -> None:
+    for provider_id in _LIVE_PROVIDERS_OFF_BY_DEFAULT:
+        response = api.set_provider_enabled(provider_id, False)
+        if response.status != 200:
+            # Loud on purpose: if this stops working the lab silently goes
+            # back to depending on a public service, which is the flake.
+            raise AssertionError(
+                f"Could not disable the live provider {provider_id!r} for a hermetic scenario: {response!r}"
+            )
+
+
 class _BaseScenario:
     """One fresh, disposable Compose project backing one suite case.
 
@@ -1610,6 +1633,7 @@ class _BaseScenario:
                 self._values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"],
             )
             self.api = api
+            _disable_live_providers(api)
             wiring = _wire_destinations(
                 self._values, self.project_name, self._profiles, api, seed_readers=self._seed_readers
             )
