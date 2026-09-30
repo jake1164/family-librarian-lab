@@ -116,6 +116,15 @@ services:
       - MetadataProviders__OpenLibrary__ContactEmail=${FAMILY_LIBRARIAN_OPENLIBRARY_CONTACT_EMAIL:-}
       - MetadataProviders__OpenLibrary__RequestsPerSecond=${FAMILY_LIBRARIAN_OPENLIBRARY_REQUESTS_PER_SECOND:-1}
       - MetadataProviders__GoogleBooks__Enabled=${FAMILY_LIBRARIAN_GOOGLE_BOOKS_ENABLED:-false}
+      # Built-in sources that call a public site are off at boot for every
+      # scenario: the Gutenberg catalogue import starts with the host and
+      # downloads a large archive from gutenberg.org each time (504s and slow
+      # runs), and LibriVox answers in 10-15 s. No case depends on either's
+      # live service; the gutenberg/abs-bundle cases enable `gutendex` and
+      # trigger a sync against their own fixture server explicitly. Set the
+      # variable to true to opt a run back in.
+      - MetadataProviders__Gutenberg__Enabled=${FAMILY_LIBRARIAN_GUTENBERG_PROVIDER_ENABLED:-false}
+      - MetadataProviders__LibriVox__Enabled=${FAMILY_LIBRARIAN_LIBRIVOX_PROVIDER_ENABLED:-false}
       - MetadataProviders__GoogleBooks__ApiKey=${FAMILY_LIBRARIAN_GOOGLE_BOOKS_API_KEY:-}
       - ADMIN_EMAIL=${FAMILY_LIBRARIAN_ADMIN_EMAIL:?Set FAMILY_LIBRARIAN_ADMIN_EMAIL in lab.env}
       - ADMIN_PASSWORD=${FAMILY_LIBRARIAN_ADMIN_PASSWORD:?Set FAMILY_LIBRARIAN_ADMIN_PASSWORD in lab.env}

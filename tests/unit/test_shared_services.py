@@ -108,3 +108,13 @@ def test_teardown_profiles_cover_every_scenario_profile_in_compose() -> None:
 
     missing = declared - run_scoped - set(commands.ALL_PROFILES)
     assert not missing, f"profiles a scenario can enable but teardown never removes: {sorted(missing)}"
+
+
+def test_public_builtin_providers_are_off_at_boot_in_every_scenario() -> None:
+    """The Gutenberg catalogue import starts with the host, so disabling the
+    provider through the API after login is too late -- every scenario was
+    downloading a large archive from gutenberg.org (and getting 504s)."""
+    text = commands.COMPOSE_FILE.read_text(encoding="utf-8")
+
+    assert "MetadataProviders__Gutenberg__Enabled=${FAMILY_LIBRARIAN_GUTENBERG_PROVIDER_ENABLED:-false}" in text
+    assert "MetadataProviders__LibriVox__Enabled=${FAMILY_LIBRARIAN_LIBRIVOX_PROVIDER_ENABLED:-false}" in text
