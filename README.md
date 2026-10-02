@@ -48,6 +48,11 @@ given. Because the checkout is lab-managed and fetches from GitHub, a branch
 under local, uncommitted development needs to be pushed before `./lab up
 <branch>` can see it -- same workflow as m3undle-lab-public.
 
+The lab checkout itself is a deployment target: change it in git and update it with `./lab sync` (a
+snapshot-first `git pull --ff-only`; `--stash` sets uncommitted edits aside instead of discarding them). Any
+uncommitted edit to a tracked file is announced by every `./lab` command and saved under `refs/lab-snapshots/`;
+see `AGENTS.md` for the rules and `LOCAL_EDITS.md` for declaring a deliberate, temporary host edit.
+
 By default the connection details printed by `up` use `127.0.0.1`. Set
 se-lab's generic `LAB_EXTERNAL_HOST=toontown-int-srv2` in `lab.env` (or the
 process environment) so every product lab uses hosted links such as

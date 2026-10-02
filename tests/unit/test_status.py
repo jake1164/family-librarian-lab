@@ -39,6 +39,13 @@ def _stub_repo_checkout(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(commands.lab_common, "repo_checkout_summary", lambda: "branch=main commit=abc1234")
 
 
+@pytest.fixture(autouse=True)
+def _stub_build_revisions(monkeypatch: pytest.MonkeyPatch):
+    """The build-revision block shells out to git/docker and needs a configured runtime; it has its own
+    coverage in test_build_revisions.py, so these status tests stub it like the checkout summary above."""
+    monkeypatch.setattr(commands, "_build_revision_lines", lambda *_args, **_kwargs: [])
+
+
 def test_status_prints_running_service_connection_details(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
     values = {
         "FAMILY_LIBRARIAN_ADMIN_EMAIL": "admin@example.test",

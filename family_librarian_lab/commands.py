@@ -96,6 +96,9 @@ class ProviderConfig:
     source_dir_env: str | None = None
     api_key_env: str | None = None
     vpn_service: str | None = None
+    # Overlays this provider's own overlay depends on (typically a VPN sidecar several providers share).
+    # Loaded before the provider's own file, and de-duplicated across providers by _provider_compose_files().
+    supporting_compose_files: list[str] | None = None
     # Other containers that share the VPN sidecar's network namespace
     # (network_mode: service:<vpn>) besides the app itself -- e.g. a provider
     # whose downloaders must egress through the same tunnel. They go
@@ -124,6 +127,7 @@ def _load_provider_registry() -> dict[str, ProviderConfig]:
                 source_dir_env=entry.get("source_dir_env"),
                 api_key_env=entry.get("api_key_env"),
                 vpn_service=entry.get("vpn_service"),
+                supporting_compose_files=entry.get("supporting_compose_files"),
                 companion_services=entry.get("companion_services"),
                 sync_command=entry.get("sync_command"),
                 rebuild_command=entry.get("rebuild_command"),
@@ -167,6 +171,34 @@ def _git_prepare_keyed_branch(branch: str, key: str) -> None:
     lab_common.run(["git", "clean", "-ffdx"], cwd=target)
     lab_common.run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=target)
     lab_common.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=target)
+
+
+def _provider_compose_files(providers: Sequence[ProviderConfig]) -> list[Path]:
+    """Every overlay the given providers need, in load order, each file once.
+
+    A provider's supporting overlays come before its own (its services depend on them), and two providers
+    that share one -- a VPN sidecar -- must not load it twice, which Compose would reject as a duplicate
+    service definition."""
+    files: list[Path] = []
+    for provider in providers:
+        for relative in (*(provider.supporting_compose_files or ()), provider.compose_file):
+            path = REPO_ROOT / relative
+            if path not in files:
+                files.append(path)
+    return files
+
+
+def _providers_sharing_vpn(provider: ProviderConfig, registry_providers: Sequence[ProviderConfig]) -> list[ProviderConfig]:
+    """The provider itself plus every other configured provider behind the same VPN sidecar."""
+    if not provider.vpn_service:
+        return [provider]
+    return [
+        provider,
+        *(
+            candidate for candidate in registry_providers
+            if candidate.name != provider.name and candidate.vpn_service == provider.vpn_service
+        ),
+    ]
 
 
 def _checkout_provider_source(cfg: ProviderConfig, values: dict[str, str], branch: str | None = None) -> None:
@@ -1312,7 +1344,10 @@ def _status_service_lines(compose_ps: str) -> list[str]:
 def _provider_state(checks: dict[str, object], provider: ProviderConfig) -> str:
     if not _service_is_running(checks, provider.app_service):
         return "not running"
-    down = [s for s in provider.companion_services or [] if not _service_is_running(checks, s)]
+    down = [
+        s for s in (provider.vpn_service, *(provider.companion_services or ()))
+        if s and not _service_is_running(checks, s)
+    ]
     return f"degraded (not running: {', '.join(down)})" if down else "running"
 
 
@@ -2459,11 +2494,15 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
         providers = [_require_provider(name) for name, _ in ep_specs]
         for provider, (_, ep_branch) in zip(providers, ep_specs):
             _checkout_provider_source(provider, values, ep_branch)
-        extra_compose_files = [REPO_ROOT / provider.compose_file for provider in providers]
+        extra_compose_files = _provider_compose_files(providers)
         project_name = lab_common.project_name()
         profiles = (PROFILE, *args.profile)
+        # With --ep, only the selected providers' overlays are loaded, so any other provider already running
+        # in this project looks like an orphan to Compose and --remove-orphans would stop it. `base down` is
+        # the full teardown.
+        orphan_flags = () if providers else ("--remove-orphans",)
         _run_or_exit(
-            values, project_name, "up", "--build", "--wait", "--remove-orphans",
+            values, project_name, "up", "--build", "--wait", *orphan_flags,
             profiles=profiles, extra_compose_files=extra_compose_files,
         )
         checks, passed = _readiness(values, project_name)
@@ -2613,7 +2652,7 @@ def handle_sync_external_provider_metadata(args: argparse.Namespace, config: obj
         )
     values = _load_lab_env()
     project_name = lab_common.project_name()
-    extra_compose_files = [REPO_ROOT / provider.compose_file]
+    extra_compose_files = _provider_compose_files([provider])
     if provider.sync_command:
         print(f"Running metadata sync for {provider.name!r} (can take a long time against real data)...", flush=True)
         _run_or_exit(values, project_name, "exec", provider.app_service, *provider.sync_command, extra_compose_files=extra_compose_files)
@@ -2639,11 +2678,20 @@ def handle_restart_external_provider(args: argparse.Namespace, config: object) -
     provider = _require_provider(args.ep)
     values = _load_lab_env()
     project_name = lab_common.project_name()
-    extra_compose_files = [REPO_ROOT / provider.compose_file]
+    # Recreating a shared sidecar strands every provider behind it, not just the one named, so the whole
+    # group is restarted and its overlays loaded.
+    group = _providers_sharing_vpn(provider, list(_load_provider_registry().values()))
+    extra_compose_files = _provider_compose_files(group)
     # Sidecar first, then everything that shares its namespace: each must
     # re-bind to the sidecar's new namespace instance, not the dead old one.
     restarted = [
-        s for s in (provider.vpn_service, *(provider.companion_services or ()), provider.app_service) if s
+        service
+        for service in (
+            provider.vpn_service,
+            *(companion for member in group for companion in member.companion_services or ()),
+            *(member.app_service for member in group),
+        )
+        if service
     ]
     for service in restarted:
         _run_or_exit(values, project_name, "restart", service, extra_compose_files=extra_compose_files)

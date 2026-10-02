@@ -326,3 +326,25 @@ def collection_release_is_rejected_despite_an_identifier_match(ctx, scenario_fac
             return {"request_id": request_id, "response": body, "request": request}
 
     _run(ctx, "EXTPROV-04", operation)
+
+
+def test_shared_provider_overlays_and_restart(monkeypatch):
+    from types import SimpleNamespace
+    from family_librarian_lab import commands
+
+    first = commands.ProviderConfig(name="one", compose_file="one.yaml", internal_url="http://vpn:9000",
+                                    app_service="one-app", vpn_service="vpn", supporting_compose_files=["shared.yaml"])
+    second = commands.ProviderConfig(name="two", compose_file="two.yaml", internal_url="http://vpn:9001",
+                                     app_service="two-app", vpn_service="vpn", companion_services=["two-worker"],
+                                     supporting_compose_files=["shared.yaml"])
+    assert [p.name for p in commands._provider_compose_files([first, second])] == ["shared.yaml", "one.yaml", "two.yaml"]
+    calls = []
+    monkeypatch.setattr(commands, "_require_provider", lambda name: first)
+    monkeypatch.setattr(commands, "_load_provider_registry", lambda: {"one": first, "two": second})
+    monkeypatch.setattr(commands, "_load_lab_env", lambda: {})
+    monkeypatch.setattr(commands.lab_common, "project_name", lambda: "test")
+    monkeypatch.setattr(commands, "_run_or_exit", lambda _v, _p, verb, service, **kw: calls.append((verb, service, kw)))
+    assert commands.handle_restart_external_provider(SimpleNamespace(ep="one"), None) == 0
+    assert [service for _, service, _ in calls] == ["vpn", "two-worker", "one-app", "two-app"]
+    checks = {"compose_services": {"one-app": {"state": "running"}}}
+    assert commands._provider_state(checks, first) == "degraded (not running: vpn)"
