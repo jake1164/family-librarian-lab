@@ -39,6 +39,12 @@ services:
   example-provider-app:
     build:
       context: ${FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_SOURCE_DIR}
+      # Optional. `up` derives <PREFIX>_BUILD_REVISION / _BUILD_DATE from the checkout, where PREFIX is
+      # source_dir_env minus "_SOURCE_DIR". Map them to whatever build args the Dockerfile reads, and have it
+      # label the image org.opencontainers.image.revision so `up`/`status` can report STALE vs OK.
+      args:
+        VCS_REF: ${FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_BUILD_REVISION:-unknown}
+        BUILD_DATE: ${FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_BUILD_DATE:-unknown}
     network_mode: "service:example-provider-vpn"
     depends_on:
       example-provider-vpn:

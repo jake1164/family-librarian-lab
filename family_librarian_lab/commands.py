@@ -189,7 +189,81 @@ def _checkout_provider_source(cfg: ProviderConfig, values: dict[str, str], branc
     else:
         lab_common.git_refresh_current_branch(key=cfg.name)
     if cfg.source_dir_env:
-        values[cfg.source_dir_env] = str(lab_common.repo_dir(key=cfg.name))
+        source_dir = lab_common.repo_dir(key=cfg.name)
+        values[cfg.source_dir_env] = str(source_dir)
+        values.update(_provider_build_stamp(cfg, source_dir))
+
+
+#: The OCI label a provider image is expected to carry: the commit it was built from.
+IMAGE_REVISION_LABEL = "org.opencontainers.image.revision"
+
+
+def _provider_build_stamp(cfg: ProviderConfig, source_dir: Path) -> dict[str, str]:
+    """Env values an overlay can pass as build args so the image states its own commit.
+
+    Derived from the registry's ``source_dir_env``: ``X_SOURCE_DIR`` yields
+    ``X_BUILD_REVISION`` and ``X_BUILD_DATE``. An overlay opts in by mapping them to its Dockerfile's
+    build args; one that does not simply ignores them. The date is the commit's own, not the wall clock,
+    so an unchanged checkout yields an unchanged build and keeps its layer cache."""
+    if not cfg.source_dir_env or not cfg.source_dir_env.endswith("_SOURCE_DIR"):
+        return {}
+    revision = lab_common.git_commit(source_dir)
+    if not revision:
+        return {}
+    prefix = cfg.source_dir_env.removesuffix("_SOURCE_DIR")
+    stamp = {f"{prefix}_BUILD_REVISION": revision}
+    date = lab_common.run_capture(
+        ["git", "show", "-s", "--format=%cI", "HEAD"], cwd=source_dir, check=False, quiet=True
+    )
+    if date.returncode == 0 and date.stdout.strip():
+        stamp[f"{prefix}_BUILD_DATE"] = date.stdout.strip()
+    return stamp
+
+
+def _running_image_revision(project_name: str, service: str) -> str | None:
+    """The revision label on the image a running service was actually created from.
+
+    Asks Docker directly (by Compose project/service labels) rather than Compose, because a provider's
+    service is defined in an overlay file this call does not have. ``None`` means the service is not
+    running; an empty string means it is running from an image that carries no revision label."""
+    container = subprocess.run(
+        [
+            "docker", "ps", "-q",
+            "--filter", f"label=com.docker.compose.project={project_name}",
+            "--filter", f"label=com.docker.compose.service={service}",
+        ],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    ).stdout.split()
+    if not container:
+        return None
+    inspected = subprocess.run(
+        ["docker", "inspect", "--format", f'{{{{index .Config.Labels "{IMAGE_REVISION_LABEL}"}}}}', container[0]],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    return inspected.stdout.strip() if inspected.returncode == 0 else ""
+
+
+def _build_revision_lines(project_name: str, providers: Sequence[ProviderConfig]) -> list[str]:
+    """One line per built component: the commit the lab checked out vs. the commit the image reports.
+
+    Exists because a pinned or cached image silently runs old code while the checkout looks current;
+    a mismatch is printed as STALE rather than left for someone to notice in an admin page."""
+    lines = ["Build revisions:"]
+    family_librarian = lab_common.git_commit(lab_common.repo_dir(), short=True)
+    lines.append(f"  family-librarian  {family_librarian or 'unknown'}  (checkout; image is built from it)")
+    for provider in providers:
+        checkout = lab_common.git_commit(lab_common.repo_dir(key=provider.name))
+        running = _running_image_revision(project_name, provider.app_service)
+        label = f"  {provider.name:<16}  {(checkout or 'unknown')[:7]}  "
+        if running is None:
+            lines.append(f"{label}not running")
+        elif not running:
+            lines.append(f"{label}running image carries no revision label -- cannot confirm it matches")
+        elif checkout and running == checkout:
+            lines.append(f"{label}running image {running[:7]}  OK")
+        else:
+            lines.append(f"{label}running image {running[:7]}  STALE -- not built from this checkout")
+    return lines
 
 
 def _configure_checkout_target(parser: argparse.ArgumentParser) -> None:
@@ -2411,10 +2485,13 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
         sftp_wiring=wiring.sftp_wiring is not None,
         cwa_relay_is_real=wiring.cwa_relay_is_real,
     )
+    print(flush=True)
+    for line in _build_revision_lines(project_name, providers):
+        print(line, flush=True)
     return 0
 
 
-@registry.command("status", help="Report base-profile Compose and HTTP health", configure=_configure_project)
+@registry.command("status",help="Report base-profile Compose and HTTP health", configure=_configure_project)
 def handle_status(args: argparse.Namespace, config: object) -> int:
     values = _load_lab_env()
     project_name = _project_name(values, args.project_name, unique=False)
@@ -2448,6 +2525,10 @@ def handle_status(args: argparse.Namespace, config: object) -> int:
     if provider_lines:
         print(flush=True)
         for line in provider_lines:
+            print(line, flush=True)
+    if _service_is_running(checks, "family-librarian"):
+        print(flush=True)
+        for line in _build_revision_lines(project_name, sorted(_load_provider_registry().values(), key=lambda p: p.name)):
             print(line, flush=True)
     return 0 if passed else 1
 
