@@ -2692,6 +2692,25 @@ def _restore_gutenberg(container: str, dump_path: Path, expected: dict[str, int]
         )
 
 
+def _wait_for_migrate(values: dict[str, str], project_name: str, timeout_seconds: int = 300) -> None:
+    """Block until the one-shot `migrate` container has exited 0.
+
+    `compose up --wait` reports a one-shot service "Healthy" as soon as it starts, not when it finishes
+    (found for real: the Gutenberg restore ran before migrate had created the schema)."""
+    result = _compose(values, project_name, "ps", "-a", "-q", "migrate", capture=True)
+    container = result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else ""
+    if not container:
+        raise SystemExit("Could not find the migrate container to wait for.")
+    try:
+        waited = subprocess.run(
+            ["docker", "wait", container], capture_output=True, text=True, check=False, timeout=timeout_seconds
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"migrate did not finish within {timeout_seconds}s.") from None
+    if waited.returncode or waited.stdout.strip() != "0":
+        raise SystemExit(f"migrate failed (exit {waited.stdout.strip() or waited.stderr.strip()}); see 'docker logs {container}'.")
+
+
 def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
     parser.description = (
         "Start Family Librarian over with an empty database and file storage, without tearing the stack down.\n"
@@ -2780,6 +2799,7 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
         if any(saved.values()):
             # postgres + the one-shot migrate only: FL itself stays down until the catalogue is back.
             _run_or_exit(values, project_name, "up", "-d", "--wait", "postgres", "migrate")
+            _wait_for_migrate(values, project_name)
             print("Restoring the Gutenberg catalogue...", flush=True)
             _restore_gutenberg(_postgres_container(values, project_name), dump_path, saved)
             dump_path.unlink()
