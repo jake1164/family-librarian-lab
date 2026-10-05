@@ -2593,25 +2593,122 @@ def handle_down(args: argparse.Namespace, config: object) -> int:
 
 
 # Family Librarian's own state: its Postgres database and its file storage. Everything else in the
-# project (CWA, ABS, Matrix, provider stacks, the shared ClamAV) is deliberately left alone.
+# project (CWA, ABS, Matrix, provider stacks, the shared ClamAV) is deliberately left alone. So is
+# Anna's Archive, which keeps its data in bind mounts outside any Docker volume.
 CLEAN_BOOKS_SERVICES = ("family-librarian", "migrate", "postgres")
 CLEAN_BOOKS_VOLUMES = ("postgres-data", "family-librarian-data")
+# The Project Gutenberg catalogue import (~20 min, ~2M rows) lives in this schema of FL's own database. It is
+# self-contained (foreign keys only between its own tables), so it is saved before the wipe and restored after
+# `migrate` has recreated the empty tables.
+GUTENBERG_SCHEMA = "gutenberg"
+CLEAN_BOOKS_DB_USER = "family_librarian"
+CLEAN_BOOKS_DB_NAME = "family_librarian"
+CLEAN_BOOKS_DUMP_DIR = REPO_ROOT / "runtime" / "clean-books"
 
 
 def _clean_books_volume_names(project_name: str) -> list[str]:
     return [f"{project_name}_{volume}" for volume in CLEAN_BOOKS_VOLUMES]
 
 
+def _parse_row_counts(output: str) -> dict[str, int]:
+    """`table|count` lines from `psql -At` into {table: count}."""
+    counts: dict[str, int] = {}
+    for line in output.splitlines():
+        name, separator, count = line.strip().partition("|")
+        if separator:
+            counts[name] = int(count)
+    return counts
+
+
+def _postgres_container(values: dict[str, str], project_name: str) -> str:
+    """Container id of the project's *running* postgres service, or '' if it is not running."""
+    result = _compose(values, project_name, "ps", "-q", "postgres", capture=True)
+    return result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else ""
+
+
+def _psql(container: str, sql: str) -> str:
+    result = subprocess.run(
+        ["docker", "exec", container, "psql", "-U", CLEAN_BOOKS_DB_USER, "-d", CLEAN_BOOKS_DB_NAME, "-v", "ON_ERROR_STOP=1", "-At", "-c", sql],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode:
+        raise SystemExit(f"psql failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def _gutenberg_row_counts(container: str) -> dict[str, int]:
+    tables = _psql(
+        container,
+        f"select table_name from information_schema.tables where table_schema='{GUTENBERG_SCHEMA}' "
+        "and table_type='BASE TABLE' order by 1",
+    ).split()
+    if not tables:
+        return {}
+    union = " union all ".join(f"select '{table}', count(*) from {GUTENBERG_SCHEMA}.\"{table}\"" for table in tables)
+    return _parse_row_counts(_psql(container, union))
+
+
+def _save_gutenberg(container: str, dump_path: Path) -> dict[str, int]:
+    """Dump the gutenberg schema's data to dump_path and return its per-table row counts.
+
+    Raises (before anything is deleted) if the dump fails or is empty."""
+    counts = _gutenberg_row_counts(container)
+    if not any(counts.values()):
+        return counts
+    dump_path.parent.mkdir(parents=True, exist_ok=True)
+    with dump_path.open("wb") as handle:
+        result = subprocess.run(
+            ["docker", "exec", container, "pg_dump", "-U", CLEAN_BOOKS_DB_USER, "-d", CLEAN_BOOKS_DB_NAME,
+             "-Fc", "--data-only", "-n", GUTENBERG_SCHEMA],
+            stdout=handle, stderr=subprocess.PIPE, check=False,
+        )
+    if result.returncode or dump_path.stat().st_size == 0:
+        dump_path.unlink(missing_ok=True)
+        raise SystemExit(f"Could not save the Gutenberg catalogue; nothing was deleted: {result.stderr.decode(errors='replace').strip()}")
+    return counts
+
+
+def _restore_gutenberg(container: str, dump_path: Path, expected: dict[str, int]) -> None:
+    """Load a dump made by _save_gutenberg() into the freshly migrated (empty) gutenberg tables and
+    confirm the row counts match. Leaves dump_path in place on any failure."""
+    tables = ", ".join(f'{GUTENBERG_SCHEMA}."{table}"' for table in expected)
+    _psql(container, f"truncate {tables} restart identity cascade")
+    with dump_path.open("rb") as handle:
+        result = subprocess.run(
+            ["docker", "exec", "-i", container, "pg_restore", "-U", CLEAN_BOOKS_DB_USER, "-d", CLEAN_BOOKS_DB_NAME,
+             "--data-only", "--disable-triggers", "--exit-on-error"],
+            stdin=handle, capture_output=True, check=False,
+        )
+    if result.returncode:
+        raise SystemExit(
+            f"Restoring the Gutenberg catalogue failed: {result.stderr.decode(errors='replace').strip()}\n"
+            f"The saved copy is still at {dump_path}."
+        )
+    restored = _gutenberg_row_counts(container)
+    if restored != expected:
+        raise SystemExit(
+            f"Gutenberg row counts differ after restore (expected {expected}, got {restored}).\n"
+            f"The saved copy is still at {dump_path}."
+        )
+
+
 def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
     parser.description = (
-        "Start Family Librarian over with an empty database and file storage, without tearing the stack down.\n\n"
-        "Removes only the family-librarian-data and postgres-data volumes of the lab project, recreates "
-        "postgres/migrate/family-librarian from the already-built image (no rebuild), and waits until it is "
-        "healthy. CWA, ABS, Matrix, provider stacks and the shared ClamAV keep running and keep their data.\n\n"
-        "LOST: FL users, settings and provider registrations (re-run './lab base register-external-provider "
-        "--ep <name>' or './lab settings import' afterwards). NOT TOUCHED: files already in the shared "
-        "cwa-ingest volume. For a full wipe of everything use './lab down --clean-volumes'. Irreversible, "
-        "so it asks for a typed 'yes' unless --yes is given."
+        "Start Family Librarian over with an empty database and file storage, without tearing the stack down.\n"
+        "\n"
+        "Removes only the family-librarian-data and postgres-data volumes of the lab project, recreates\n"
+        "postgres/migrate/family-librarian from the already-built image (no rebuild), and waits until it is\n"
+        "healthy.\n"
+        "\n"
+        "KEPT: the Project Gutenberg catalogue (saved before the wipe, restored and row-count verified after;\n"
+        "pass --wipe-gutenberg to drop it too), Anna's Archive (bind mounts, never touched), CWA, ABS, Matrix,\n"
+        "provider stacks, the shared ClamAV, and files already in the shared cwa-ingest volume.\n"
+        "\n"
+        "LOST: FL users, settings and provider registrations (re-run './lab base register-external-provider\n"
+        "--ep <name>' or './lab settings import' afterwards).\n"
+        "\n"
+        "For a full wipe of everything use './lab down --clean-volumes'. Irreversible, so it asks for a typed\n"
+        "'yes' unless --yes is given."
     )
     parser.formatter_class = argparse.RawDescriptionHelpFormatter
     _configure_project(parser)
@@ -2620,17 +2717,24 @@ def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Skip the confirmation prompt (required when stdin is not a terminal)",
     )
+    parser.add_argument(
+        "--wipe-gutenberg",
+        action="store_true",
+        help="Also discard the imported Project Gutenberg catalogue (re-importing takes ~20 minutes)",
+    )
 
 
 @registry.command(
     "clean-books",
-    help="Wipe Family Librarian's database and file storage and restart it empty, leaving CWA/ABS/providers running",
+    help="Wipe Family Librarian's database and storage and restart it empty; keeps the Gutenberg catalogue, Anna's, CWA, ABS, providers",
     configure=_configure_clean_books,
 )
 def handle_clean_books(args: argparse.Namespace, config: object) -> int:
     """Start Family Librarian over without './lab down --clean-volumes' plus a
     full './lab up'. Only FL's Postgres and storage volumes are removed; the
-    already-built image is reused (no rebuild), so this takes seconds.
+    already-built image is reused (no rebuild), so this takes seconds -- plus
+    a minute or two to save/restore the Gutenberg catalogue, which is the
+    only slow-to-rebuild data that lives inside FL's own database.
 
     Destructive and irreversible, hence the confirmation. FL-side state goes
     with the database: users, settings, and provider registrations (re-run
@@ -2638,21 +2742,48 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
     values = _load_lab_env()
     project_name = _project_name(values, args.project_name, unique=False)
     volumes = _clean_books_volume_names(project_name)
+    keep_gutenberg = not args.wipe_gutenberg
     if not args.yes:
         if not sys.stdin.isatty():
             raise SystemExit("Refusing to wipe Family Librarian's data without a terminal to confirm; pass --yes.")
         print(f"This permanently deletes Docker volumes: {', '.join(volumes)}", flush=True)
+        print(
+            "The Gutenberg catalogue will be kept." if keep_gutenberg else "The Gutenberg catalogue will be DELETED too.",
+            flush=True,
+        )
         if input("Type 'yes' to continue: ").strip().lower() != "yes":
             raise SystemExit("Aborted; nothing was deleted.")
     with lab_common.run_lock(label="lab clean-books"):
         # Same reason as `up --refresh`: FL must be pointed at the shared ClamAV or /health/ready never passes.
         values = {**values, **ensure_shared_clamav()}
+        dump_path = CLEAN_BOOKS_DUMP_DIR / f"gutenberg-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.dump"
+        saved: dict[str, int] = {}
+        if keep_gutenberg:
+            container = _postgres_container(values, project_name)
+            if not container:
+                raise SystemExit(
+                    "Postgres is not running, so the Gutenberg catalogue cannot be saved first. Start the stack "
+                    "('./lab up'), or pass --wipe-gutenberg to discard it."
+                )
+            print("Saving the Gutenberg catalogue...", flush=True)
+            saved = _save_gutenberg(container, dump_path)
+            if any(saved.values()):
+                print(f"Saved {sum(saved.values()):,} rows to {dump_path}", flush=True)
+            else:
+                print("No Gutenberg catalogue imported yet; nothing to keep.", flush=True)
         _run_or_exit(values, project_name, "rm", "--stop", "--force", *CLEAN_BOOKS_SERVICES)
         for volume in volumes:
             result = subprocess.run(["docker", "volume", "rm", volume], capture_output=True, text=True, check=False)
             if result.returncode and "no such volume" not in result.stderr.lower():
                 raise SystemExit(f"Could not remove volume {volume}: {result.stderr.strip()}")
             print(f"Removed volume {volume}" if not result.returncode else f"Volume {volume} was already absent", flush=True)
+        if any(saved.values()):
+            # postgres + the one-shot migrate only: FL itself stays down until the catalogue is back.
+            _run_or_exit(values, project_name, "up", "-d", "--wait", "postgres", "migrate")
+            print("Restoring the Gutenberg catalogue...", flush=True)
+            _restore_gutenberg(_postgres_container(values, project_name), dump_path, saved)
+            dump_path.unlink()
+            print("Gutenberg catalogue restored and verified.", flush=True)
         _run_or_exit(values, project_name, "up", "-d", "--wait", *CLEAN_BOOKS_SERVICES)
         checks, passed = _readiness(values, project_name)
         if not passed:

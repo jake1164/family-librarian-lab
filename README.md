@@ -76,11 +76,22 @@ for backwards compatibility.
 `./lab clean-books` starts Family Librarian over without tearing the stack down: it removes only FL's own
 Postgres and storage volumes (`<project>_postgres-data`, `<project>_family-librarian-data`), recreates
 `postgres`/`migrate`/`family-librarian` from the already-built image (no rebuild), and waits for readiness.
-CWA, ABS, Matrix, the provider stacks and the shared ClamAV keep running and keep their data. It asks for a
-typed `yes` first (`--yes` skips that; it is required without a terminal). Users, settings, and provider
-registrations live in FL's database and are gone afterwards, so re-run
-`./lab base register-external-provider --ep <name>` (or `./lab settings import`) as needed. Files FL already
-delivered into the shared `cwa-ingest` volume are not touched.
+It asks for a typed `yes` first (`--yes` skips that; it is required without a terminal).
+
+What survives, because it is slow to rebuild:
+
+- **Project Gutenberg catalogue** (~20 min to import; ~2.2M rows in FL's own `gutenberg` schema). It is dumped
+  to `runtime/clean-books/` before anything is deleted, restored after `migrate` recreates the empty tables,
+  and the per-table row counts are checked. If the save fails nothing is deleted; if the restore fails the
+  dump is kept and its path printed. Pass `--wipe-gutenberg` to discard it as well.
+- **Anna's Archive** (its multi-hour SQLite build) lives in bind mounts under `/data/annas`, never in a
+  volume this command touches.
+- CWA, ABS, Matrix, the provider stacks, the shared ClamAV, and files already in the shared `cwa-ingest`
+  volume keep running and keep their data.
+
+What is lost: users, settings, and provider registrations (they live in FL's database). Re-run
+`./lab base register-external-provider --ep <name>` (or `./lab settings import`) as needed. For a wipe of
+everything, use `./lab down --clean-volumes`.
 
 `./lab run` discovers suites through se-lab and defaults to `--test-group all` — every
 suite, matching se-lab's own `select_suites()` default and the legacy m3undle-lab
