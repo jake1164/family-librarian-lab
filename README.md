@@ -34,6 +34,7 @@ cp se-lab/lab.env.example lab.env
 ./lab up mybranch     # check out, build, deploy, and leave running for manual testing
 ./lab status
 ./lab base down        # stop just the standard `up` project
+./lab clean-books      # start Family Librarian over (empty DB + storage); CWA/ABS/providers keep running
 
 # Run each base/security case in its own fresh, isolated Compose project.
 ./lab run --test-group base
@@ -67,9 +68,19 @@ product -- the `up` project, any `--keep`-ed `./lab run` case project left
 behind for investigation, a crashed/interrupted run's leftovers, all of it --
 by name, without needing this lab's profile-gated, repo-root Compose file at
 all. Named volumes (Postgres data, etc.) are kept by either command; pass
-`./lab down --clean-volumes` to also wipe them. `./lab base down
+`./lab down --clean-volumes` to also wipe them. To wipe only Family Librarian's own data and keep everything else running, use
+`./lab clean-books` (below). `./lab base down
 --all-projects` still exists and does the same sweep as `./lab down`, kept
 for backwards compatibility.
+
+`./lab clean-books` starts Family Librarian over without tearing the stack down: it removes only FL's own
+Postgres and storage volumes (`<project>_postgres-data`, `<project>_family-librarian-data`), recreates
+`postgres`/`migrate`/`family-librarian` from the already-built image (no rebuild), and waits for readiness.
+CWA, ABS, Matrix, the provider stacks and the shared ClamAV keep running and keep their data. It asks for a
+typed `yes` first (`--yes` skips that; it is required without a terminal). Users, settings, and provider
+registrations live in FL's database and are gone afterwards, so re-run
+`./lab base register-external-provider --ep <name>` (or `./lab settings import`) as needed. Files FL already
+delivered into the shared `cwa-ingest` volume are not touched.
 
 `./lab run` discovers suites through se-lab and defaults to `--test-group all` — every
 suite, matching se-lab's own `select_suites()` default and the legacy m3undle-lab

@@ -2592,6 +2592,80 @@ def handle_down(args: argparse.Namespace, config: object) -> int:
     return 0
 
 
+# Family Librarian's own state: its Postgres database and its file storage. Everything else in the
+# project (CWA, ABS, Matrix, provider stacks, the shared ClamAV) is deliberately left alone.
+CLEAN_BOOKS_SERVICES = ("family-librarian", "migrate", "postgres")
+CLEAN_BOOKS_VOLUMES = ("postgres-data", "family-librarian-data")
+
+
+def _clean_books_volume_names(project_name: str) -> list[str]:
+    return [f"{project_name}_{volume}" for volume in CLEAN_BOOKS_VOLUMES]
+
+
+def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
+    parser.description = (
+        "Start Family Librarian over with an empty database and file storage, without tearing the stack down.\n\n"
+        "Removes only the family-librarian-data and postgres-data volumes of the lab project, recreates "
+        "postgres/migrate/family-librarian from the already-built image (no rebuild), and waits until it is "
+        "healthy. CWA, ABS, Matrix, provider stacks and the shared ClamAV keep running and keep their data.\n\n"
+        "LOST: FL users, settings and provider registrations (re-run './lab base register-external-provider "
+        "--ep <name>' or './lab settings import' afterwards). NOT TOUCHED: files already in the shared "
+        "cwa-ingest volume. For a full wipe of everything use './lab down --clean-volumes'. Irreversible, "
+        "so it asks for a typed 'yes' unless --yes is given."
+    )
+    parser.formatter_class = argparse.RawDescriptionHelpFormatter
+    _configure_project(parser)
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt (required when stdin is not a terminal)",
+    )
+
+
+@registry.command(
+    "clean-books",
+    help="Wipe Family Librarian's database and file storage and restart it empty, leaving CWA/ABS/providers running",
+    configure=_configure_clean_books,
+)
+def handle_clean_books(args: argparse.Namespace, config: object) -> int:
+    """Start Family Librarian over without './lab down --clean-volumes' plus a
+    full './lab up'. Only FL's Postgres and storage volumes are removed; the
+    already-built image is reused (no rebuild), so this takes seconds.
+
+    Destructive and irreversible, hence the confirmation. FL-side state goes
+    with the database: users, settings, and provider registrations (re-run
+    './lab base register-external-provider --ep <name>' afterwards)."""
+    values = _load_lab_env()
+    project_name = _project_name(values, args.project_name, unique=False)
+    volumes = _clean_books_volume_names(project_name)
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit("Refusing to wipe Family Librarian's data without a terminal to confirm; pass --yes.")
+        print(f"This permanently deletes Docker volumes: {', '.join(volumes)}", flush=True)
+        if input("Type 'yes' to continue: ").strip().lower() != "yes":
+            raise SystemExit("Aborted; nothing was deleted.")
+    with lab_common.run_lock(label="lab clean-books"):
+        # Same reason as `up --refresh`: FL must be pointed at the shared ClamAV or /health/ready never passes.
+        values = {**values, **ensure_shared_clamav()}
+        _run_or_exit(values, project_name, "rm", "--stop", "--force", *CLEAN_BOOKS_SERVICES)
+        for volume in volumes:
+            result = subprocess.run(["docker", "volume", "rm", volume], capture_output=True, text=True, check=False)
+            if result.returncode and "no such volume" not in result.stderr.lower():
+                raise SystemExit(f"Could not remove volume {volume}: {result.stderr.strip()}")
+            print(f"Removed volume {volume}" if not result.returncode else f"Volume {volume} was already absent", flush=True)
+        _run_or_exit(values, project_name, "up", "-d", "--wait", *CLEAN_BOOKS_SERVICES)
+        checks, passed = _readiness(values, project_name)
+        if not passed:
+            print(json.dumps(checks, indent=2), file=sys.stderr)
+            raise SystemExit("Family Librarian failed readiness checks after 'clean-books'.")
+    print(
+        f"Family Librarian restarted with an empty database and storage: {project_name}. "
+        "Re-register external providers if you use them.",
+        flush=True,
+    )
+    return 0
+
+
 def _configure_ep(parser: argparse.ArgumentParser) -> None:
     provider_choices = sorted(_load_provider_registry())
     parser.add_argument(
