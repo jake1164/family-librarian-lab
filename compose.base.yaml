@@ -95,6 +95,11 @@ services:
       CLAMD_CONF_MaxFileSize: 2000M
       CLAMD_CONF_PCREMaxFileSize: 2000M
       CLAMD_CONF_MaxScanSize: 4000M
+      # clamd stops scanning after MaxScanTime ms (default 120000) and, with
+      # AlertExceedsMax, reports it as Heuristics.Limits.Exceeded.MaxScanTime.
+      # A ~1-2 GB audiobook needs longer; keep this under the app's 15-minute
+      # abandoned-evaluation threshold (SecurityEvaluationService).
+      CLAMD_CONF_MaxScanTime: 600000
       CLAMD_CONF_AlertExceedsMax: "yes"
     healthcheck:
       test: ["CMD", "clamdscan", "--ping", "1"]
