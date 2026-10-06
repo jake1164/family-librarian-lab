@@ -88,10 +88,12 @@ services:
     ports:
       - "${FAMILY_LIBRARIAN_CLAMAV_HOST_PORT:-13310}:3310"
     environment:
-      CLAMD_CONF_StreamMaxLength: 600M
-      CLAMD_CONF_MaxFileSize: 600M
-      CLAMD_CONF_PCREMaxFileSize: 600M
-      CLAMD_CONF_MaxScanSize: 1000M
+      # Keep in step with the product compose.yaml: the output policy allows
+      # 1 GiB files, so clamd's ceilings must sit above that.
+      CLAMD_CONF_StreamMaxLength: 1100M
+      CLAMD_CONF_MaxFileSize: 1100M
+      CLAMD_CONF_PCREMaxFileSize: 1100M
+      CLAMD_CONF_MaxScanSize: 2G
       CLAMD_CONF_AlertExceedsMax: "yes"
     healthcheck:
       test: ["CMD", "clamdscan", "--ping", "1"]
