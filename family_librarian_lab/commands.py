@@ -111,6 +111,10 @@ class ProviderConfig:
     # Former selector spellings still accepted by `--ep` after the provider was renamed. Using one works but
     # prints a single deprecation warning naming the canonical `name`.
     aliases: list[str] | None = None
+    # Compose volume keys renamed in the provider's overlay: [{"from": old_key, "to": new_key}]. Compose names
+    # a volume `<project>_<key>`, so a renamed key would silently bind an empty volume. `up --ep` copies the
+    # old volume's content into the new one first (see _migrate_provider_volumes) and never deletes the old.
+    volume_migrations: list[dict[str, str]] | None = None
 
 
 def _load_provider_registry() -> dict[str, ProviderConfig]:
@@ -135,6 +139,7 @@ def _load_provider_registry() -> dict[str, ProviderConfig]:
                 sync_command=entry.get("sync_command"),
                 rebuild_command=entry.get("rebuild_command"),
                 aliases=entry.get("aliases"),
+                volume_migrations=entry.get("volume_migrations"),
             )
         except KeyError as exc:
             raise SystemExit(
@@ -246,6 +251,90 @@ def _checkout_provider_source(cfg: ProviderConfig, values: dict[str, str], branc
         source_dir = lab_common.repo_dir(key=cfg.name)
         values[cfg.source_dir_env] = str(source_dir)
         values.update(_provider_build_stamp(cfg, source_dir))
+
+
+_VOLUME_HELPER_IMAGE = "alpine:3"
+
+
+def _docker(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["docker", *arguments], capture_output=True, text=True, check=False)
+
+
+def _volume_exists(name: str) -> bool:
+    return _docker("volume", "inspect", name).returncode == 0
+
+
+def _volume_listing(volume: str) -> str:
+    """Content hashes plus type/mode/owner for every entry of a volume, sorted by path."""
+    script = (
+        "cd /v && find . -type f -exec sha256sum {} + | sort -k2; "
+        "find . -exec stat -c '%F %a %u:%g %n' {} + | sort -k4"
+    )
+    result = _docker("run", "--rm", "-v", f"{volume}:/v:ro", _VOLUME_HELPER_IMAGE, "sh", "-ec", script)
+    if result.returncode:
+        raise SystemExit(f"Could not list volume {volume!r}: {result.stderr.strip()}")
+    return result.stdout
+
+
+def _volume_is_empty(volume: str) -> bool:
+    result = _docker("run", "--rm", "-v", f"{volume}:/v:ro", _VOLUME_HELPER_IMAGE, "sh", "-ec", "ls -A /v")
+    if result.returncode:
+        raise SystemExit(f"Could not inspect volume {volume!r}: {result.stderr.strip()}")
+    return not result.stdout.strip()
+
+
+def _volume_has_marker(volume: str, marker: str) -> bool:
+    return _docker("run", "--rm", "-v", f"{volume}:/v:ro", _VOLUME_HELPER_IMAGE, "test", "-f", f"/v/{marker}").returncode == 0
+
+
+def _migrate_provider_volumes(provider: ProviderConfig, project_name: str) -> None:
+    """Copy each renamed volume's content to its new name before Compose binds the new one.
+
+    Runs on every `up --ep` and is a no-op once done. The old volume is never modified or removed: it stays
+    as the rollback copy. Refuses to proceed (and changes nothing) if the new volume holds data the lab did not
+    migrate (no marker), or if a container other than the provider app uses the old volume."""
+    for migration in provider.volume_migrations or ():
+        old, new = f"{project_name}_{migration['from']}", f"{project_name}_{migration['to']}"
+        marker = f".lab-migrated-from-{migration['from']}"
+        if not _volume_exists(old):
+            continue
+        if _volume_exists(new):
+            if _volume_has_marker(new, marker):
+                continue
+            if not _volume_is_empty(new):
+                raise SystemExit(
+                    f"Volume {new!r} holds data but was not migrated from {old!r} by the lab (no {marker}); "
+                    "refusing to overwrite it. Resolve by hand (the old volume is untouched)."
+                )
+        else:
+            created = _docker(
+                "volume", "create",
+                "--label", f"com.docker.compose.project={project_name}",
+                "--label", f"com.docker.compose.volume={migration['to']}",
+                new,
+            )
+            if created.returncode:
+                raise SystemExit(f"Could not create volume {new!r}: {created.stderr.strip()}")
+        stop = _docker("ps", "-q", "--filter", f"volume={old}")
+        users = stop.stdout.split()
+        if users:
+            app = _docker("ps", "-q", "--filter", f"volume={old}", "--filter", f"label=com.docker.compose.service={provider.app_service}")
+            if set(users) - set(app.stdout.split()):
+                raise SystemExit(f"Containers other than {provider.app_service!r} still use volume {old!r}; stop them first.")
+            print(f"Stopping {provider.app_service} to migrate volume {old} -> {new}...", flush=True)
+            if _docker("stop", *users).returncode:
+                raise SystemExit(f"Could not stop {provider.app_service!r}.")
+        print(f"Copying volume {old} -> {new} (old volume is kept)...", flush=True)
+        copied = _docker("run", "--rm", "-v", f"{old}:/from:ro", "-v", f"{new}:/to", _VOLUME_HELPER_IMAGE,
+                         "sh", "-ec", "cp -a /from/. /to/")
+        if copied.returncode:
+            raise SystemExit(f"Copying {old!r} to {new!r} failed: {copied.stderr.strip()}")
+        if _volume_listing(old) != _volume_listing(new):
+            raise SystemExit(f"Verification failed: {new!r} does not match {old!r}. Old volume untouched; do not proceed.")
+        # Written only after verification: the new volume diverges from the old as soon as the app writes to it, so
+        # the marker, not a comparison, is what says "already migrated" on later runs.
+        _docker("run", "--rm", "-v", f"{new}:/to", _VOLUME_HELPER_IMAGE, "touch", f"/to/{marker}")
+        print(f"Volume {new} verified identical to {old}.", flush=True)
 
 
 #: The OCI label a provider image is expected to carry: the commit it was built from.
@@ -2518,6 +2607,8 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
             _checkout_provider_source(provider, values, ep_branch)
         extra_compose_files = _provider_compose_files(providers)
         project_name = lab_common.project_name()
+        for provider in providers:
+            _migrate_provider_volumes(provider, project_name)
         profiles = (PROFILE, *args.profile)
         # With --ep, only the selected providers' overlays are loaded, so any other provider already running
         # in this project looks like an orphan to Compose and --remove-orphans would stop it. `base down` is
