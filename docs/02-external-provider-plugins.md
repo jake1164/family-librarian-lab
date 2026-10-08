@@ -21,6 +21,7 @@ This mechanism is for the opposite case: a real, private, third-party provider -
 1. `cp external-providers.local.yaml.example external-providers.local.yaml` and fill in one `providers:` entry for your real provider. Field reference:
    - `name` -- a short local id, your own choice. This is the value you pass to every `--ep NAME` flag below.
    - `repo_url` -- the private repo to check out. Landed at its own keyed checkout (`repos/keyed/<name>`, separate from Family Librarian's own `repos/family-librarian`) so multiple providers never collide.
+   - `aliases` -- optional; former spellings of `name` that `--ep` still accepts after a rename. An alias resolves to the entry (and its keyed checkout under the canonical `name`) and prints one deprecation warning per run. Remove it once operators and scripts have moved.
    - `branch` -- optional; the branch `up --ep <name>` switches the checkout to on every run. Omit it to keep refreshing whatever branch the checkout is already on. `--ep <name>@<branch>` overrides it for one run.
    - `compose_file` -- path to that provider's own overlay, normally `external-providers/<name>.local.yaml`.
    - `supporting_compose_files` -- optional list of shared overlays, loaded before the provider overlay and deduplicated when multiple providers use one VPN.
@@ -59,3 +60,7 @@ A provider that needs more than its own container (e.g. an indexer manager and d
 When providers share a VPN, declare its Compose service in one local supporting overlay and list that file in each provider's `supporting_compose_files`. Give the VPN a neutral service name. Publish each provider's distinct listener port on the VPN service. A single provider's `up --ep` must include its supporting overlay. `up --ep` leaves other providers running rather than removing them as Compose orphans; use `base down` for full teardown.
 
 `LAB_EXTERNAL_HOST` is the browser-facing host name. Provider overlays construct their absolute management URL from that host, their published admin port, and the provider's `/admin` path; the internal provider URL remains the Compose service address. Do not reuse Family Librarian's `FAMILY_LIBRARIAN_PUBLIC_ORIGIN` for a provider on another port. Keep indexer and downloader UIs bound to loopback even when the provider admin port is reachable remotely. Read every credential from `lab.env` with a required interpolation; do not put literal credential fallbacks in an overlay.
+
+## Renaming a provider
+
+Rename the registry `name` (the canonical `--ep` value) and list the old spelling under `aliases`. Do not rename Compose volume keys: Compose derives the volume name from them, so a renamed key silently binds an empty new volume and the provider's persistent state appears lost. A renamed `name` also lands the source in a new keyed checkout (`repos/keyed/<new-name>`); the old one is left in place for rollback. Registration with Family Librarian is keyed by its own provider id and is not touched by a registry rename -- change the display label with the admin UI instead of re-running `register-external-provider`, which would create a second registration.

@@ -28,6 +28,7 @@ providers:
     # companion_services: [example-provider-downloader]
     source_dir_env: FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_SOURCE_DIR  # var name this provider's overlay reads for build: context:
     api_key_env: FAMILY_LIBRARIAN_EXAMPLE_PROVIDER_API_KEY  # var name in lab.env holding the bearer token FL sends
+    # aliases: [former-name]  # optional -- old --ep spellings kept after renaming `name`; each prints one deprecation warning
     sync_command: ["python", "-m", "app.metadata.sync"]  # optional -- omit if this provider has no sync step
     rebuild_command: ["python", "-m", "app.metadata.rebuild"]  # optional -- omit if this provider has no rebuild step
 

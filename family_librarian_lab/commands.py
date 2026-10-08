@@ -108,6 +108,9 @@ class ProviderConfig:
     companion_services: list[str] | None = None
     sync_command: list[str] | None = None
     rebuild_command: list[str] | None = None
+    # Former selector spellings still accepted by `--ep` after the provider was renamed. Using one works but
+    # prints a single deprecation warning naming the canonical `name`.
+    aliases: list[str] | None = None
 
 
 def _load_provider_registry() -> dict[str, ProviderConfig]:
@@ -131,6 +134,7 @@ def _load_provider_registry() -> dict[str, ProviderConfig]:
                 companion_services=entry.get("companion_services"),
                 sync_command=entry.get("sync_command"),
                 rebuild_command=entry.get("rebuild_command"),
+                aliases=entry.get("aliases"),
             )
         except KeyError as exc:
             raise SystemExit(
@@ -141,15 +145,33 @@ def _load_provider_registry() -> dict[str, ProviderConfig]:
     return providers
 
 
+_WARNED_ALIASES: set[str] = set()
+
+
+def _provider_selector_names() -> list[str]:
+    """Every spelling `--ep` accepts: canonical names plus deprecated aliases."""
+    providers = _load_provider_registry()
+    return sorted({*providers, *(alias for cfg in providers.values() for alias in cfg.aliases or ())})
+
+
 def _require_provider(name: str) -> ProviderConfig:
     providers = _load_provider_registry()
-    try:
+    if name in providers:
         return providers[name]
-    except KeyError:
-        raise SystemExit(
-            f"No provider named {name!r} in {EXTERNAL_PROVIDERS_REGISTRY_FILE} "
-            f"(known: {', '.join(sorted(providers)) or 'none configured'})."
-        ) from None
+    for cfg in providers.values():
+        if name in (cfg.aliases or ()):
+            if name not in _WARNED_ALIASES:
+                _WARNED_ALIASES.add(name)
+                print(
+                    f"warning: --ep {name!r} is deprecated; use --ep {cfg.name!r}. The old spelling still works "
+                    "for now.",
+                    file=sys.stderr, flush=True,
+                )
+            return cfg
+    raise SystemExit(
+        f"No provider named {name!r} in {EXTERNAL_PROVIDERS_REGISTRY_FILE} "
+        f"(known: {', '.join(sorted(providers)) or 'none configured'})."
+    )
 
 
 def _parse_ep_spec(spec: str) -> tuple[str, str | None]:
@@ -2818,7 +2840,7 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
 
 
 def _configure_ep(parser: argparse.ArgumentParser) -> None:
-    provider_choices = sorted(_load_provider_registry())
+    provider_choices = _provider_selector_names()
     parser.add_argument(
         "--ep",
         required=True,

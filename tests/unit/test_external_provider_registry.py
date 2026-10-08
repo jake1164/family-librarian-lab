@@ -59,3 +59,24 @@ def test_provider_state_reflects_companions(running: set[str], expected: str):
     )
     checks = {"compose_services": {name: {"state": "running"} for name in running}}
     assert commands._provider_state(checks, provider) == expected
+
+
+def test_alias_resolves_to_canonical_provider_with_one_warning(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    monkeypatch.setattr(
+        commands.lab_common, "load_local_registry",
+        lambda _name: {"providers": [_entry(name="new-name", aliases=["old-name"])]},
+    )
+    monkeypatch.setattr(commands, "_WARNED_ALIASES", set())
+    assert commands._require_provider("old-name").name == "new-name"
+    assert commands._require_provider("old-name").name == "new-name"
+    assert commands._require_provider("new-name").name == "new-name"
+    err = capsys.readouterr().err
+    assert err.count("deprecated") == 1
+    assert "'new-name'" in err
+    assert commands._provider_selector_names() == ["new-name", "old-name"]
+
+
+def test_unknown_provider_still_rejected(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(commands.lab_common, "load_local_registry", lambda _name: {"providers": [_entry()]})
+    with pytest.raises(SystemExit):
+        commands._require_provider("nope")
