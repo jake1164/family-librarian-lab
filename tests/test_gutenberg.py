@@ -106,6 +106,10 @@ def _sync_to_completion(api, *, timeout_seconds: float = 90) -> dict[str, object
     /status's `status` field reaches "Completed" or "Failed" (confirmed
     against GutenbergCatalogEndpoints/GutenbergCatalogStatus)."""
     triggered = api.gutenberg_sync()
+    if triggered.status == 409 and "disabled" in str(triggered.body).lower():
+        raise AssertionError(
+            "Gutenberg sync was refused because the source is disabled -- enable it first: "
+            f"{triggered.body!r}")
     if triggered.status not in (200, 409):
         raise AssertionError(f"Gutenberg sync trigger returned HTTP {triggered.status}: {triggered.body!r}")
     deadline = time.monotonic() + timeout_seconds
@@ -146,6 +150,7 @@ def _gutendex_ebook_option(options: dict[str, object]) -> dict[str, object] | No
 def first_sync_from_empty_state(ctx, scenario_factory):
     def operation() -> dict[str, object]:
         with scenario_factory("GUT-01") as scenario:
+            _enable_gutendex(scenario.api)
             status = _sync_to_completion(scenario.api)
             if status.get("status") != "Completed":
                 raise AssertionError(f"Gutenberg sync did not complete: {status!r}")
@@ -170,8 +175,8 @@ def local_search_has_no_live_network_dependency(ctx, scenario_factory):
             # network isolation, it's that GutenbergProvider.FindDirectAcquisitionsAsync
             # never calls Gutendex/gutenberg.org's search at all, only the
             # local Postgres catalog (confirmed by reading it end to end).
-            _sync_to_completion(scenario.api)
             _enable_gutendex(scenario.api)
+            _sync_to_completion(scenario.api)
             work_id = scenario.api.resolve_demo_work("project-hail-mary")
             options = scenario.api.fulfillment_options(work_id)
             option = _gutendex_ebook_option(options)
@@ -201,8 +206,8 @@ def local_search_has_no_live_network_dependency(ctx, scenario_factory):
 def sound_record_excluded_from_ebook_search(ctx, scenario_factory):
     def operation() -> dict[str, object]:
         with scenario_factory("GUT-06") as scenario:
-            _sync_to_completion(scenario.api)
             _enable_gutendex(scenario.api)
+            _sync_to_completion(scenario.api)
             work_id = scenario.api.resolve_demo_work("a-wrinkle-in-time")
             options = scenario.api.fulfillment_options(work_id)
             option = _gutendex_ebook_option(options)
@@ -244,8 +249,8 @@ def foreign_only_edition_reaches_a_preference_review_not_silent_acquisition(ctx,
     an indistinguishable "nothing found yet"."""
     def operation() -> dict[str, object]:
         with scenario_factory("GUT-11") as scenario:
-            _sync_to_completion(scenario.api)
             _enable_gutendex(scenario.api)
+            _sync_to_completion(scenario.api)
             request_id, format_id = scenario.api.create_demo_ebook_request()
 
             request = _poll_request_outcome(scenario.api, request_id, timeout_seconds=150)
@@ -276,8 +281,8 @@ def preference_ambiguity_candidate_can_be_accepted(ctx, scenario_factory):
     through the same security/import pipeline any other acquisition uses."""
     def operation() -> dict[str, object]:
         with scenario_factory("GUT-12") as scenario:
-            _sync_to_completion(scenario.api)
             _enable_gutendex(scenario.api)
+            _sync_to_completion(scenario.api)
             request_id, _ = scenario.api.create_demo_ebook_request()
 
             request = _poll_request_outcome(scenario.api, request_id, timeout_seconds=150)
@@ -342,8 +347,8 @@ def _downloaded_language(language):
 def accepting_spanish_does_not_authorize_french_bytes(ctx, scenario_factory):
     def operation():
         with _downloaded_language("fr"), scenario_factory("GUT-13") as scenario:
-            _sync_to_completion(scenario.api)
             _enable_gutendex(scenario.api)
+            _sync_to_completion(scenario.api)
             request_id, _ = scenario.api.create_demo_ebook_request()
             request = _poll_request_outcome(scenario.api, request_id, timeout_seconds=150)
             review = request.get("needsReview") or {}

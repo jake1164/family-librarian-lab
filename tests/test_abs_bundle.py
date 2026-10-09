@@ -62,8 +62,9 @@ def ordered_multi_track_direct_acquisition_reaches_one_abs_item(ctx, scenario_fa
             if scenario.abs_client is None:
                 raise AssertionError("Scenario did not bring up an Audiobookshelf destination.")
 
-            _sync_to_completion(scenario.api)
+            # POST /sync refuses a disabled source (409), so enable it first.
             _enable_gutendex(scenario.api)
+            _sync_to_completion(scenario.api)
             work_id = scenario.api.resolve_demo_work("the-hobbit")
             request_id, format_id = scenario.api.create_demo_audiobook_request()
             option = _gutenberg_audio_bundle_option(scenario.api.fulfillment_options(work_id))
@@ -112,6 +113,10 @@ def ordered_multi_track_direct_acquisition_reaches_one_abs_item(ctx, scenario_fa
 
 def _sync_to_completion(api, *, timeout_seconds: float = 90) -> None:
     triggered = api.gutenberg_sync()
+    if triggered.status == 409 and "disabled" in str(triggered.body).lower():
+        raise AssertionError(
+            "Gutenberg sync was refused because the source is disabled -- enable it first: "
+            f"{triggered.body!r}")
     if triggered.status not in (200, 409):
         raise AssertionError(f"Gutenberg sync trigger returned HTTP {triggered.status}: {triggered.body!r}")
     deadline = time.monotonic() + timeout_seconds
@@ -204,8 +209,12 @@ def shared_acquisition_and_version_hold_survive_restart(ctx, scenario_factory):
             if scenario.abs_client is None:
                 raise AssertionError("Audiobookshelf destination is missing.")
             api = scenario.api
-            assert api.set_provider_enabled("gutendex", False).status == 200
+            # The sync endpoint refuses a disabled source, so prime the catalog
+            # while enabled, then disable it again: the requests below must be
+            # created while the provider is off (the "disabled-provider pass").
+            _enable_gutendex(api)
             _sync_to_completion(api)
+            assert api.set_provider_enabled("gutendex", False).status == 200
             readers = [api.create_reader(f"abs06-reader-{i}@example.test", "Lab-Reader-2026!Pass")
                        for i in range(2)]
             work_id = api.resolve_demo_work()
