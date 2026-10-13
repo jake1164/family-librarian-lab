@@ -317,6 +317,15 @@ flow:
 ./lab run --test-group matrix
 ```
 
+`./lab up --profile matrix` also starts **Element Web** (a browser Matrix client, pinned image,
+default port 18009) locked to that homeserver, so the bot can be chatted with by hand: open the
+printed Element link and sign in as `reader1` / `Admin123!`. Its `config.json` is generated under
+`runtime/` for each host (the homeserver address must be the one a browser reaches, honoring
+`LAB_EXTERNAL_HOST`). It is served over plain http, so Element may warn about encryption; chat in an
+unencrypted direct message, which is all Family Librarian reads. To try Family Librarian's own chat
+over Matrix, set the `FAMILY_LIBRARIAN_CONVERSATION_*` flags in `lab.env` (see `lab.env.example`),
+run `./lab up --refresh`, and link `reader1@sydneyelvis.net` on the Matrix settings page.
+
 The lab Compose service leaves Matrix interaction alerts disabled unless
 `FAMILY_LIBRARIAN_PUBLIC_ORIGIN` is set in `lab.env`. Set it to the exact
 Family Librarian origin opened in the browser (for example,

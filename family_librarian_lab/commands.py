@@ -64,6 +64,7 @@ SHARED_CLAMAV_PROFILE = "shared-clamav"
 SHARED_CLAMAV_PROJECT = "family-librarian-lab-shared-clamav"
 DEFAULT_SHARED_CLAMAV_HOST_PORT = "13310"
 SFTP_KEY_DIR = REPO_ROOT / "runtime" / "sftp-test-key"
+ELEMENT_CONFIG_DIR = REPO_ROOT / "runtime" / "element"
 GUTENBERG_TLS_DIR = REPO_ROOT / "runtime" / "gutenberg-tls"
 GUTENBERG_CA_BUNDLE_PATH = GUTENBERG_TLS_DIR / "ca-bundle.pem"
 GUTENBERG_FIXTURE_ROOT = REPO_ROOT / "runtime" / "gutenberg-fixture-root"
@@ -482,7 +483,9 @@ homeserver (Continuwuity) AND, unlike smtp, does pre-configure and enable
 Family Librarian's Matrix settings -- registering both the bot account and
 a reader1 test account is unavoidable setup (Continuwuity's own
 bootstrap-registration-token requirement), so there is no meaningful
-"unconfigured Matrix" manual-testing state the way there is for SMTP.
+"unconfigured Matrix" manual-testing state the way there is for SMTP. The matrix
+profile also starts Element Web, a browser Matrix client locked to that homeserver, so
+the bot can be chatted with by hand.
 
 --ep brings up a real, private external-provider plugin from
 external-providers.local.yaml (gitignored -- none configured on this host
@@ -503,6 +506,8 @@ hosted links instead of 127.0.0.1:
   Continuwuity      http://127.0.0.1:18008  bot fl-bot / Admin123! already wired into Family
                      Librarian; Matrix account for reader1: reader1 / Admin123!;
                      FL reader reader1@sydneyelvis.net / Admin123! (not linked automatically)
+  Element Web       http://127.0.0.1:18009  browser Matrix client for the lab homeserver (part
+                     of --profile matrix); sign in as reader1 / Admin123!
 
 `target` is lab-managed and fetched from GitHub -- push a local branch before
 `./lab up <branch>` can see it. `./lab status` reports health at any time.
@@ -624,6 +629,14 @@ def _load_lab_env() -> dict[str, str]:
     # pattern already established for the always-mounted cwa-ingest volume.
     clients.ensure_sftp_test_keypair(SFTP_KEY_DIR)
     values["FAMILY_LIBRARIAN_SFTP_KEY_DIR"] = str(SFTP_KEY_DIR)
+    # Element Web (matrix profile) needs a config naming the homeserver as a browser reaches it. Same "always
+    # generated, harmless when the profile is off" pattern as the SFTP key above.
+    values["FAMILY_LIBRARIAN_ELEMENT_CONFIG"] = str(
+        clients.ensure_element_config(
+            ELEMENT_CONFIG_DIR,
+            _public_url(values, clients.MATRIX_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_MATRIX_HOST_PORT"),
+        )
+    )
     values.setdefault(
         "FAMILY_LIBRARIAN_SFTP_PASSWORD",
         os.environ.get("FAMILY_LIBRARIAN_SFTP_PASSWORD", clients.CWA_SFTP_DEFAULT_PASSWORD),
@@ -1226,6 +1239,20 @@ def _print_connection_info(
                 note=(
                     f"FL reader {clients.CWA_READER1_EMAIL} / {clients.CWA_READER_DEFAULT_PASSWORD} ready to link "
                     "it via the Matrix settings page -- not linked automatically"
+                ),
+            )
+        )
+        connections.append(
+            lab_common.ConnectionInfo(
+                "Element Web (Matrix client)",
+                _port(values, clients.ELEMENT_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ELEMENT_HOST_PORT"),
+                credentials=(
+                    f"sign in as {clients.MATRIX_HOUSEHOLD_USERNAME} / {clients.MATRIX_HOUSEHOLD_PASSWORD} "
+                    "(homeserver is fixed to this lab's Continuwuity)"
+                ),
+                note=(
+                    "plain http: Element may warn about encryption; chat in an UNENCRYPTED direct message, "
+                    "which is all the bot reads"
                 ),
             )
         )

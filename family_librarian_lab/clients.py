@@ -234,6 +234,40 @@ MATRIX_BOT_PASSWORD = "Admin123!"
 MATRIX_HOUSEHOLD_USERNAME = "reader1"
 MATRIX_HOUSEHOLD_PASSWORD = "Admin123!"
 
+# Element Web: a browser Matrix client so a person can sign in as the household
+# account and chat with the bot by hand. Part of the `matrix` profile (it is
+# useless without the homeserver, and no suite touches it). Pinned to a reviewed
+# release; override with FAMILY_LIBRARIAN_ELEMENT_IMAGE.
+ELEMENT_SERVICE = "element"
+ELEMENT_DEFAULT_IMAGE = "vectorim/element-web:v1.12.31"
+ELEMENT_DEFAULT_HOST_PORT = 18009
+
+
+def ensure_element_config(directory: Path, homeserver_url: str) -> Path:
+    """Writes Element's config.json, pointed at the lab homeserver as a *browser* reaches it, and returns its path.
+
+    Element runs in the person's browser, so the homeserver address must be the host-reachable one (the same
+    LAB_EXTERNAL_HOST-aware URL the lab prints), not the Compose-internal `matrix:8008` that Family Librarian itself
+    uses. That differs per host, so this is generated rather than tracked. It is rewritten only when its content
+    changes, and locks the client to the lab homeserver (no custom servers, guests or email login)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "config.json"
+    text = json.dumps(
+        {
+            "default_server_config": {"m.homeserver": {"base_url": homeserver_url, "server_name": MATRIX_SERVER_NAME}},
+            "brand": "Family Librarian lab Element",
+            "disable_custom_urls": True,
+            "disable_guests": True,
+            "disable_3pid_login": True,
+            "show_labs_settings": False,
+        },
+        indent=2,
+    ) + "\n"
+    if not path.exists() or path.read_text(encoding="utf-8") != text:
+        path.write_text(text, encoding="utf-8")
+    path.chmod(0o644)
+    return path
+
 
 def wait_for_matrix_ready(base_url: str, *, timeout_seconds: float = 60.0) -> None:
     """Thin AssertionError-raising wrapper around se-lab's own
