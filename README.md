@@ -90,7 +90,8 @@ What survives, because it is slow to rebuild:
   volume keep running and keep their data.
 
 What is lost: users, settings, and provider registrations (they live in FL's database). Re-run
-`./lab base register-external-provider --ep <name>` (or `./lab settings import`) as needed. For a wipe of
+`./lab base register-external-provider --ep <name>` as needed (AI settings are re-applied from lab.env's
+`FAMILY_LIBRARIAN_LAB_AI_*` when set; see `lab.env.example`). For a wipe of
 everything, use `./lab down --clean-volumes`.
 
 `./lab run` discovers suites through se-lab and defaults to `--test-group all` — every

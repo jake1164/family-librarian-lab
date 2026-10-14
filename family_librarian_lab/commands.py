@@ -2568,6 +2568,108 @@ def handle_build(args: argparse.Namespace, config: object) -> int:
     return 0
 
 
+# Family Librarian's AI roles (its ModelRole names), in the order its admin page lists them.
+FL_MODEL_ROLES = (
+    "IntentInterpretation",
+    "ConversationResponse",
+    "CandidateAmbiguityAssessment",
+    "ArtifactValidationAssessment",
+    "VisionCoverIdentification",
+)
+# Cover identification needs a vision-capable model, so it is only on when named.
+DEFAULT_LAB_AI_ROLES = FL_MODEL_ROLES[:4]
+LAB_AI_REASONING_MODES = ("Inherit", "Disabled")
+
+
+@dataclass(slots=True, frozen=True)
+class LabAiSettings:
+    endpoint_url: str
+    api_key: str | None
+    roles: tuple[dict[str, object], ...]
+
+    @property
+    def enabled_roles(self) -> list[str]:
+        return [str(role["role"]) for role in self.roles if role["isEnabled"]]
+
+
+def _canonical_role(name: str) -> str:
+    for role in FL_MODEL_ROLES:
+        if role.lower() == name.strip().lower():
+            return role
+    raise SystemExit(f"Unknown Family Librarian AI role {name.strip()!r} in lab.env; expected one of {', '.join(FL_MODEL_ROLES)}.")
+
+
+def lab_ai_settings(values: dict[str, str]) -> LabAiSettings | None:
+    """Family Librarian's AI settings as lab.env describes them, or None when lab.env does not set them.
+
+    lab.env is the source of truth whenever FAMILY_LIBRARIAN_LAB_AI_ENDPOINT_URL is set: every role is sent, the
+    ones not listed as disabled, so a fresh database (clean-books) comes back with the same AI as before."""
+    endpoint_url = values.get("FAMILY_LIBRARIAN_LAB_AI_ENDPOINT_URL", "").strip()
+    if not endpoint_url:
+        return None
+    model = values.get("FAMILY_LIBRARIAN_LAB_AI_MODEL", "").strip()
+    if not model:
+        raise SystemExit("FAMILY_LIBRARIAN_LAB_AI_ENDPOINT_URL is set, so lab.env must also set FAMILY_LIBRARIAN_LAB_AI_MODEL.")
+    reasoning_text = values.get("FAMILY_LIBRARIAN_LAB_AI_REASONING", "").strip() or "Disabled"
+    reasoning = next((mode for mode in LAB_AI_REASONING_MODES if mode.lower() == reasoning_text.lower()), None)
+    if reasoning is None:
+        raise SystemExit(f"FAMILY_LIBRARIAN_LAB_AI_REASONING must be one of {', '.join(LAB_AI_REASONING_MODES)}.")
+    roles_text = values.get("FAMILY_LIBRARIAN_LAB_AI_ROLES", "").strip()
+    enabled = (
+        {_canonical_role(name) for name in roles_text.split(",") if name.strip()}
+        if roles_text
+        else set(DEFAULT_LAB_AI_ROLES)
+    )
+    overrides: dict[str, str] = {}
+    for pair in values.get("FAMILY_LIBRARIAN_LAB_AI_ROLE_MODELS", "").split(","):
+        if not pair.strip():
+            continue
+        name, separator, role_model = pair.partition("=")
+        if not separator or not role_model.strip():
+            raise SystemExit(f"FAMILY_LIBRARIAN_LAB_AI_ROLE_MODELS entry {pair.strip()!r} must look like Role=model.")
+        overrides[_canonical_role(name)] = role_model.strip()
+    api_key = values.get("FAMILY_LIBRARIAN_LAB_AI_API_KEY", "").strip() or None
+    roles = tuple(
+        {
+            "role": role,
+            "isEnabled": role in enabled,
+            "placement": "Local",
+            "localModel": overrides.get(role, model),
+            "cloudModel": None,
+            "reasoning": reasoning,
+        }
+        for role in FL_MODEL_ROLES
+    )
+    return LabAiSettings(endpoint_url, api_key, roles)
+
+
+def _apply_lab_ai(api: FamilyLibrarianApi, values: dict[str, str]) -> None:
+    settings = lab_ai_settings(values)
+    if settings is None:
+        return
+    api.configure_model_gateway(endpoint_url=settings.endpoint_url, api_key=settings.api_key, roles=list(settings.roles))
+    print(
+        f"Family Librarian AI configured from lab.env: {settings.endpoint_url}, "
+        f"roles {', '.join(settings.enabled_roles) or 'none'}.",
+        flush=True,
+    )
+
+
+@registry.command(
+    "ai apply",
+    help="Apply lab.env's FAMILY_LIBRARIAN_LAB_AI_* settings to the running Family Librarian (endpoint, model, roles)",
+    configure=_configure_project,
+)
+def handle_ai_apply(args: argparse.Namespace, config: object) -> int:
+    values = _load_lab_env()
+    if lab_ai_settings(values) is None:
+        raise SystemExit("lab.env does not set FAMILY_LIBRARIAN_LAB_AI_ENDPOINT_URL; nothing to apply.")
+    api = FamilyLibrarianApi(_host_base(values))
+    api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+    _apply_lab_ai(api, values)
+    return 0
+
+
 @registry.command(
     "up",
     help="Check out, build, and deploy Family Librarian's base profile, and leave it running for manual testing",
@@ -2653,6 +2755,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
         api = FamilyLibrarianApi(_host_base(values))
         api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
         wiring = _wire_destinations(values, project_name, profiles, api)
+        _apply_lab_ai(api, values)
 
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
     _print_connection_info(
@@ -2864,7 +2967,7 @@ def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
         "provider stacks, the shared ClamAV, and files already in the shared cwa-ingest volume.\n"
         "\n"
         "LOST: FL users, settings and provider registrations (re-run './lab base register-external-provider\n"
-        "--ep <name>' or './lab settings import' afterwards).\n"
+        "--ep <name>' afterwards). AI settings come back from lab.env's FAMILY_LIBRARIAN_LAB_AI_* when set.\n"
         "\n"
         "For a full wipe of everything use './lab down --clean-volumes'. Irreversible, so it asks for a typed\n"
         "'yes' unless --yes is given."
@@ -2949,6 +3052,10 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
         if not passed:
             print(json.dumps(checks, indent=2), file=sys.stderr)
             raise SystemExit("Family Librarian failed readiness checks after 'clean-books'.")
+        if lab_ai_settings(values) is not None:
+            api = FamilyLibrarianApi(_host_base(values))
+            api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+            _apply_lab_ai(api, values)
     print(
         f"Family Librarian restarted with an empty database and storage: {project_name}. "
         "Re-register external providers if you use them.",

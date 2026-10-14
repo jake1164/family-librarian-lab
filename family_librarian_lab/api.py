@@ -372,6 +372,24 @@ class FamilyLibrarianApi:
         _require_status(enabled, 200, "Matrix enable")
         return self.matrix_settings()
 
+    def configure_model_gateway(
+        self, *, endpoint_url: str, api_key: str | None, roles: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Save the AI endpoint and every role, store the key (if any), then enable the gateway. Local-only:
+        cloud stays off, and limits are left at Family Librarian's own defaults."""
+        saved = self._request(
+            "PUT",
+            "/api/v1/admin/model-gateway/",
+            json_body={"endpointUrl": endpoint_url, "allowCloud": False, "roles": roles},
+        )
+        _require_status(saved, 200, "Model gateway settings")
+        if api_key:
+            keyed = self._request("PUT", "/api/v1/admin/model-gateway/api-key", json_body={"apiKey": api_key})
+            _require_status(keyed, 200, "Model gateway API key")
+        enabled = self._request("PUT", "/api/v1/admin/model-gateway/enabled", json_body={"enabled": True})
+        _require_status(enabled, 200, "Model gateway enable")
+        return _object(enabled.body, "Model gateway settings")
+
     def matrix_link_status(self) -> dict[str, Any]:
         """Household member's own Matrix identity link state -- call on a
         *reader's* FamilyLibrarianApi instance (create_reader()/ensure_reader()),
