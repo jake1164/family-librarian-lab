@@ -2643,6 +2643,35 @@ def lab_ai_settings(values: dict[str, str]) -> LabAiSettings | None:
     return LabAiSettings(endpoint_url, api_key, roles)
 
 
+#: The built-in sources a manually tested lab turns on: Project Gutenberg (provider id ``gutendex``) and LibriVox. A fresh
+#: database starts with both off, and ``clean-books`` wipes the setting, so ``up`` and ``clean-books`` turn them on again.
+#: ``./lab run`` scenarios are separate: they keep LibriVox off so a slow public service cannot fail an unrelated case.
+DEFAULT_LAB_BUILTIN_SOURCES = ("gutendex", "librivox")
+
+
+def lab_builtin_sources(values: dict[str, str]) -> list[str]:
+    """Built-in source ids to enable on ``up``. ``FAMILY_LIBRARIAN_LAB_BUILTIN_SOURCES`` overrides; blank means none."""
+    raw = values.get("FAMILY_LIBRARIAN_LAB_BUILTIN_SOURCES")
+    if raw is None:
+        return list(DEFAULT_LAB_BUILTIN_SOURCES)
+    return [name.strip().lower() for name in raw.split(",") if name.strip()]
+
+
+def _enable_builtin_sources(api: FamilyLibrarianApi, values: dict[str, str]) -> None:
+    """Turn the lab's built-in sources on. A failure is reported, not fatal: the lab is still usable without one."""
+    for source in lab_builtin_sources(values):
+        response = api.set_provider_enabled(source, True)
+        if response.status == 200:
+            print(f"Built-in source enabled: {source}.", flush=True)
+        else:
+            print(
+                f"WARNING: could not enable the built-in source {source!r} (HTTP {response.status}); "
+                "enable it on the Sources page.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
 def _apply_lab_ai(api: FamilyLibrarianApi, values: dict[str, str]) -> None:
     settings = lab_ai_settings(values)
     if settings is None:
@@ -2756,6 +2785,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
         api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
         wiring = _wire_destinations(values, project_name, profiles, api)
         _apply_lab_ai(api, values)
+        _enable_builtin_sources(api, values)
 
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
     _print_connection_info(
@@ -3052,10 +3082,10 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
         if not passed:
             print(json.dumps(checks, indent=2), file=sys.stderr)
             raise SystemExit("Family Librarian failed readiness checks after 'clean-books'.")
-        if lab_ai_settings(values) is not None:
-            api = FamilyLibrarianApi(_host_base(values))
-            api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
-            _apply_lab_ai(api, values)
+        api = FamilyLibrarianApi(_host_base(values))
+        api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+        _apply_lab_ai(api, values)
+        _enable_builtin_sources(api, values)
     print(
         f"Family Librarian restarted with an empty database and storage: {project_name}. "
         "Re-register external providers if you use them.",
