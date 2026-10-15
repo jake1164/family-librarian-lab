@@ -50,3 +50,14 @@ def test_the_help_says_providers_are_cleaned_and_qbittorrent_is_not() -> None:
     text = parser.description or ""
     assert "staged files" in text
     assert "qBittorrent is left" in text
+
+
+@pytest.mark.parametrize("status", [404, 405])
+def test_an_older_family_librarian_is_named_as_the_reason(status: int) -> None:
+    from family_librarian_lab.api import ApiResponse, FamilyLibrarianApi
+
+    api = FamilyLibrarianApi("http://127.0.0.1:1")
+    api._request = lambda *args, **kwargs: ApiResponse(status, None)  # type: ignore[method-assign,assignment]
+
+    with pytest.raises(AssertionError, match="predates this feature"):
+        api.release_provider_downloads()

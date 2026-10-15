@@ -382,6 +382,12 @@ class FamilyLibrarianApi:
         """Ask Family Librarian to have every provider cancel running downloads and delete every job's staged files
         (``POST /api/v1/admin/external-providers/release-downloads``). Returns ``{cancelled, released, failed}``."""
         response = self._request("POST", "/api/v1/admin/external-providers/release-downloads", data=b"")
+        if response.status in (404, 405):
+            # An older build has no such route (the unknown path falls through to the web client, which answers 405).
+            raise AssertionError(
+                "the running Family Librarian predates this feature; run './lab up --refresh' to deploy the current "
+                "build, then reset again"
+            )
         _require_status(response, 200, "release provider downloads")
         return _object(response.body, "release provider downloads")
 
