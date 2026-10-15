@@ -2672,6 +2672,30 @@ def _enable_builtin_sources(api: FamilyLibrarianApi, values: dict[str, str]) -> 
             )
 
 
+def _release_provider_downloads(api: FamilyLibrarianApi) -> None:
+    """Before FL's records are wiped, have every provider cancel running downloads and delete staged files.
+
+    FL is the only party that knows which downloads exist, and each provider cleans up its own files in its own way
+    through the protocol, so nothing downloaded but never approved is left behind at a provider. qBittorrent is left
+    alone on purpose: it owns its torrents and their seeding. Best effort: a lab whose FL is down or whose provider
+    cannot be reached still resets, and the provider's own retention expires its staged files."""
+    try:
+        result = api.release_provider_downloads()
+    except Exception as exc:  # noqa: BLE001 - the reset must not fail because cleanup could not run
+        print(
+            f"WARNING: could not release provider downloads before the wipe ({type(exc).__name__}: {exc}). "
+            "Providers keep staged files until their own retention expires them.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    print(
+        f"Provider downloads released: {result.get('cancelled', 0)} cancelled, "
+        f"{result.get('released', 0)} cleaned up, {result.get('failed', 0)} could not be reached.",
+        flush=True,
+    )
+
+
 def _apply_lab_ai(api: FamilyLibrarianApi, values: dict[str, str]) -> None:
     settings = lab_ai_settings(values)
     if settings is None:
@@ -2992,6 +3016,10 @@ def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
         "postgres/migrate/family-librarian from the already-built image (no rebuild), and waits until it is\n"
         "healthy.\n"
         "\n"
+        "FIRST: every provider is asked to cancel running downloads and delete its staged files, through Family\n"
+        "Librarian, so nothing downloaded but never approved is left behind at a provider (qBittorrent is left\n"
+        "alone). Best effort: a lab whose Family Librarian is down still resets.\n"
+        "\n"
         "KEPT: the Project Gutenberg catalogue (saved before the wipe, restored and row-count verified after;\n"
         "pass --wipe-gutenberg to drop it too), Anna's Archive (bind mounts, never touched), CWA, ABS, Matrix,\n"
         "provider stacks, the shared ClamAV, and files already in the shared cwa-ingest volume.\n"
@@ -3048,6 +3076,19 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
     with lab_common.run_lock(label="lab clean-books"):
         # Same reason as `up --refresh`: FL must be pointed at the shared ClamAV or /health/ready never passes.
         values = {**values, **ensure_shared_clamav()}
+        # While FL still knows which downloads exist: have the providers release them (see the function's docstring).
+        try:
+            release_api = FamilyLibrarianApi(_host_base(values))
+            release_api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+        except Exception as exc:  # noqa: BLE001 - FL may simply be down; the reset still goes ahead
+            print(
+                f"WARNING: Family Librarian is not reachable ({type(exc).__name__}), so provider downloads were not "
+                "released first. Providers keep staged files until their own retention expires them.",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            _release_provider_downloads(release_api)
         dump_path = CLEAN_BOOKS_DUMP_DIR / f"gutenberg-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.dump"
         saved: dict[str, int] = {}
         if keep_gutenberg:

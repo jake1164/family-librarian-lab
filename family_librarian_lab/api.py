@@ -372,6 +372,13 @@ class FamilyLibrarianApi:
         _require_status(enabled, 200, "Matrix enable")
         return self.matrix_settings()
 
+    def release_provider_downloads(self) -> dict[str, Any]:
+        """Ask Family Librarian to have every provider cancel running downloads and delete every job's staged files
+        (``POST /api/v1/admin/external-providers/release-downloads``). Returns ``{cancelled, released, failed}``."""
+        response = self._request("POST", "/api/v1/admin/external-providers/release-downloads", data=b"")
+        _require_status(response, 200, "release provider downloads")
+        return _object(response.body, "release provider downloads")
+
     def configure_model_gateway(
         self, *, endpoint_url: str, api_key: str | None, roles: list[dict[str, Any]]
     ) -> dict[str, Any]:
