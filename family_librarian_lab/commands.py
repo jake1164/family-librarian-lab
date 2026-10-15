@@ -2672,6 +2672,34 @@ def _enable_builtin_sources(api: FamilyLibrarianApi, values: dict[str, str]) -> 
             )
 
 
+#: Metadata sources that need a key. The lab turns one on only when its key is in lab.env (provider id, env variable).
+LAB_METADATA_KEYS = (
+    ("hardcover", "FAMILY_LIBRARIAN_LAB_HARDCOVER_TOKEN"),
+    ("googlebooks", "FAMILY_LIBRARIAN_LAB_GOOGLEBOOKS_KEY"),
+)
+
+
+def lab_metadata_credentials(values: dict[str, str]) -> list[tuple[str, str]]:
+    """``(provider id, key)`` for every metadata source whose key lab.env sets. A blank value means not configured."""
+    return [(provider, values[name].strip()) for provider, name in LAB_METADATA_KEYS if values.get(name, "").strip()]
+
+
+def _apply_lab_metadata(api: FamilyLibrarianApi, values: dict[str, str]) -> None:
+    """Store each configured metadata key, then enable that source. Best effort and quiet about the key itself."""
+    for provider, credential in lab_metadata_credentials(values):
+        saved = api.set_metadata_credential(provider, credential)
+        enabled = api.set_provider_enabled(provider, True) if saved.status == 200 else saved
+        if saved.status == 200 and enabled.status == 200:
+            print(f"Metadata source enabled from lab.env: {provider}.", flush=True)
+        else:
+            print(
+                f"WARNING: could not configure the metadata source {provider!r} "
+                f"(key HTTP {saved.status}, enable HTTP {enabled.status}); set it on the Integrations page.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
 def _release_provider_downloads(api: FamilyLibrarianApi) -> None:
     """Before FL's records are wiped, have every provider cancel running downloads and delete staged files.
 
@@ -2810,6 +2838,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
         wiring = _wire_destinations(values, project_name, profiles, api)
         _apply_lab_ai(api, values)
         _enable_builtin_sources(api, values)
+        _apply_lab_metadata(api, values)
 
     print(f"Family Librarian is up and healthy: {project_name}. Use './lab base down' when finished.", flush=True)
     _print_connection_info(
@@ -3127,6 +3156,7 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
         api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
         _apply_lab_ai(api, values)
         _enable_builtin_sources(api, values)
+        _apply_lab_metadata(api, values)
     print(
         f"Family Librarian restarted with an empty database and storage: {project_name}. "
         "Re-register external providers if you use them.",

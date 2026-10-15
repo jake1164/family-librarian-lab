@@ -372,6 +372,12 @@ class FamilyLibrarianApi:
         _require_status(enabled, 200, "Matrix enable")
         return self.matrix_settings()
 
+    def set_metadata_credential(self, provider_id: str, credential: str) -> ApiResponse:
+        """Store a metadata provider's API key or token (``PUT .../integrations/metadata/{id}/credential``)."""
+        return self._request(
+            "PUT", f"/api/v1/admin/integrations/metadata/{provider_id}/credential", json_body={"credential": credential}
+        )
+
     def release_provider_downloads(self) -> dict[str, Any]:
         """Ask Family Librarian to have every provider cancel running downloads and delete every job's staged files
         (``POST /api/v1/admin/external-providers/release-downloads``). Returns ``{cancelled, released, failed}``."""
