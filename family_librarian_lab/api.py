@@ -553,6 +553,19 @@ class FamilyLibrarianApi:
         _require_status(work, (200, 201), "catalog candidate resolution")
         return _required_string(_object(work.body, "catalog work"), "id", "catalog work")
 
+    def request_formats(self) -> dict[str, Any]:
+        """Which media types the host will take requests for right now, and the reason when it will not."""
+        response = self._request("GET", "/api/v1/catalog/request-formats")
+        _require_status(response, 200, "request formats")
+        return _object(response.body, "request formats")
+
+    def list_external_providers(self) -> list[dict[str, Any]]:
+        response = self._request("GET", "/api/v1/admin/external-providers/")
+        _require_status(response, 200, "external providers")
+        if not isinstance(response.body, list):
+            raise AssertionError("External providers did not return a list.")
+        return response.body
+
     def fulfillment_options(self, work_id: str) -> dict[str, Any]:
         response = self._request("GET", f"/api/v1/catalog/works/{work_id}/fulfillment-options")
         _require_status(response, 200, "work fulfillment options")
@@ -612,6 +625,26 @@ class FamilyLibrarianApi:
         return self._request(
             "PUT", f"/api/v1/admin/external-providers/{external_provider_id}/enabled",
             json_body={"enabled": enabled},
+        )
+
+    def set_external_provider_recheck_schedule(self, external_provider_id: str, schedule: str) -> ApiResponse:
+        return self._request(
+            "PUT", f"/api/v1/admin/external-providers/{external_provider_id}/recheck-schedule",
+            json_body={"recheckSchedule": schedule},
+        )
+
+    def set_external_provider_attempt_limit(self, external_provider_id: str, limit: int) -> ApiResponse:
+        return self._request(
+            "PUT", f"/api/v1/admin/external-providers/{external_provider_id}/automatic-attempt-limit",
+            json_body={"limit": limit},
+        )
+
+    def set_external_provider_confidence(
+        self, external_provider_id: str, level: str, ebook: str | None, audiobook: str | None
+    ) -> ApiResponse:
+        return self._request(
+            "PUT", f"/api/v1/admin/external-providers/{external_provider_id}/confidence-level",
+            json_body={"level": level, "ebook": ebook, "audiobook": audiobook},
         )
 
     def test_external_provider(self, external_provider_id: str) -> dict[str, Any]:

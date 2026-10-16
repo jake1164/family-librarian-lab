@@ -58,14 +58,56 @@ def test_empty_list_never_overwrites_and_snapshots_are_pruned(tmp_path):
     assert loaded[0].provider_id == "openlibrary" and loaded[0].note == "n"
 
 
-def test_confirmation_prompt_says_what_happens_to_requests():
+def test_confirmation_prompt_says_requests_are_saved_not_replayed():
     import argparse
 
     from family_librarian_lab.commands import _clean_books_request_plan
 
-    def plan(**flags):
-        return " ".join(_clean_books_request_plan(argparse.Namespace(**{"requeue_all": False, "requeue_todo": False, **flags})))
+    text = " ".join(_clean_books_request_plan(argparse.Namespace()))
+    assert "saved" in text and "NOT requested again" in text and "requeue-books" in text
 
-    assert "Nothing will be requested again" in plan()
-    assert "EVERY saved book" in plan(requeue_all=True)
-    assert "NOT Available" in plan(requeue_todo=True)
+
+def test_missing_providers_and_unready_formats():
+    assert rs.missing_providers(["Alpha", "beta"], ["alpha"]) == ["beta"]
+    built = rs.build_entries([
+        _req("w1", "Both", "a@x", [("Ebook", "Requested"), ("Audiobook", "Requested")]),
+        _req("w2", "AudioOnly", "a@x", [("Audiobook", "Requested")]),
+    ], SRC)
+    kept, dropped = rs.drop_unready_formats(rs.plan_replay(built.entries, todo_only=False), {"Audiobook"})
+    assert [(i.entry.title, i.media_types) for i in kept] == [("Both", ["Ebook"])]
+    assert dropped == ["AudioOnly"]
+
+
+def test_snapshot_remembers_enabled_external_providers(tmp_path):
+    built = rs.build_entries([_req("w1", "Dune", "a@x", [("Ebook", "Requested")])], SRC)
+    path = rs.write_snapshot(tmp_path, built.entries, external_providers=["zeta", "alpha"])
+    assert rs.read_external_providers(path) == ["alpha", "zeta"]
+
+
+def test_running_destinations_are_found_from_compose_services():
+    from family_librarian_lab.commands import _running_destination_profiles
+
+    services = {
+        "postgres": {"state": "running"},
+        "cwa": {"state": "running"},
+        "abs": {"state": "exited"},
+        "matrix": {"state": "running"},
+    }
+    assert _running_destination_profiles(services) == ["cwa-local", "matrix"]
+    assert _running_destination_profiles({}) == []
+
+
+def test_provider_export_drops_everything_but_the_settings_to_restore(tmp_path):
+    export = rs.export_providers([{
+        "id": "guid", "providerId": "example-source", "displayName": "Example", "baseUrl": "http://x:1",
+        "isEnabled": True, "recheckSchedule": "Daily", "automaticAttemptLimit": 3, "hasApiKey": True,
+        "apiKeyHint": "abcd", "confidenceLevel": "Standard", "ebookConfidenceLevel": None,
+        "audiobookConfidenceLevel": "High", "lastTestMessage": "ok",
+    }])
+    assert set(export[0]) == {
+        "providerId", "displayName", "baseUrl", "isEnabled", "recheckSchedule", "automaticAttemptLimit",
+        "confidenceLevel", "ebookConfidenceLevel", "audiobookConfidenceLevel"}
+    assert rs.write_providers(tmp_path, []) is None and rs.read_providers(tmp_path) == []
+    rs.write_providers(tmp_path, export)
+    assert rs.write_providers(tmp_path, []) is None  # an empty list never replaces the saved copy
+    assert rs.read_providers(tmp_path) == export

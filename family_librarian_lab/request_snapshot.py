@@ -137,7 +137,13 @@ def plan_replay(entries: list[SnapshotEntry], *, todo_only: bool) -> list[Replay
     return plan
 
 
-def write_snapshot(directory: Path, entries: list[SnapshotEntry], *, now: datetime | None = None) -> Path | None:
+def write_snapshot(
+    directory: Path,
+    entries: list[SnapshotEntry],
+    *,
+    external_providers: list[str] | None = None,
+    now: datetime | None = None,
+) -> Path | None:
     """Write a timestamped snapshot and prune to the newest SNAPSHOT_KEEP. Nothing is written for an empty list,
     so a reset of an already-empty lab cannot replace the snapshot a later `--requeue-*` still needs."""
     if not entries:
@@ -145,7 +151,12 @@ def write_snapshot(directory: Path, entries: list[SnapshotEntry], *, now: dateti
     directory.mkdir(parents=True, exist_ok=True)
     stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
     path = directory / f"requests-{stamp}.json"
-    payload = {"version": SNAPSHOT_VERSION, "savedAtUtc": stamp, "entries": [e.to_json() for e in entries]}
+    payload = {
+        "version": SNAPSHOT_VERSION,
+        "savedAtUtc": stamp,
+        "enabledExternalProviders": sorted(external_providers or []),
+        "entries": [e.to_json() for e in entries],
+    }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     for old in sorted(directory.glob("requests-*.json"))[:-SNAPSHOT_KEEP]:
         old.unlink()
@@ -162,3 +173,64 @@ def read_snapshot(path: Path) -> list[SnapshotEntry]:
     if data.get("version") != SNAPSHOT_VERSION:
         raise ValueError(f"{path.name} has snapshot version {data.get('version')!r}; expected {SNAPSHOT_VERSION}.")
     return [SnapshotEntry.from_json(item) for item in data.get("entries", [])]
+
+
+def read_external_providers(path: Path) -> list[str]:
+    """External providers that were registered and enabled when the snapshot was saved."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [str(item) for item in data.get("enabledExternalProviders") or []]
+
+
+def missing_providers(saved: list[str], enabled_now: list[str]) -> list[str]:
+    """Providers that were enabled at save time but are not enabled now (compared case-insensitively)."""
+    now = {item.lower() for item in enabled_now}
+    return [item for item in saved if item.lower() not in now]
+
+
+def drop_unready_formats(plan: list[ReplayItem], unready: set[str]) -> tuple[list[ReplayItem], list[str]]:
+    """Remove formats the host cannot take requests for right now (one unready format rejects the whole request).
+    Returns the remaining plan and the title of each book that was left out entirely."""
+    kept: list[ReplayItem] = []
+    dropped: list[str] = []
+    for item in plan:
+        media = [m for m in item.media_types if m not in unready]
+        if media:
+            kept.append(ReplayItem(item.entry, media))
+        else:
+            dropped.append(item.entry.title)
+    return kept, dropped
+
+
+PROVIDERS_FILE = "providers.json"
+
+#: What is copied from an external provider's registration so it can be added back the way it was. The API key is
+#: deliberately absent: the API never returns it, and the lab supplies it from lab.env when it re-adds the provider.
+_PROVIDER_FIELDS = (
+    "providerId", "displayName", "baseUrl", "isEnabled", "recheckSchedule", "automaticAttemptLimit",
+    "confidenceLevel", "ebookConfidenceLevel", "audiobookConfidenceLevel",
+)
+
+
+def export_providers(responses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{field: item.get(field) for field in _PROVIDER_FIELDS} for item in responses]
+
+
+def write_providers(directory: Path, providers: list[dict[str, Any]]) -> Path | None:
+    """Overwrite providers.json. Nothing is written for an empty list, so resetting a lab with no providers cannot
+    replace the copy a later restore still needs."""
+    if not providers:
+        return None
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / PROVIDERS_FILE
+    path.write_text(json.dumps({"version": SNAPSHOT_VERSION, "providers": providers}, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def read_providers(directory: Path) -> list[dict[str, Any]]:
+    path = directory / PROVIDERS_FILE
+    if not path.is_file():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("version") != SNAPSHOT_VERSION:
+        raise ValueError(f"{path.name} has version {data.get('version')!r}; expected {SNAPSHOT_VERSION}.")
+    return list(data.get("providers") or [])

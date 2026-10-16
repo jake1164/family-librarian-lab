@@ -3049,17 +3049,18 @@ def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
         "Librarian, so nothing downloaded but never approved is left behind at a provider (qBittorrent is left\n"
         "alone). Best effort: a lab whose Family Librarian is down still resets.\n"
         "\n"
-        "KEPT: the Project Gutenberg catalogue (saved before the wipe, restored and row-count verified after;\n"
+        "KEPT: registered external providers (saved, then added back through the API with their settings; the API key\n"
+        "comes from lab.env; pass --clear-providers to skip), the Project Gutenberg catalogue (saved before the wipe, restored and row-count verified after;\n"
         "pass --wipe-gutenberg to drop it too), Anna's Archive (bind mounts, never touched), CWA, ABS, Matrix,\n"
         "provider stacks, the shared ClamAV, and files already in the shared cwa-ingest volume.\n"
         "\n"
-        "LOST: FL users, settings and provider registrations (re-run './lab base register-external-provider\n"
-        "--ep <name>' afterwards). AI settings come back from lab.env's FAMILY_LIBRARIAN_LAB_AI_* when set.\n"
+        "LOST: FL users and hand-made settings. External providers, destinations and the AI settings from lab.env\n"
+        "are set up again (see above); with --clear-providers, register providers by hand with\n"
+        "'./lab base register-external-provider --ep <name>'.\n"
         "\n"
-        "REQUESTS: the request list is saved to runtime/clean-books/requests-*.json (newest 10 kept; never written\n"
-        "empty). --requeue-all then requests every saved book again after the reset; --requeue-todo only the formats\n"
-        "that were not Available. Requeued books start as fresh requests: status and history are not restored. With no\n"
-        "live requests the newest snapshot is used.\n"
+        "REQUESTS: the request list is saved to runtime/clean-books/requests-*.json first (newest 10 kept; never\n"
+        "written empty). After the reset, running CWA/Audiobookshelf/SMTP/Matrix and the saved external providers are\n"
+        "set up again; then run './lab requeue-books' (or with --todo) to request the saved books again.\n"
         "\n"
         "For a full wipe of everything use './lab down --clean-volumes'. Irreversible, so it asks for a typed\n"
         "'yes' unless --yes is given."
@@ -3076,16 +3077,10 @@ def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Also discard the imported Project Gutenberg catalogue (re-importing takes ~20 minutes)",
     )
-    requeue = parser.add_mutually_exclusive_group()
-    requeue.add_argument(
-        "--requeue-all",
+    parser.add_argument(
+        "--clear-providers",
         action="store_true",
-        help="After the reset, request every saved book again in the formats it was requested in, whatever its status",
-    )
-    requeue.add_argument(
-        "--requeue-todo",
-        action="store_true",
-        help="After the reset, request again only the formats that were not Available (Cancelled ones are dropped)",
+        help="Do not add the registered external providers back after the reset (they are re-added by default)",
     )
 
 
@@ -3116,6 +3111,12 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
             "The Gutenberg catalogue will be kept." if keep_gutenberg else "The Gutenberg catalogue will be DELETED too.",
             flush=True,
         )
+        print(
+            "Registered external providers will be saved and added back after the reset."
+            if not args.clear_providers
+            else "Registered external providers will NOT be added back (--clear-providers).",
+            flush=True,
+        )
         for line in _clean_books_request_plan(args):
             print(line, flush=True)
         if input("Type 'yes' to continue: ").strip().lower() != "yes":
@@ -3137,6 +3138,8 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
         else:
             _release_provider_downloads(release_api)
             _save_request_snapshot(release_api)
+            if not args.clear_providers:
+                _save_external_providers(release_api)
         dump_path = CLEAN_BOOKS_DUMP_DIR / f"gutenberg-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.dump"
         saved: dict[str, int] = {}
         if keep_gutenberg:
@@ -3176,26 +3179,124 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
         _apply_lab_ai(api, values)
         _enable_builtin_sources(api, values)
         _apply_lab_metadata(api, values)
-        if args.requeue_all or args.requeue_todo:
-            _requeue_requests(api, todo_only=args.requeue_todo)
+        _rewire_running_destinations(values, project_name, api)
+        if not args.clear_providers:
+            _readd_external_providers(api)
     print(
         f"Family Librarian restarted with an empty database and storage: {project_name}. "
-        "Re-register external providers if you use them.",
+        "Re-register external providers if you use them, then './lab requeue-books' (or with --todo) to "
+        "request the saved books again.",
         flush=True,
     )
     return 0
 
 
+#: Compose service that proves a destination is running -> the `up --profile` name that wires it.
+_DESTINATION_PROFILE_BY_SERVICE = {
+    clients.CWA_SERVICE: clients.CWA_PROFILE,
+    clients.ABS_SERVICE: clients.ABS_PROFILE,
+    clients.SMTP_SERVICE: clients.SMTP_PROFILE,
+    clients.MATRIX_SERVICE: clients.MATRIX_PROFILE,
+    clients.CWA_SFTP_SERVICE_KEY: clients.CWA_SFTP_PROFILE_KEY,
+    clients.CWA_SFTP_SERVICE_PASSWORD: clients.CWA_SFTP_PROFILE_PASSWORD,
+}
+
+
+def _running_destination_profiles(services: dict[str, object]) -> list[str]:
+    """`--profile` names for the destinations that are running, so clean-books can wire them again."""
+    return [
+        profile
+        for service, profile in _DESTINATION_PROFILE_BY_SERVICE.items()
+        if isinstance(services.get(service), dict) and services[service].get("state") == "running"
+    ]
+
+
+def _rewire_running_destinations(values: dict[str, str], project_name: str, api: FamilyLibrarianApi) -> None:
+    """The wipe removed the settings that point Family Librarian at CWA, Audiobookshelf, SMTP and Matrix, though
+    those services kept running. Wire whichever are up, as `./lab up --profile ...` does. Best effort: on failure
+    say so and name the command that does it by hand."""
+    services, _ = _compose_service_health(values, project_name)
+    profiles = _running_destination_profiles(services)
+    if not profiles:
+        return
+    print(f"Wiring running destinations again: {', '.join(profiles)}...", flush=True)
+    try:
+        _wire_destinations(values, project_name, (PROFILE, *profiles), api)
+    except Exception as exc:  # noqa: BLE001 - the reset itself succeeded
+        print(
+            f"WARNING: could not wire the destinations again ({type(exc).__name__}: {exc}). "
+            f"Run './lab up --profile {' '.join(profiles)}' to do it.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def _clean_books_request_plan(args: argparse.Namespace) -> list[str]:
     """What `clean-books` will do with the request list, for the confirmation prompt."""
-    saved = f"The request list will be saved to {CLEAN_BOOKS_DUMP_DIR} first (status and history are not kept)."
-    if args.requeue_all:
-        return [saved, "After the reset EVERY saved book will be requested again in its original formats, "
-                       "including cancelled and already-available ones."]
-    if args.requeue_todo:
-        return [saved, "After the reset only formats that were NOT Available will be requested again "
-                       "(Available and Cancelled formats are skipped)."]
-    return [saved, "Nothing will be requested again; use --requeue-all or --requeue-todo to do so."]
+    return [
+        f"The request list will be saved to {CLEAN_BOOKS_DUMP_DIR} first (status and history are not kept).",
+        "Books are NOT requested again by this command. Afterwards, running CWA/Audiobookshelf/SMTP/Matrix and the "
+        "saved external providers are set up again; then run "
+        "'./lab requeue-books' (every saved book) or "
+        "'./lab requeue-books --todo' (only formats that were not Available).",
+    ]
+
+
+def _save_external_providers(api: FamilyLibrarianApi) -> None:
+    """Best effort: copy each external provider's registration to runtime/clean-books/providers.json."""
+    try:
+        providers = request_snapshot.export_providers(api.list_external_providers())
+        path = request_snapshot.write_providers(CLEAN_BOOKS_DUMP_DIR, providers)
+    except Exception as exc:  # noqa: BLE001 - the reset must still go ahead
+        print(f"WARNING: could not save the external providers ({type(exc).__name__}: {exc}).", file=sys.stderr, flush=True)
+        return
+    print(f"Saved {len(providers)} external provider registration(s) to {path}" if path
+          else "No external providers registered; nothing to keep.", flush=True)
+
+
+def _readd_external_providers(api: FamilyLibrarianApi) -> None:
+    """Register the saved external providers again with their saved settings. The API key comes from lab.env via the
+    lab's provider registry (the API never returns it); a provider the registry does not know is added without one.
+    A provider is switched back on only if it was enabled and its connection test passes. Best effort per provider."""
+    try:
+        saved = request_snapshot.read_providers(CLEAN_BOOKS_DUMP_DIR)
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: could not read the saved external providers ({exc}).", file=sys.stderr, flush=True)
+        return
+    registry_names = _load_provider_registry()
+    for item in saved:
+        provider_id = str(item["providerId"])
+        try:
+            created = api.create_external_provider(provider_id, str(item["displayName"]), str(item["baseUrl"]))
+            external_id = str(created["id"])
+            known = registry_names.get(provider_id)
+            note = ""
+            if known and known.api_key_env:
+                api.set_external_provider_api_key(external_id, lab_common.resolve_setting(known.api_key_env, required=True))
+            else:
+                note = " (no API key set: not in the lab registry)"
+            if item.get("recheckSchedule"):
+                api.set_external_provider_recheck_schedule(external_id, str(item["recheckSchedule"]))
+            if item.get("automaticAttemptLimit") is not None:
+                api.set_external_provider_attempt_limit(external_id, int(item["automaticAttemptLimit"]))
+            if item.get("confidenceLevel"):
+                api.set_external_provider_confidence(
+                    external_id, str(item["confidenceLevel"]), item.get("ebookConfidenceLevel"),
+                    item.get("audiobookConfidenceLevel"),
+                )
+            tested = api.test_external_provider(external_id)
+            if item.get("isEnabled") and tested.get("lastTestSucceeded") is True:
+                api.set_external_provider_enabled(external_id, True)
+                print(f"External provider {provider_id!r} added back and enabled{note}.", flush=True)
+            else:
+                reason = "its connection test failed" if item.get("isEnabled") else "it was disabled before"
+                print(f"External provider {provider_id!r} added back but left disabled: {reason}{note}.", flush=True)
+        except BaseException as exc:  # noqa: BLE001 - includes SystemExit from a missing lab.env setting
+            print(
+                f"WARNING: could not add external provider {provider_id!r} back ({type(exc).__name__}: {exc}). "
+                f"Run './lab base register-external-provider --ep {provider_id}'.",
+                file=sys.stderr, flush=True,
+            )
 
 
 def _save_request_snapshot(api: FamilyLibrarianApi) -> None:
@@ -3209,7 +3310,8 @@ def _save_request_snapshot(api: FamilyLibrarianApi) -> None:
                 found = api.catalog_work(work_id).get("sources") or []
                 sources[work_id] = (found[0]["providerId"], found[0]["externalId"]) if found else None
         built = request_snapshot.build_entries(admin_requests, sources)
-        path = request_snapshot.write_snapshot(CLEAN_BOOKS_DUMP_DIR, built.entries)
+        enabled = [str(p["providerId"]) for p in api.list_external_providers() if p.get("isEnabled")]
+        path = request_snapshot.write_snapshot(CLEAN_BOOKS_DUMP_DIR, built.entries, external_providers=enabled)
     except Exception as exc:  # noqa: BLE001 - the reset must still go ahead
         print(f"WARNING: could not save the request list ({type(exc).__name__}: {exc}).", file=sys.stderr, flush=True)
         return
@@ -3219,14 +3321,67 @@ def _save_request_snapshot(api: FamilyLibrarianApi) -> None:
         print(f"WARNING: not saved: {item.title!r} ({item.reason}).", file=sys.stderr, flush=True)
 
 
-def _requeue_requests(api: FamilyLibrarianApi, *, todo_only: bool) -> None:
-    """Request the saved books again under their original requesters. One failure is reported, not fatal."""
+def _configure_requeue_books(parser: argparse.ArgumentParser) -> None:
+    parser.description = (
+        "Request the books saved by './lab clean-books' again, as fresh requests under their original requesters.\n"
+        "\n"
+        "By default every saved book is requested again, in the formats it had, whatever its status (--all says\n"
+        "the same thing explicitly). --todo requests only the formats that were not Available.\n"
+        "\n"
+        "Run it after the reset, once external providers are registered and Audiobookshelf/CWA are enabled. Before\n"
+        "requesting anything it checks that (1) every external provider that was enabled when the list was saved\n"
+        "is enabled now, and (2) the host takes requests for each format involved. If not, it stops and says why;\n"
+        "nothing is requested. --skip-unready drops unready formats instead; --force ignores missing providers."
+    )
+    parser.formatter_class = argparse.RawDescriptionHelpFormatter
+    which = parser.add_mutually_exclusive_group()
+    which.add_argument("--all", action="store_true", help="Every saved book, in the formats it was requested in (the default)")
+    which.add_argument("--todo", action="store_true", help="Only formats that were not Available (Cancelled skipped)")
+    parser.add_argument("--skip-unready", action="store_true", help="Drop formats the host cannot take requests for")
+    parser.add_argument("--force", action="store_true", help="Go ahead even if a saved external provider is missing")
+
+
+@registry.command(
+    "requeue-books",
+    help="Request the books saved by clean-books again (everything by default; --todo for formats not Available)",
+    configure=_configure_requeue_books,
+)
+def handle_requeue_books(args: argparse.Namespace, config: object) -> int:
     snapshot = request_snapshot.latest_snapshot(CLEAN_BOOKS_DUMP_DIR)
     if snapshot is None:
-        print("Requeue: no saved requests, nothing to do.", flush=True)
-        return
-    plan = request_snapshot.plan_replay(request_snapshot.read_snapshot(snapshot), todo_only=todo_only)
+        raise SystemExit(f"No saved requests in {CLEAN_BOOKS_DUMP_DIR}; run './lab clean-books' with requests first.")
+    values = _load_lab_env()
+    api = FamilyLibrarianApi(_host_base(values))
+    api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+    plan = request_snapshot.plan_replay(request_snapshot.read_snapshot(snapshot), todo_only=args.todo)
     print(f"Requeue: {len(plan)} book(s) from {snapshot.name}.", flush=True)
+
+    enabled_now = [str(p["providerId"]) for p in api.list_external_providers() if p.get("isEnabled")]
+    missing = request_snapshot.missing_providers(request_snapshot.read_external_providers(snapshot), enabled_now)
+    if missing and not args.force:
+        raise SystemExit(
+            f"External provider(s) enabled when the list was saved are not enabled now: {', '.join(missing)}. "
+            "Register them ('./lab base register-external-provider --ep <name>'), or pass --force. Nothing requested."
+        )
+
+    needed = {media for item in plan for media in item.media_types}
+    formats = api.request_formats()
+    unready = {
+        media: str((formats.get(media.lower()) or {}).get("reason") or "not ready")
+        for media in sorted(needed)
+        if not (formats.get(media.lower()) or {}).get("isReady", False)
+    }
+    if unready and not args.skip_unready:
+        for media, reason in unready.items():
+            print(f"  {media} requests are not available: {reason}", file=sys.stderr, flush=True)
+        raise SystemExit("Fix the above (or pass --skip-unready to drop those formats). Nothing requested.")
+    if unready:
+        plan, left_out = request_snapshot.drop_unready_formats(plan, set(unready))
+        for media, reason in unready.items():
+            print(f"  Skipping {media}: {reason}", flush=True)
+        for title in left_out:
+            print(f"  Left out entirely: {title!r}", flush=True)
+
     admin_email = api.me().get("email")
     readers: dict[str, FamilyLibrarianApi] = {}
     created = failed = 0
@@ -3253,6 +3408,7 @@ def _requeue_requests(api: FamilyLibrarianApi, *, todo_only: bool) -> None:
             failed += 1
             print(f"  FAILED {label}: {exc}", file=sys.stderr, flush=True)
     print(f"Requeue: {created} created, {failed} failed.", flush=True)
+    return 1 if failed else 0
 
 
 def _configure_ep(parser: argparse.ArgumentParser) -> None:
