@@ -29,7 +29,7 @@ from agent.planning import RunPlan, RunReport
 from agent.simulators import matrix as matrix_fixture
 from agent.suites import CaseFunc, Suite, discover_suites, run_suites, select_suites
 
-from family_librarian_lab import clients, gutenberg_fixtures
+from family_librarian_lab import clients, gutenberg_fixtures, request_snapshot
 from family_librarian_lab.api import FamilyLibrarianApi
 
 
@@ -3056,6 +3056,11 @@ def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
         "LOST: FL users, settings and provider registrations (re-run './lab base register-external-provider\n"
         "--ep <name>' afterwards). AI settings come back from lab.env's FAMILY_LIBRARIAN_LAB_AI_* when set.\n"
         "\n"
+        "REQUESTS: the request list is saved to runtime/clean-books/requests-*.json (newest 10 kept; never written\n"
+        "empty). --requeue-all then requests every saved book again after the reset; --requeue-todo only the formats\n"
+        "that were not Available. Requeued books start as fresh requests: status and history are not restored. With no\n"
+        "live requests the newest snapshot is used.\n"
+        "\n"
         "For a full wipe of everything use './lab down --clean-volumes'. Irreversible, so it asks for a typed\n"
         "'yes' unless --yes is given."
     )
@@ -3070,6 +3075,17 @@ def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
         "--wipe-gutenberg",
         action="store_true",
         help="Also discard the imported Project Gutenberg catalogue (re-importing takes ~20 minutes)",
+    )
+    requeue = parser.add_mutually_exclusive_group()
+    requeue.add_argument(
+        "--requeue-all",
+        action="store_true",
+        help="After the reset, request every saved book again in the formats it was requested in, whatever its status",
+    )
+    requeue.add_argument(
+        "--requeue-todo",
+        action="store_true",
+        help="After the reset, request again only the formats that were not Available (Cancelled ones are dropped)",
     )
 
 
@@ -3118,6 +3134,7 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
             )
         else:
             _release_provider_downloads(release_api)
+            _save_request_snapshot(release_api)
         dump_path = CLEAN_BOOKS_DUMP_DIR / f"gutenberg-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.dump"
         saved: dict[str, int] = {}
         if keep_gutenberg:
@@ -3157,12 +3174,71 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
         _apply_lab_ai(api, values)
         _enable_builtin_sources(api, values)
         _apply_lab_metadata(api, values)
+        if args.requeue_all or args.requeue_todo:
+            _requeue_requests(api, todo_only=args.requeue_todo)
     print(
         f"Family Librarian restarted with an empty database and storage: {project_name}. "
         "Re-register external providers if you use them.",
         flush=True,
     )
     return 0
+
+
+def _save_request_snapshot(api: FamilyLibrarianApi) -> None:
+    """Best effort: save the request list before the wipe. Never blocks the reset."""
+    try:
+        admin_requests = api.list_requests()
+        sources: dict[str, tuple[str, str] | None] = {}
+        for item in admin_requests:
+            work_id = str((item.get("request") or {}).get("workId", ""))
+            if work_id and work_id not in sources:
+                found = api.catalog_work(work_id).get("sources") or []
+                sources[work_id] = (found[0]["providerId"], found[0]["externalId"]) if found else None
+        built = request_snapshot.build_entries(admin_requests, sources)
+        path = request_snapshot.write_snapshot(CLEAN_BOOKS_DUMP_DIR, built.entries)
+    except Exception as exc:  # noqa: BLE001 - the reset must still go ahead
+        print(f"WARNING: could not save the request list ({type(exc).__name__}: {exc}).", file=sys.stderr, flush=True)
+        return
+    if path:
+        print(f"Saved {len(built.entries)} book request(s) to {path}", flush=True)
+    for item in built.unresolved:
+        print(f"WARNING: not saved: {item.title!r} ({item.reason}).", file=sys.stderr, flush=True)
+
+
+def _requeue_requests(api: FamilyLibrarianApi, *, todo_only: bool) -> None:
+    """Request the saved books again under their original requesters. One failure is reported, not fatal."""
+    snapshot = request_snapshot.latest_snapshot(CLEAN_BOOKS_DUMP_DIR)
+    if snapshot is None:
+        print("Requeue: no saved requests, nothing to do.", flush=True)
+        return
+    plan = request_snapshot.plan_replay(request_snapshot.read_snapshot(snapshot), todo_only=todo_only)
+    print(f"Requeue: {len(plan)} book(s) from {snapshot.name}.", flush=True)
+    admin_email = api.me().get("email")
+    readers: dict[str, FamilyLibrarianApi] = {}
+    created = failed = 0
+    for item in plan:
+        entry = item.entry
+        label = f"{entry.title!r} [{', '.join(item.media_types)}] for {entry.requester_email}"
+        try:
+            requester = api
+            if entry.requester_email.lower() != str(admin_email).lower():
+                if entry.requester_email not in readers:
+                    readers[entry.requester_email] = api.ensure_reader(
+                        entry.requester_email, clients.CWA_READER_DEFAULT_PASSWORD
+                    )
+                requester = readers[entry.requester_email]
+            work_id = requester.resolve_candidate(entry.provider_id, entry.external_id)
+            response = requester.create_request(
+                work_id, item.media_types, note=entry.note,
+                version_kind=entry.version_kind, version_details=entry.version_details,
+            )
+            if response.status != 201:
+                raise AssertionError(f"HTTP {response.status}: {response.body}")
+            created += 1
+        except Exception as exc:  # noqa: BLE001 - keep going; the summary lists what failed
+            failed += 1
+            print(f"  FAILED {label}: {exc}", file=sys.stderr, flush=True)
+    print(f"Requeue: {created} created, {failed} failed.", flush=True)
 
 
 def _configure_ep(parser: argparse.ArgumentParser) -> None:

@@ -539,6 +539,20 @@ class FamilyLibrarianApi:
         _require_status(work, (200, 201), "demo catalog work resolution")
         return _required_string(_object(work.body, "catalog work"), "id", "catalog work")
 
+    def catalog_work(self, work_id: str) -> dict[str, Any]:
+        response = self._request("GET", f"/api/v1/catalog/works/{work_id}")
+        _require_status(response, 200, "catalog work")
+        return _object(response.body, "catalog work")
+
+    def resolve_candidate(self, provider_id: str, external_id: str) -> str:
+        """Resolve a provider's candidate into a Work by its stable identity (no search), returning the work id."""
+        work = self._request(
+            "POST", f"/api/v1/catalog/candidates/{quote(provider_id, safe='')}/{quote(external_id, safe='')}/resolve",
+            data=b"",
+        )
+        _require_status(work, (200, 201), "catalog candidate resolution")
+        return _required_string(_object(work.body, "catalog work"), "id", "catalog work")
+
     def fulfillment_options(self, work_id: str) -> dict[str, Any]:
         response = self._request("GET", f"/api/v1/catalog/works/{work_id}/fulfillment-options")
         _require_status(response, 200, "work fulfillment options")
