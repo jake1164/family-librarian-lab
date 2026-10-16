@@ -137,7 +137,7 @@ def matrix_keyword_answers_settle_a_question(ctx, scenario_factory):
             household.send_message(room, "keep looking")
             _wait_for_dm(household, room, "keep looking")
 
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
                 review = q.needs_review(admin, keep_request)
                 if review is None or review.get("questionKind") is None:

@@ -8,6 +8,9 @@ provider, and publishing into a real CWA. The provider is FL's sample provider r
 
 Matrix answers are in `test_acquisition_questions_matrix.py`, so the Matrix stack only starts when wanted.
 
+Timing: Family Librarian searches external providers in a background sweep every two minutes and creating a request does
+not wake it, so each case waits for a sweep (see question_cases.SWEEP_SECONDS); expect a few minutes per case.
+
 Not covered here: the 7-day reminder (needs a controllable clock; FL's unit tests cover it).
 
 Every case fails loudly if a fixture lands on a different path than it is about (a different question kind, or an
@@ -165,12 +168,15 @@ def keep_looking_is_not_asked_again_for_the_same_candidate(ctx, scenario_factory
             review = q.wait_for_question(api, request_id, "CollectionContaining")
             version = q.request_view(api, request_id).get("version")
 
+            baseline = q.attempt_count(api, request_id)
             response = api.resolve_needs_review(request_id, candidate_id=None, expected_version=version)
             if response.status != 200:
                 raise AssertionError(f"Keep looking returned HTTP {response.status}: {response.body!r}")
             api.recheck_requests()
 
-            deadline = time.monotonic() + 40
+            # A sweep has to run before "not asked again" means anything; then give the pass a moment to settle.
+            q.wait_for_attempts_beyond(api, request_id, baseline)
+            deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 again = q.needs_review(api, request_id)
                 if again is not None and again.get("questionKind") is not None:
@@ -214,14 +220,14 @@ def a_box_set_with_unknown_contents_is_not_a_question(ctx, scenario_factory):
             _prepare(scenario)
             request_id, _ = api.create_demo_ebook_request(slug=q.EMBER_ROAD)
 
-            deadline = time.monotonic() + 45
+            # Only once the provider has actually been searched does "no question" mean anything.
+            q.wait_for_attempts_beyond(api, request_id, 0)
+            deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 review = q.needs_review(api, request_id)
                 if review is not None and review.get("questionKind") is not None:
                     raise AssertionError(f"A box set of unknown contents was offered as a question: {review!r}")
                 time.sleep(3)
-            if not api.provider_attempts(request_id):
-                raise AssertionError("The provider was never searched, so this proves nothing: " + q.describe(api, request_id))
             return {"request_id": request_id}
 
     _run(ctx, "Q-06", operation)
@@ -295,7 +301,7 @@ def a_saved_preference_skips_the_question(ctx, scenario_factory):
                 raise AssertionError(f"The 'always accept' choice was not saved: {saved!r}")
 
             second, _ = api.create_demo_ebook_request(slug=q.ASHEN_CROWN)
-            deadline = time.monotonic() + 90
+            deadline = time.monotonic() + q.QUESTION_TIMEOUT_SECONDS
             while time.monotonic() < deadline:
                 review = q.needs_review(api, second)
                 if review is not None and review.get("questionKind") is not None:

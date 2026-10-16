@@ -88,3 +88,27 @@ def test_every_seeded_request_names_a_fixture_work_and_media_type():
     assert len(slugs) == len(set(slugs))
     assert {media for _, media, _ in q.SEED_REQUESTS} == {"Ebook", "Audiobook"}
     assert q.CINDER_GATE in slugs and q.STANDALONE_CINDER not in slugs
+
+
+def test_asserting_nothing_happened_first_waits_for_a_sweep(monkeypatch):
+    """'No second question' only means something once the provider has been searched again."""
+    monkeypatch.setattr(q.time, "sleep", lambda _: None)
+
+    class Admin:
+        def __init__(self, counts):
+            self.counts = list(counts)
+
+        def provider_attempts(self, request_id):
+            return [{}] * self.counts.pop(0)
+
+    assert q.wait_for_attempts_beyond(Admin([1, 1, 2]), "r1", baseline=1) == 2
+
+    ticks = iter([0.0, 1.0, 1000.0])
+    monkeypatch.setattr(q.time, "monotonic", lambda: next(ticks))
+    with pytest.raises(AssertionError, match="No further search of the provider within 5s"):
+        q.wait_for_attempts_beyond(Admin([1, 1, 1]), "r1", baseline=1, timeout=5)
+
+
+def test_waits_allow_a_whole_background_sweep():
+    assert q.QUESTION_TIMEOUT_SECONDS >= 2 * q.SWEEP_SECONDS
+    assert q.AVAILABLE_TIMEOUT_SECONDS > q.QUESTION_TIMEOUT_SECONDS

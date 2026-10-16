@@ -37,10 +37,16 @@ STANDALONE_CINDER = "lantern-cinder-standalone"
 
 QUESTION_CATEGORY = "request.acquisition_question"
 
-#: How long a request gets to reach a question: FL's immediate search plus its background pass.
-QUESTION_TIMEOUT_SECONDS = 90.0
-#: A collection or standalone copy is downloaded, scanned by the shared ClamAV, verified and published.
-AVAILABLE_TIMEOUT_SECONDS = 150.0
+#: Family Librarian searches external providers in a background sweep every two minutes
+#: (AutomaticRequestFulfillmentHostedService.PollInterval) and creating a request does not wake it. A new request
+#: therefore waits for the next sweep -- up to two minutes after the host started or the previous sweep -- before
+#: anything is searched. Every wait below allows one whole sweep plus the search and the work that follows it.
+SWEEP_SECONDS = 120.0
+#: From creating a request to the question appearing: one sweep, the search, and the margin for a slow search.
+QUESTION_TIMEOUT_SECONDS = SWEEP_SECONDS * 2
+#: From answering (or a recheck) to Available: a sweep where one is needed, then the download, the shared ClamAV
+#: scan, identity verification and publishing into CWA.
+AVAILABLE_TIMEOUT_SECONDS = SWEEP_SECONDS * 2 + 60.0
 
 
 def register_sample_provider(api: Any, *, confidence: str = "Strict") -> str:
@@ -89,6 +95,29 @@ def describe(admin_api: Any, request_id: str) -> str:
         f"status={request.get('status')!r} needsReview={request.get('needsReview')!r} "
         f"attempts={len(attempts)} last_attempt={last!r}"
     )
+
+
+def attempt_count(admin_api: Any, request_id: str) -> int:
+    return len(admin_api.provider_attempts(request_id))
+
+
+def wait_for_attempts_beyond(
+    admin_api: Any, request_id: str, baseline: int, *, timeout: float = QUESTION_TIMEOUT_SECONDS
+) -> int:
+    """Wait until the provider has been searched again since `baseline` attempts, i.e. one background sweep has run for
+    this request, and return the new count. A case that asserts something did NOT happen (no second question, no
+    question for a box set) must call this first: without it the silence could simply mean no sweep has run yet."""
+    deadline = time.monotonic() + timeout
+    while True:
+        count = attempt_count(admin_api, request_id)
+        if count > baseline:
+            return count
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"No further search of the provider within {timeout:.0f}s (attempts still {count}), so there is nothing "
+                f"to assert yet: {describe(admin_api, request_id)}"
+            )
+        time.sleep(3)
 
 
 def wait_for_question(
