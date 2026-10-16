@@ -29,7 +29,7 @@ from agent.planning import RunPlan, RunReport
 from agent.simulators import matrix as matrix_fixture
 from agent.suites import CaseFunc, Suite, discover_suites, run_suites, select_suites
 
-from family_librarian_lab import clients, gutenberg_fixtures, request_snapshot
+from family_librarian_lab import clients, gutenberg_fixtures, question_cases, request_snapshot
 from family_librarian_lab.api import FamilyLibrarianApi
 
 
@@ -2125,6 +2125,15 @@ class _BaseScenario:
         self.matrix_reader: FamilyLibrarianApi | None = None
         self._result_directory: Path | None = None
 
+    def external_provider_control(self) -> clients.SampleProviderControl:
+        """Control client for this scenario's own sample-provider fixture (needs the external-provider profile and
+        the question-fixtures switch in the suite's extra_env)."""
+        return clients.SampleProviderControl(
+            _client_host_base(
+                self._values, clients.EXTERNAL_PROVIDER_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_EXTERNAL_PROVIDER_HOST_PORT"
+            )
+        )
+
     def __enter__(self) -> "_BaseScenario":
         # A plain-text, unconditionally-printed marker: every case's own
         # `docker compose up`/`down` output streams live regardless of
@@ -3466,6 +3475,71 @@ def handle_clean_library(args: argparse.Namespace, config: object) -> int:
         _clean_books_core(values, project_name, volumes, books_args)
     print(
         f"Library cleaned: {project_name}. Run './lab requeue-books' to request the saved books again.",
+        flush=True,
+    )
+    return 0
+
+
+def _configure_seed_questions(parser: argparse.ArgumentParser) -> None:
+    parser.description = (
+        "Leave one request per Phase 5 question kind waiting for an answer, for trying the request-page card, the\n"
+        "notification and Matrix by hand. Restarts the sample provider with its question fixtures on, registers and\n"
+        "enables it (confidence Strict) if needed, then requests each invented book as reader1.\n"
+        "\n"
+        "Needs a running lab ('./lab up --profile cwa-local', plus 'abs' for the two audiobook questions) built from a\n"
+        "Family Librarian branch that has the fixtures. Nothing is asserted and nothing is cleaned up: use\n"
+        "'./lab clean-books' to start over."
+    )
+    parser.formatter_class = argparse.RawDescriptionHelpFormatter
+    _configure_project(parser)
+
+
+@registry.command(
+    "seed-questions",
+    help="Seed one request per Phase 5 question kind (invented books) for manual testing",
+    configure=_configure_seed_questions,
+)
+def handle_seed_questions(args: argparse.Namespace, config: object) -> int:
+    values = {**_load_lab_env(), clients.EXTERNAL_PROVIDER_QUESTION_FIXTURES_ENV: "1"}
+    project_name = _project_name(values, args.project_name, unique=False)
+    control_port = _port(values, clients.EXTERNAL_PROVIDER_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_EXTERNAL_PROVIDER_HOST_PORT")
+    with lab_common.run_lock(label="lab seed-questions"):
+        # Only the fixture container: Family Librarian and the rest of the stack are left alone.
+        _run_or_exit(
+            values, project_name, "up", "-d", "--build", "--force-recreate", "--no-deps", "--wait",
+            clients.EXTERNAL_PROVIDER_SERVICE, profiles=(PROFILE, clients.EXTERNAL_PROVIDER_PROFILE),
+        )
+        api = FamilyLibrarianApi(_host_base(values))
+        api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+        clients.SampleProviderControl(f"http://127.0.0.1:{control_port}").reset()
+        existing = next(
+            (row for row in api.list_external_providers() if row.get("providerId") == question_cases.SAMPLE_PROVIDER_ID),
+            None,
+        )
+        if existing is None:
+            question_cases.register_sample_provider(api)
+            print("Registered and enabled the sample provider (confidence Strict).", flush=True)
+        else:
+            row_id = str(existing["id"])
+            api.set_external_provider_confidence(row_id, "Strict", None, None)
+            api.test_external_provider(row_id)
+            api.set_external_provider_enabled(row_id, True)
+            print("Sample provider was already registered: set to Strict, tested and enabled.", flush=True)
+
+        reader = api.ensure_reader(clients.CWA_READER1_EMAIL, clients.CWA_READER_DEFAULT_PASSWORD)
+        print(f"Requesting as {clients.CWA_READER1_EMAIL}:", flush=True)
+        for slug, media_type, why in question_cases.SEED_REQUESTS:
+            try:
+                request_id, _ = reader.create_demo_request(media_type, slug=slug)
+            except AssertionError as exc:
+                print(f"  SKIPPED {slug} [{media_type}] ({why}): {exc}", file=sys.stderr, flush=True)
+            else:
+                print(f"  {slug} [{media_type}] {request_id}: {why}", flush=True)
+    print("", flush=True)
+    print("Each question appears on the request page within a minute or two. To make a standalone copy of", flush=True)
+    print("Cinder Gate appear (it withdraws that question and is fetched on the next check), run:", flush=True)
+    print(
+        f"  curl -X POST http://127.0.0.1:{control_port}/test/catalog/{question_cases.STANDALONE_CINDER}/enable",
         flush=True,
     )
     return 0

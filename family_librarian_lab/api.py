@@ -482,13 +482,18 @@ class FamilyLibrarianApi:
         return self._request("POST", "/api/v1/admin/requests/recheck", json_body={})
 
     def resolve_needs_review(
-        self, request_id: str, *, candidate_id: str | None = None, expected_version: int | None = None
+        self,
+        request_id: str,
+        *,
+        candidate_id: str | None = None,
+        expected_version: int | None = None,
+        always_accept: bool = False,
     ) -> ApiResponse:
         """SELFSERV-1: resolve a "PreferenceAmbiguity" review as the caller's
         own authenticated user -- pass `candidate_id` to accept it ("get it
         anyway"), or omit it to decline every candidate ("keep looking")."""
         return self._request("POST", f"/api/v1/requests/{request_id}/needs-review/resolve", json_body={
-            "candidateId": candidate_id, "expectedVersion": expected_version,
+            "candidateId": candidate_id, "expectedVersion": expected_version, "alwaysAccept": always_accept,
         })
 
     def admin_resolve_needs_review(
@@ -498,6 +503,19 @@ class FamilyLibrarianApi:
         return self._request("POST", f"/api/v1/admin/requests/{request_id}/needs-review/resolve", json_body={
             "candidateId": candidate_id, "expectedVersion": expected_version,
         })
+
+    def notifications(self) -> list[dict[str, Any]]:
+        response = self._request("GET", "/api/v1/notifications/")
+        _require_status(response, 200, "notifications")
+        return _list_field(response.body, "notifications", "notifications")
+
+    def acquisition_preferences(self) -> list[dict[str, Any]]:
+        """The caller's own saved "always accept" choices (Phase 5c)."""
+        response = self._request("GET", "/api/v1/me/acquisition-preferences/")
+        _require_status(response, 200, "acquisition preferences")
+        if not isinstance(response.body, list):
+            raise AssertionError("Acquisition preferences did not return a list.")
+        return response.body
 
     def provider_attempts(self, request_id: str) -> list[dict[str, Any]]:
         response = self._request("GET", f"/api/v1/admin/requests/{request_id}/provider-attempts")

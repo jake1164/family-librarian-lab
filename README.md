@@ -38,6 +38,7 @@ cp se-lab/lab.env.example lab.env
 ./lab clean-cwa        # remove every book from the lab's CWA
 ./lab clean-abs        # remove every audiobook from the lab's Audiobookshelf
 ./lab clean-library    # clean-abs + clean-cwa + clean-books (requeue-books then requests the saved books again)
+./lab seed-questions    # one request per Phase 5 question kind (invented books), for trying the cards/Matrix by hand
 ./lab requeue-books   # after clean-books + provider registration: request the saved books again (--todo: only formats not Available)
 
 # Run each base/security case in its own fresh, isolated Compose project.
@@ -425,3 +426,22 @@ The discovery regression can also run without pytest:
 ```bash
 PYTHONPATH=se-lab:. .venv/bin/python -m unittest discover -s tests/unit -p test_suite_discovery.py
 ```
+
+
+## Phase 5 requester questions
+
+Family Librarian asks the requester when the only copy found is a collection holding the book, an abridged copy, a copy
+in another language, or part of a set (and, with saved preferences, skips the question). The lab runs every path against
+FL's sample provider with its question fixtures switched on (`SAMPLE_PROVIDER_QUESTION_FIXTURES=1`, set by the suites and by
+`seed-questions`; off everywhere else). The books are invented; `family_librarian_lab/question_cases.py` lists which
+fixture reaches which path.
+
+```
+./lab run --test-group acquisition-questions     # Q-01..Q-13: web paths, shared requests, saved preferences
+./lab run --test-group matrix                    # the Matrix suites, including Q-10 (answering by DM)
+./lab seed-questions                             # leave one question of each kind open for manual testing
+```
+
+Both need the FL checkout the lab builds to be on a branch that has the fixtures (`samples/FamilyLibrarian.SampleProvider`
+and the demo catalog), committed and pushed. Not covered: the 7-day reminder, `1`/`2` replies from Matrix (the shared
+Matrix client cannot send a reply relation) and a non-participant's Matrix answer.

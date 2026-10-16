@@ -390,6 +390,10 @@ services:
       dockerfile: samples/FamilyLibrarian.SampleProvider/Dockerfile
       target: final
     image: ${FAMILY_LIBRARIAN_EXTERNAL_PROVIDER_IMAGE:-family-librarian-lab-external-provider:dev}
+    environment:
+      # "1" adds the Phase 5 requester-question candidates, an audiobook media type and the /test/* control
+      # endpoints (see SampleProviderHost.QuestionFixtures). Empty keeps the original catalog.
+      SAMPLE_PROVIDER_QUESTION_FIXTURES: "${FAMILY_LIBRARIAN_SAMPLE_PROVIDER_QUESTION_FIXTURES:-}"
     ports:
       # Published so a human (or the lab's Python client) can curl the
       # fixture directly while debugging a case -- family-librarian itself

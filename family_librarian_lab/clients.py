@@ -162,6 +162,10 @@ GUTENBERG_FIXTURE_INTERNAL_URL = "https://gutenberg-fixture"
 EXTERNAL_PROVIDER_PROFILE = "external-provider"
 EXTERNAL_PROVIDER_SERVICE = "external-provider-fixture"
 EXTERNAL_PROVIDER_INTERNAL_URL = "http://external-provider-fixture:8080"
+EXTERNAL_PROVIDER_DEFAULT_HOST_PORT = 18091
+#: lab.env-style switch passed to the fixture container. Off unless a suite (or `seed-questions`) turns it on, so
+#: every other case sees exactly the sample provider's original catalog.
+EXTERNAL_PROVIDER_QUESTION_FIXTURES_ENV = "FAMILY_LIBRARIAN_SAMPLE_PROVIDER_QUESTION_FIXTURES"
 
 # Real, disposable SMTP catcher (Mailpit) for the smtp suite -- proves
 # MailKitSmtpTestSender's actual connect/STARTTLS/authenticate/send path,
@@ -318,6 +322,39 @@ def _http(
 
 
 @dataclass(slots=True)
+class SampleProviderControl:
+    """The sample provider's lab control plane (`/test/*`), present only when it runs with the question fixtures on.
+
+    Lets a case switch a fixture candidate on mid-run (a standalone copy that "appears later") and put the catalog
+    back, without restarting the provider."""
+
+    def __init__(self, host_base_url: str) -> None:
+        self.host_base_url = host_base_url.rstrip("/")
+
+    def _post(self, path: str) -> None:
+        status, body = _http(f"{self.host_base_url}{path}", method="POST", data=b"")
+        if status != 204:
+            raise AssertionError(
+                f"Sample provider {path} returned HTTP {status}: {body!r}. Is it running with "
+                f"{EXTERNAL_PROVIDER_QUESTION_FIXTURES_ENV}=1 (and an image built from a branch that has the fixtures)?"
+            )
+
+    def enable(self, reference: str) -> None:
+        self._post(f"/test/catalog/{reference}/enable")
+
+    def disable(self, reference: str) -> None:
+        self._post(f"/test/catalog/{reference}/disable")
+
+    def reset(self) -> None:
+        self._post("/test/reset")
+
+    def state(self) -> dict[str, bool]:
+        status, body = _http(f"{self.host_base_url}/test/state")
+        if status != 200:
+            raise AssertionError(f"Sample provider /test/state returned HTTP {status}.")
+        return json.loads(body).get("fixtures", {})
+
+
 class CwaClient:
     """Drives real Calibre-Web-Automated over its default OPDS/basic-auth
     surface -- no bootstrap needed, the image ships a working admin account."""
