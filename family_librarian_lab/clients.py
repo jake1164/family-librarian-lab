@@ -321,7 +321,6 @@ def _http(
         return 0, b""
 
 
-@dataclass(slots=True)
 class SampleProviderControl:
     """The sample provider's lab control plane (`/test/*`), present only when it runs with the question fixtures on.
 
@@ -355,6 +354,7 @@ class SampleProviderControl:
         return json.loads(body).get("fixtures", {})
 
 
+@dataclass(slots=True)
 class CwaClient:
     """Drives real Calibre-Web-Automated over its default OPDS/basic-auth
     surface -- no bootstrap needed, the image ships a working admin account."""
