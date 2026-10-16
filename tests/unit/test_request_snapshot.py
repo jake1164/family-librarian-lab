@@ -56,3 +56,16 @@ def test_empty_list_never_overwrites_and_snapshots_are_pruned(tmp_path):
     assert len(list(tmp_path.glob("requests-*.json"))) == rs.SNAPSHOT_KEEP
     loaded = rs.read_snapshot(rs.latest_snapshot(tmp_path))
     assert loaded[0].provider_id == "openlibrary" and loaded[0].note == "n"
+
+
+def test_confirmation_prompt_says_what_happens_to_requests():
+    import argparse
+
+    from family_librarian_lab.commands import _clean_books_request_plan
+
+    def plan(**flags):
+        return " ".join(_clean_books_request_plan(argparse.Namespace(**{"requeue_all": False, "requeue_todo": False, **flags})))
+
+    assert "Nothing will be requested again" in plan()
+    assert "EVERY saved book" in plan(requeue_all=True)
+    assert "NOT Available" in plan(requeue_todo=True)

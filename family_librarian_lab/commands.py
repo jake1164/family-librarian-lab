@@ -3116,6 +3116,8 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
             "The Gutenberg catalogue will be kept." if keep_gutenberg else "The Gutenberg catalogue will be DELETED too.",
             flush=True,
         )
+        for line in _clean_books_request_plan(args):
+            print(line, flush=True)
         if input("Type 'yes' to continue: ").strip().lower() != "yes":
             raise SystemExit("Aborted; nothing was deleted.")
     with lab_common.run_lock(label="lab clean-books"):
@@ -3182,6 +3184,18 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
         flush=True,
     )
     return 0
+
+
+def _clean_books_request_plan(args: argparse.Namespace) -> list[str]:
+    """What `clean-books` will do with the request list, for the confirmation prompt."""
+    saved = f"The request list will be saved to {CLEAN_BOOKS_DUMP_DIR} first (status and history are not kept)."
+    if args.requeue_all:
+        return [saved, "After the reset EVERY saved book will be requested again in its original formats, "
+                       "including cancelled and already-available ones."]
+    if args.requeue_todo:
+        return [saved, "After the reset only formats that were NOT Available will be requested again "
+                       "(Available and Cancelled formats are skipped)."]
+    return [saved, "Nothing will be requested again; use --requeue-all or --requeue-todo to do so."]
 
 
 def _save_request_snapshot(api: FamilyLibrarianApi) -> None:
