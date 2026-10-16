@@ -1785,21 +1785,17 @@ def _prepare_shared_cwa_ingest_dir(values: dict[str, str]) -> None:
         raise SystemExit(f"Could not prepare the shared CWA ingest directory: {result.stderr.strip()}")
 
 
-def reset_shared_cwa(values: dict[str, str]) -> None:
-    """Give the next case an empty, running CWA and an empty CWA mail relay.
-
-    `up --wait` first: a previous case may have stopped CWA (fault cases do)
-    and failed before starting it again; it is a no-op when already running.
-    """
-    project_values = _shared_cwa_project_values(values)
-    profiles = (clients.CWA_PROFILE,)
-    _run_or_exit(project_values, SHARED_CWA_PROJECT, "up", "-d", "--wait", *SHARED_CWA_SERVICES, profiles=profiles)
+def _empty_cwa_library(
+    project_values: dict[str, str], project_name: str, profiles: Sequence[str], values: dict[str, str]
+) -> None:
+    """Remove every book from a running CWA and empty its ingest folder, retrying until the count is zero.
+    Raises AssertionError if the library cannot be emptied."""
     remaining = ""
     # An ingest a previous case started can land between the removal and the
     # count, so retry a few times before refusing to run the case.
     for _ in range(5):
         result = _compose(
-            project_values, SHARED_CWA_PROJECT, "exec", "-T", "-u", str(clients.CWA_SFTP_UID_GID),
+            project_values, project_name, "exec", "-T", "-u", str(clients.CWA_SFTP_UID_GID),
             "-e", "HOME=/tmp", clients.CWA_SERVICE, "sh", "-c", _CWA_RESET_SCRIPT,
             profiles=profiles, capture=True,
         )
@@ -1811,6 +1807,18 @@ def reset_shared_cwa(values: dict[str, str]) -> None:
         raise AssertionError(
             f"Could not empty the shared CWA library (remaining={remaining!r}): {_redact(result.stderr, values).strip()}"
         )
+
+
+def reset_shared_cwa(values: dict[str, str]) -> None:
+    """Give the next case an empty, running CWA and an empty CWA mail relay.
+
+    `up --wait` first: a previous case may have stopped CWA (fault cases do)
+    and failed before starting it again; it is a no-op when already running.
+    """
+    project_values = _shared_cwa_project_values(values)
+    profiles = (clients.CWA_PROFILE,)
+    _run_or_exit(project_values, SHARED_CWA_PROJECT, "up", "-d", "--wait", *SHARED_CWA_SERVICES, profiles=profiles)
+    _empty_cwa_library(project_values, SHARED_CWA_PROJECT, profiles, values)
     mailpit = clients.MailpitClient(
         _client_host_base(values, clients.CWA_MAILPIT_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_MAILPIT_HOST_PORT")
     )
@@ -3084,6 +3092,72 @@ def _configure_clean_books(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _clean_books_core(values: dict[str, str], project_name: str, volumes: list[str], args: argparse.Namespace) -> None:
+    """Wipe and restart Family Librarian, keeping what the flags keep. The caller holds the lab run lock and has
+    already confirmed; `args` needs wipe_gutenberg and clear_providers."""
+    keep_gutenberg = not args.wipe_gutenberg
+    # Same reason as `up --refresh`: FL must be pointed at the shared ClamAV or /health/ready never passes.
+    values = {**values, **ensure_shared_clamav()}
+    # While FL still knows which downloads exist: have the providers release them (see the function's docstring).
+    try:
+        release_api = FamilyLibrarianApi(_host_base(values))
+        release_api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+    except Exception as exc:  # noqa: BLE001 - FL may simply be down; the reset still goes ahead
+        print(
+            f"WARNING: Family Librarian is not reachable ({type(exc).__name__}), so provider downloads were not "
+            "released first. Providers keep staged files until their own retention expires them.",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        _release_provider_downloads(release_api)
+        _save_request_snapshot(release_api)
+        if not args.clear_providers:
+            _save_external_providers(release_api)
+    dump_path = CLEAN_BOOKS_DUMP_DIR / f"gutenberg-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.dump"
+    saved: dict[str, int] = {}
+    if keep_gutenberg:
+        container = _postgres_container(values, project_name)
+        if not container:
+            raise SystemExit(
+                "Postgres is not running, so the Gutenberg catalogue cannot be saved first. Start the stack "
+                "('./lab up'), or pass --wipe-gutenberg to discard it."
+            )
+        print("Saving the Gutenberg catalogue...", flush=True)
+        saved = _save_gutenberg(container, dump_path)
+        if any(saved.values()):
+            print(f"Saved {sum(saved.values()):,} rows to {dump_path}", flush=True)
+        else:
+            print("No Gutenberg catalogue imported yet; nothing to keep.", flush=True)
+    _run_or_exit(values, project_name, "rm", "--stop", "--force", *CLEAN_BOOKS_SERVICES)
+    for volume in volumes:
+        result = subprocess.run(["docker", "volume", "rm", volume], capture_output=True, text=True, check=False)
+        if result.returncode and "no such volume" not in result.stderr.lower():
+            raise SystemExit(f"Could not remove volume {volume}: {result.stderr.strip()}")
+        print(f"Removed volume {volume}" if not result.returncode else f"Volume {volume} was already absent", flush=True)
+    if any(saved.values()):
+        # postgres + the one-shot migrate only: FL itself stays down until the catalogue is back.
+        _run_or_exit(values, project_name, "up", "-d", "--wait", "postgres", "migrate")
+        _wait_for_migrate(values, project_name)
+        print("Restoring the Gutenberg catalogue...", flush=True)
+        _restore_gutenberg(_postgres_container(values, project_name), dump_path, saved)
+        dump_path.unlink()
+        print("Gutenberg catalogue restored and verified.", flush=True)
+    _run_or_exit(values, project_name, "up", "-d", "--wait", *CLEAN_BOOKS_SERVICES)
+    checks, passed = _readiness(values, project_name)
+    if not passed:
+        print(json.dumps(checks, indent=2), file=sys.stderr)
+        raise SystemExit("Family Librarian failed readiness checks after 'clean-books'.")
+    api = FamilyLibrarianApi(_host_base(values))
+    api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
+    _apply_lab_ai(api, values)
+    _enable_builtin_sources(api, values)
+    _apply_lab_metadata(api, values)
+    _rewire_running_destinations(values, project_name, api)
+    if not args.clear_providers:
+        _readd_external_providers(api)
+
+
 @registry.command(
     "clean-books",
     help="Wipe Family Librarian's database and storage and restart it empty; keeps the Gutenberg catalogue, Anna's, CWA, ABS, providers",
@@ -3122,70 +3196,10 @@ def handle_clean_books(args: argparse.Namespace, config: object) -> int:
         if input("Type 'yes' to continue: ").strip().lower() != "yes":
             raise SystemExit("Aborted; nothing was deleted.")
     with lab_common.run_lock(label="lab clean-books"):
-        # Same reason as `up --refresh`: FL must be pointed at the shared ClamAV or /health/ready never passes.
-        values = {**values, **ensure_shared_clamav()}
-        # While FL still knows which downloads exist: have the providers release them (see the function's docstring).
-        try:
-            release_api = FamilyLibrarianApi(_host_base(values))
-            release_api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
-        except Exception as exc:  # noqa: BLE001 - FL may simply be down; the reset still goes ahead
-            print(
-                f"WARNING: Family Librarian is not reachable ({type(exc).__name__}), so provider downloads were not "
-                "released first. Providers keep staged files until their own retention expires them.",
-                file=sys.stderr,
-                flush=True,
-            )
-        else:
-            _release_provider_downloads(release_api)
-            _save_request_snapshot(release_api)
-            if not args.clear_providers:
-                _save_external_providers(release_api)
-        dump_path = CLEAN_BOOKS_DUMP_DIR / f"gutenberg-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.dump"
-        saved: dict[str, int] = {}
-        if keep_gutenberg:
-            container = _postgres_container(values, project_name)
-            if not container:
-                raise SystemExit(
-                    "Postgres is not running, so the Gutenberg catalogue cannot be saved first. Start the stack "
-                    "('./lab up'), or pass --wipe-gutenberg to discard it."
-                )
-            print("Saving the Gutenberg catalogue...", flush=True)
-            saved = _save_gutenberg(container, dump_path)
-            if any(saved.values()):
-                print(f"Saved {sum(saved.values()):,} rows to {dump_path}", flush=True)
-            else:
-                print("No Gutenberg catalogue imported yet; nothing to keep.", flush=True)
-        _run_or_exit(values, project_name, "rm", "--stop", "--force", *CLEAN_BOOKS_SERVICES)
-        for volume in volumes:
-            result = subprocess.run(["docker", "volume", "rm", volume], capture_output=True, text=True, check=False)
-            if result.returncode and "no such volume" not in result.stderr.lower():
-                raise SystemExit(f"Could not remove volume {volume}: {result.stderr.strip()}")
-            print(f"Removed volume {volume}" if not result.returncode else f"Volume {volume} was already absent", flush=True)
-        if any(saved.values()):
-            # postgres + the one-shot migrate only: FL itself stays down until the catalogue is back.
-            _run_or_exit(values, project_name, "up", "-d", "--wait", "postgres", "migrate")
-            _wait_for_migrate(values, project_name)
-            print("Restoring the Gutenberg catalogue...", flush=True)
-            _restore_gutenberg(_postgres_container(values, project_name), dump_path, saved)
-            dump_path.unlink()
-            print("Gutenberg catalogue restored and verified.", flush=True)
-        _run_or_exit(values, project_name, "up", "-d", "--wait", *CLEAN_BOOKS_SERVICES)
-        checks, passed = _readiness(values, project_name)
-        if not passed:
-            print(json.dumps(checks, indent=2), file=sys.stderr)
-            raise SystemExit("Family Librarian failed readiness checks after 'clean-books'.")
-        api = FamilyLibrarianApi(_host_base(values))
-        api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
-        _apply_lab_ai(api, values)
-        _enable_builtin_sources(api, values)
-        _apply_lab_metadata(api, values)
-        _rewire_running_destinations(values, project_name, api)
-        if not args.clear_providers:
-            _readd_external_providers(api)
+        _clean_books_core(values, project_name, volumes, args)
     print(
         f"Family Librarian restarted with an empty database and storage: {project_name}. "
-        "Re-register external providers if you use them, then './lab requeue-books' (or with --todo) to "
-        "request the saved books again.",
+        "Run './lab requeue-books' (or with --todo) to request the saved books again.",
         flush=True,
     )
     return 0
@@ -3321,6 +3335,142 @@ def _save_request_snapshot(api: FamilyLibrarianApi) -> None:
         print(f"WARNING: not saved: {item.title!r} ({item.reason}).", file=sys.stderr, flush=True)
 
 
+def _configure_clean_target(parser: argparse.ArgumentParser) -> None:
+    _configure_project(parser)
+    parser.add_argument(
+        "--yes", action="store_true", help="Skip the confirmation prompt (required when stdin is not a terminal)"
+    )
+
+
+def _confirm_destructive(args: argparse.Namespace, lines: list[str]) -> None:
+    if args.yes:
+        return
+    if not sys.stdin.isatty():
+        raise SystemExit("Refusing to delete data without a terminal to confirm; pass --yes.")
+    for line in lines:
+        print(line, flush=True)
+    if input("Type 'yes' to continue: ").strip().lower() != "yes":
+        raise SystemExit("Aborted; nothing was deleted.")
+
+
+def _service_running(values: dict[str, str], project_name: str, service: str) -> bool:
+    services, _ = _compose_service_health(values, project_name)
+    entry = services.get(service)
+    return isinstance(entry, dict) and entry.get("state") == "running"
+
+
+def _cwa_clean_lines(values: dict[str, str], project_name: str) -> list[str]:
+    url = _client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
+    return [f"Every book in CWA ({url}, compose project {project_name}) will be removed and its ingest folder emptied."]
+
+
+def _abs_clean_lines(values: dict[str, str], project_name: str) -> list[str]:
+    url = _client_host_base(values, clients.ABS_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ABS_HOST_PORT")
+    return [
+        f"Every file under {clients.ABS_LIBRARY_FOLDER_PATH} in Audiobookshelf ({url}, compose project {project_name}) "
+        f"and every item in the {clients.ABS_LIBRARY_NAME!r} library will be removed. Users and settings are kept."
+    ]
+
+
+def _clean_cwa_core(values: dict[str, str], project_name: str) -> None:
+    if not _service_running(values, project_name, clients.CWA_SERVICE):
+        print("CWA is not running in this project; nothing to clean ('./lab up --profile cwa-local' starts it).", flush=True)
+        return
+    try:
+        _empty_cwa_library(values, project_name, (PROFILE, clients.CWA_PROFILE), values)
+    except AssertionError as exc:
+        raise SystemExit(str(exc)) from None
+    print("CWA library emptied.", flush=True)
+
+
+def _clean_abs_core(values: dict[str, str], project_name: str) -> None:
+    if not _service_running(values, project_name, clients.ABS_SERVICE):
+        print("Audiobookshelf is not running in this project; nothing to clean ('./lab up --profile abs' starts it).", flush=True)
+        return
+    client = clients.AbsClient(
+        host_base_url=_client_host_base(values, clients.ABS_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ABS_HOST_PORT")
+    )
+    client.ensure_bootstrapped()
+    # Files first: the API removes database rows only, and a scan would re-add anything still on disk.
+    result = _compose(
+        values, project_name, "exec", "-T", clients.ABS_SERVICE, "sh", "-c",
+        f"find {clients.ABS_LIBRARY_FOLDER_PATH} -mindepth 1 -delete",
+        profiles=(PROFILE, clients.ABS_PROFILE), capture=True,
+    )
+    if result.returncode:
+        raise SystemExit(f"Could not remove the audiobook files: {_redact(result.stderr, values).strip()}")
+    item_ids = client.library_item_ids()
+    if item_ids:
+        client.delete_items(item_ids)
+    client.trigger_scan()
+    for _ in range(10):
+        if not client.library_item_ids():
+            break
+        time.sleep(1.5)
+    else:
+        raise SystemExit("Audiobookshelf still lists items after the clean-up.")
+    print(f"Audiobookshelf emptied ({len(item_ids)} item(s) removed).", flush=True)
+
+
+@registry.command(
+    "clean-cwa",
+    help="Remove every book from the lab's CWA library (CWA itself, its users and settings are kept)",
+    configure=_configure_clean_target,
+)
+def handle_clean_cwa(args: argparse.Namespace, config: object) -> int:
+    values = _load_lab_env()
+    project_name = _project_name(values, args.project_name, unique=False)
+    _confirm_destructive(args, _cwa_clean_lines(values, project_name))
+    with lab_common.run_lock(label="lab clean-cwa"):
+        _clean_cwa_core(values, project_name)
+    return 0
+
+
+@registry.command(
+    "clean-abs",
+    help="Remove every audiobook from the lab's Audiobookshelf library (the server, users and settings are kept)",
+    configure=_configure_clean_target,
+)
+def handle_clean_abs(args: argparse.Namespace, config: object) -> int:
+    values = _load_lab_env()
+    project_name = _project_name(values, args.project_name, unique=False)
+    _confirm_destructive(args, _abs_clean_lines(values, project_name))
+    with lab_common.run_lock(label="lab clean-abs"):
+        _clean_abs_core(values, project_name)
+    return 0
+
+
+@registry.command(
+    "clean-library",
+    help="clean-abs + clean-cwa + clean-books in one go (then run requeue-books to request the saved books again)",
+    configure=_configure_clean_target,
+)
+def handle_clean_library(args: argparse.Namespace, config: object) -> int:
+    """Everything a fresh acquisition test needs emptied. The request list is saved by the clean-books step, so
+    './lab requeue-books' afterwards replays it into libraries that no longer own the books. Uses clean-books'
+    defaults: the Gutenberg catalogue and external providers are kept."""
+    values = _load_lab_env()
+    project_name = _project_name(values, args.project_name, unique=False)
+    volumes = _clean_books_volume_names(project_name)
+    _confirm_destructive(args, [
+        *_abs_clean_lines(values, project_name),
+        *_cwa_clean_lines(values, project_name),
+        f"Family Librarian's database and storage will be wiped (Docker volumes: {', '.join(volumes)}).",
+        "Kept: the Gutenberg catalogue and registered external providers (added back afterwards).",
+        f"The request list is saved to {CLEAN_BOOKS_DUMP_DIR} first; './lab requeue-books' requests it again.",
+    ])
+    books_args = argparse.Namespace(wipe_gutenberg=False, clear_providers=False)
+    with lab_common.run_lock(label="lab clean-library"):
+        _clean_abs_core(values, project_name)
+        _clean_cwa_core(values, project_name)
+        _clean_books_core(values, project_name, volumes, books_args)
+    print(
+        f"Library cleaned: {project_name}. Run './lab requeue-books' to request the saved books again.",
+        flush=True,
+    )
+    return 0
+
+
 def _configure_requeue_books(parser: argparse.ArgumentParser) -> None:
     parser.description = (
         "Request the books saved by './lab clean-books' again, as fresh requests under their original requesters.\n"
@@ -3384,7 +3534,7 @@ def handle_requeue_books(args: argparse.Namespace, config: object) -> int:
 
     admin_email = api.me().get("email")
     readers: dict[str, FamilyLibrarianApi] = {}
-    created = failed = 0
+    created = failed = skipped = 0
     for item in plan:
         entry = item.entry
         label = f"{entry.title!r} [{', '.join(item.media_types)}] for {entry.requester_email}"
@@ -3401,13 +3551,18 @@ def handle_requeue_books(args: argparse.Namespace, config: object) -> int:
                 work_id, item.media_types, note=entry.note,
                 version_kind=entry.version_kind, version_details=entry.version_details,
             )
+            owned = request_snapshot.already_owned_formats(response.status, response.body)
+            if owned is not None:
+                skipped += 1
+                print(f"  SKIPPED {label}: already in the library ({', '.join(owned) or 'a requested format'}).", flush=True)
+                continue
             if response.status != 201:
                 raise AssertionError(f"HTTP {response.status}: {response.body}")
             created += 1
         except Exception as exc:  # noqa: BLE001 - keep going; the summary lists what failed
             failed += 1
             print(f"  FAILED {label}: {exc}", file=sys.stderr, flush=True)
-    print(f"Requeue: {created} created, {failed} failed.", flush=True)
+    print(f"Requeue: {created} created, {skipped} skipped (already in the library), {failed} failed.", flush=True)
     return 1 if failed else 0
 
 

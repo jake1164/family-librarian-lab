@@ -111,3 +111,31 @@ def test_provider_export_drops_everything_but_the_settings_to_restore(tmp_path):
     rs.write_providers(tmp_path, export)
     assert rs.write_providers(tmp_path, []) is None  # an empty list never replaces the saved copy
     assert rs.read_providers(tmp_path) == export
+
+
+def test_owned_refusal_is_a_skip_and_other_errors_are_not():
+    body = {"kind": "Owned", "duplicate": None, "owned": {"message": "m", "ownedFormats": [
+        {"mediaType": "Ebook", "providerId": "cwa"}, {"mediaType": "Audiobook", "providerId": "audiobookshelf"}]}}
+    assert rs.already_owned_formats(409, body) == ["Audiobook", "Ebook"]
+    assert rs.already_owned_formats(201, body) is None
+    assert rs.already_owned_formats(409, {"kind": "Duplicate"}) is None
+    assert rs.already_owned_formats(400, "oops") is None
+
+
+def test_abs_item_ids_come_from_results_or_items():
+    from family_librarian_lab.clients import _item_ids
+
+    assert _item_ids({"results": [{"id": "li_1"}, {"id": "li_2"}, {"nope": 1}]}) == ["li_1", "li_2"]
+    assert _item_ids({"items": [{"id": "li_3"}]}) == ["li_3"]
+    assert _item_ids({}) == []
+
+
+def test_clean_commands_share_the_confirmation_flags():
+    import argparse
+
+    from family_librarian_lab.commands import _configure_clean_target
+
+    parser = argparse.ArgumentParser()
+    _configure_clean_target(parser)
+    assert parser.parse_args(["--yes"]).yes is True
+    assert parser.parse_args([]).yes is False

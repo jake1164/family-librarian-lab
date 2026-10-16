@@ -35,6 +35,9 @@ cp se-lab/lab.env.example lab.env
 ./lab status
 ./lab base down        # stop just the standard `up` project
 ./lab clean-books      # start Family Librarian over (empty DB + storage); CWA/ABS/providers keep running
+./lab clean-cwa        # remove every book from the lab's CWA
+./lab clean-abs        # remove every audiobook from the lab's Audiobookshelf
+./lab clean-library    # clean-abs + clean-cwa + clean-books (requeue-books then requests the saved books again)
 ./lab requeue-books   # after clean-books + provider registration: request the saved books again (--todo: only formats not Available)
 
 # Run each base/security case in its own fresh, isolated Compose project.

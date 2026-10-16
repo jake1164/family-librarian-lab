@@ -747,6 +747,29 @@ class AbsClient:
                 return None
             time.sleep(1.5)
 
+    def library_item_ids(self) -> list[str]:
+        """Every item in the lab library (limit=0 asks Audiobookshelf for all of them, not one page)."""
+        assert self._token is not None and self._library_id is not None
+        status, body = _http(
+            f"{self.host_base_url}/api/libraries/{self._library_id}/items?limit=0", bearer_token=self._token
+        )
+        if status != 200:
+            raise AssertionError(f"Audiobookshelf library item list returned HTTP {status}.")
+        return _item_ids(json.loads(body))
+
+    def delete_items(self, item_ids: list[str]) -> None:
+        """Remove library items from Audiobookshelf's database. Its API deletes no files, so the caller removes
+        the files first; otherwise the next scan would bring the books straight back."""
+        assert self._token is not None
+        status, body = _http(
+            f"{self.host_base_url}/api/items/batch/delete",
+            method="POST",
+            json_body={"libraryItemIds": item_ids},
+            bearer_token=self._token,
+        )
+        if status != 200:
+            raise AssertionError(f"Audiobookshelf batch delete returned HTTP {status}: {body!r}")
+
     def find_items(self, title: str, author: str | None) -> list[str]:
         """Return every matching library item so idempotency tests can prove
         that a publish reuses an ABS item instead of adding another one."""
@@ -829,6 +852,11 @@ class AbsClient:
 def _find_matching_item_id(list_response: dict[str, Any], title: str, author: str | None) -> str | None:
     matches = _find_matching_item_ids(list_response, title, author)
     return matches[0] if matches else None
+
+
+def _item_ids(list_response: dict[str, Any]) -> list[str]:
+    items = list_response.get("results") or list_response.get("items") or []
+    return [item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)]
 
 
 def _find_matching_item_ids(list_response: dict[str, Any], title: str, author: str | None) -> list[str]:

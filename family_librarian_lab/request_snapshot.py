@@ -234,3 +234,14 @@ def read_providers(directory: Path) -> list[dict[str, Any]]:
     if data.get("version") != SNAPSHOT_VERSION:
         raise ValueError(f"{path.name} has version {data.get('version')!r}; expected {SNAPSHOT_VERSION}.")
     return list(data.get("providers") or [])
+
+
+def already_owned_formats(status: int, body: Any) -> list[str] | None:
+    """Media types FL says are already in the library when it refuses a request with 409 "Owned", else None.
+
+    CWA and Audiobookshelf are kept across `clean-books`, so a book already imported there is refused on purpose;
+    that is a skip, not a failure."""
+    if status != 409 or not isinstance(body, dict) or body.get("kind") != "Owned":
+        return None
+    owned = (body.get("owned") or {}).get("ownedFormats") or []
+    return sorted({str(item.get("mediaType")) for item in owned if isinstance(item, dict) and item.get("mediaType")})
