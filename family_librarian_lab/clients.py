@@ -24,6 +24,7 @@ state, and independently verify a published item actually landed in it.
 from __future__ import annotations
 
 import base64
+import http.client
 import http.cookiejar
 import json
 import re
@@ -317,7 +318,9 @@ def _http(
             return response.status, response.read()
     except HTTPError as error:
         return error.code, error.read()
-    except URLError:
+    except (URLError, OSError, http.client.HTTPException):
+        # urllib wraps only send-side failures in URLError; a destination that closes the connection while we read
+        # the response (http.client.RemoteDisconnected, a reset) must read as "not reachable yet" so pollers retry.
         return 0, b""
 
 
