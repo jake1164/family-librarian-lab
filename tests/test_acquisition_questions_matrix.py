@@ -129,7 +129,8 @@ def matrix_keyword_answers_settle_a_question(ctx, scenario_factory):
             question = _wait_for_dm(household, room, "keep looking")
             household.send_message(room, "take it")
             _wait_for_dm(household, room, "fetching")
-            q.wait_for_status(admin, take_request, "Available")
+            # Delivered into CWA. Whether FL then marks the request Available is Q-14 in the web suite.
+            q.wait_for_cwa_book(scenario.cwa_client, q.COLLECTION_TITLE, q.COLLECTION_AUTHOR)
 
             keep_request, _ = reader.create_demo_ebook_request(slug=q.ASHEN_CROWN)
             q.wait_for_question(admin, keep_request, "CollectionContaining")

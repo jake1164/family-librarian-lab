@@ -83,8 +83,10 @@ def collection_only_result_asks_exactly_once(ctx, scenario_factory):
             review = q.wait_for_question(api, request_id, "CollectionContaining")
 
             q.question_candidate_id(review)  # exactly one candidate
-            if review.get("canSavePreference") is not True:
-                raise AssertionError(f"A collection question should offer 'always accept': {review!r}")
+            # canSavePreference is computed for the viewer, so read it as the requester (the admin view carries False).
+            mine = q.member_needs_review(api, request_id)
+            if mine is None or mine.get("canSavePreference") is not True:
+                raise AssertionError(f"A collection question should offer the requester 'always accept': {mine!r}")
             notices = q.question_notifications(api, request_id)
             if len(notices) != 1 or notices[0].get("repeatCount") != 1:
                 raise AssertionError(f"Expected exactly one notification for the question: {notices!r}")
@@ -98,7 +100,8 @@ def collection_only_result_asks_exactly_once(ctx, scenario_factory):
 @SUITE.case("Q-02")
 def take_it_fetches_the_collection_and_validates_its_contents(ctx, scenario_factory):
     """"Take it" on a collection whose table of contents lists the book: it is fetched, FL's identity check accepts it
-    because the contents contain the requested work, and the request becomes Available."""
+    because the contents contain the requested work (no hold), and it is delivered into CWA. Whether the request then
+    becomes Available is Q-14."""
     def operation() -> dict[str, object]:
         with scenario_factory("Q-02") as scenario:
             api = scenario.api
@@ -112,13 +115,40 @@ def take_it_fetches_the_collection_and_validates_its_contents(ctx, scenario_fact
             )
             if response.status != 200:
                 raise AssertionError(f"Taking the collection returned HTTP {response.status}: {response.body!r}")
-            request = q.wait_for_status(api, request_id, "Available")
+            books = q.wait_for_cwa_book(scenario.cwa_client, q.COLLECTION_TITLE, q.COLLECTION_AUTHOR)
             holds = [code for code in q.asset_hold_codes(api) if code]
             if holds:
                 raise AssertionError(f"The accepted collection was held: {holds!r}")
-            return {"request_id": request_id, "request": request}
+            return {"request_id": request_id, "cwa_books": books}
 
     _run(ctx, "Q-02", operation)
+
+
+@SUITE.case("Q-14")
+def an_accepted_collection_becomes_available(ctx, scenario_factory):
+    """The end of the "Take it" path: once the collection is in CWA the request is Available.
+
+    This is a known gap, not a flaky case. CWA files the collection under its own title ("The Lantern Cycle Books 1-3"),
+    and Family Librarian's CWA verification looks the book up by the requested work's title and ISBN, so it cannot
+    recognise it. The failure text shows where the request is stuck (status, attempts, publishing queue). It passes when
+    delivery verification honours the accepted collection (the format already records its title as the accepted variant)."""
+    def operation() -> dict[str, object]:
+        with scenario_factory("Q-14") as scenario:
+            api = scenario.api
+            _prepare(scenario)
+            request_id, _ = api.create_demo_ebook_request(slug=q.CINDER_GATE)
+            review = q.wait_for_question(api, request_id, "CollectionContaining")
+            version = q.request_view(api, request_id).get("version")
+            response = api.resolve_needs_review(
+                request_id, candidate_id=q.question_candidate_id(review), expected_version=version
+            )
+            if response.status != 200:
+                raise AssertionError(f"Taking the collection returned HTTP {response.status}: {response.body!r}")
+            q.wait_for_cwa_book(scenario.cwa_client, q.COLLECTION_TITLE, q.COLLECTION_AUTHOR)
+            request = q.wait_for_status(api, request_id, "Available")
+            return {"request_id": request_id, "request": request}
+
+    _run(ctx, "Q-14", operation)
 
 
 @SUITE.case("Q-03")
@@ -242,8 +272,9 @@ def abridged_only_audiobook_asks_without_an_always_option(ctx, scenario_factory)
             _prepare(scenario)
             request_id, _ = api.create_demo_request("Audiobook", slug=q.WINDFALL_HOLLOW)
             review = q.wait_for_question(api, request_id, "AbridgedOnly")
-            if review.get("canSavePreference") is not False:
-                raise AssertionError(f"Abridged-only must not offer 'always accept': {review!r}")
+            mine = q.member_needs_review(api, request_id)
+            if mine is None or mine.get("canSavePreference") is not False:
+                raise AssertionError(f"Abridged-only must not offer the requester 'always accept': {mine!r}")
             if api.list_assets():
                 raise AssertionError("An abridged copy must not be downloaded before the question is answered.")
             return {"request_id": request_id, "question": review}
@@ -276,8 +307,9 @@ def parts_only_audiobook_asks_without_an_always_option(ctx, scenario_factory):
             _prepare(scenario)
             request_id, _ = api.create_demo_request("Audiobook", slug=q.SALTMARSH_LIGHT)
             review = q.wait_for_question(api, request_id, "PartsOnly")
-            if review.get("canSavePreference") is not False:
-                raise AssertionError(f"Parts-only must not offer 'always accept': {review!r}")
+            mine = q.member_needs_review(api, request_id)
+            if mine is None or mine.get("canSavePreference") is not False:
+                raise AssertionError(f"Parts-only must not offer the requester 'always accept': {mine!r}")
             return {"request_id": request_id, "question": review}
 
     _run(ctx, "Q-09", operation)

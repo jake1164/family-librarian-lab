@@ -112,3 +112,33 @@ def test_asserting_nothing_happened_first_waits_for_a_sweep(monkeypatch):
 def test_waits_allow_a_whole_background_sweep():
     assert q.QUESTION_TIMEOUT_SECONDS >= 2 * q.SWEEP_SECONDS
     assert q.AVAILABLE_TIMEOUT_SECONDS > q.QUESTION_TIMEOUT_SECONDS
+
+
+def test_member_view_is_read_from_my_requests_in_either_bucket():
+    class Api:
+        def my_requests(self):
+            return {
+                "active": [{"id": "a", "needsReview": {"canSavePreference": True}}],
+                "history": [{"id": "h", "needsReview": None}],
+            }
+
+    assert q.member_needs_review(Api(), "a") == {"canSavePreference": True}
+    assert q.member_needs_review(Api(), "h") is None
+    assert q.member_needs_review(Api(), "missing") is None
+
+
+def test_wait_for_cwa_book_returns_ids_and_reports_a_missing_book(monkeypatch):
+    monkeypatch.setattr(q.time, "sleep", lambda _: None)
+
+    class Cwa:
+        def __init__(self, answers):
+            self.answers = list(answers)
+
+        def find_books(self, title, author):
+            return self.answers.pop(0)
+
+    assert q.wait_for_cwa_book(Cwa([[], ["42"]]), q.COLLECTION_TITLE, q.COLLECTION_AUTHOR) == ["42"]
+    ticks = iter([0.0, 1.0, 1000.0])
+    monkeypatch.setattr(q.time, "monotonic", lambda: next(ticks))
+    with pytest.raises(AssertionError, match="CWA never listed 'The Lantern Cycle Books 1-3'"):
+        q.wait_for_cwa_book(Cwa([[], []]), q.COLLECTION_TITLE, q.COLLECTION_AUTHOR, timeout=5)

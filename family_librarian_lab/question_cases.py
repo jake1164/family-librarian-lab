@@ -18,6 +18,7 @@ cinder-gate (ebook)    lantern-cinder-standalone    off until enabled: a standal
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -34,6 +35,10 @@ HOLLOWMERE = "hollowmere"
 SALTMARSH_LIGHT = "saltmarsh-light"
 
 STANDALONE_CINDER = "lantern-cinder-standalone"
+
+#: What lands in CWA when the collection fixture is taken: CWA files it under the EPUB's own title, not the requested book's.
+COLLECTION_TITLE = "The Lantern Cycle Books 1-3"
+COLLECTION_AUTHOR = "Mara Quillon"
 
 QUESTION_CATEGORY = "request.acquisition_question"
 
@@ -91,10 +96,15 @@ def describe(admin_api: Any, request_id: str) -> str:
     except Exception as error:  # noqa: BLE001 - describing a failure must not raise another
         return f"(could not read the request: {error})"
     last = attempts[-1] if attempts else None
-    return (
+    text = (
         f"status={request.get('status')!r} needsReview={request.get('needsReview')!r} "
         f"attempts={len(attempts)} last_attempt={last!r}"
     )
+    try:
+        text += f" publishing_queue={json.dumps(admin_api.publishing_queue(), default=str)[:700]}"
+    except Exception:  # noqa: BLE001 - extra detail only
+        pass
+    return text
 
 
 def attempt_count(admin_api: Any, request_id: str) -> int:
@@ -117,6 +127,32 @@ def wait_for_attempts_beyond(
                 f"No further search of the provider within {timeout:.0f}s (attempts still {count}), so there is nothing "
                 f"to assert yet: {describe(admin_api, request_id)}"
             )
+        time.sleep(3)
+
+
+def member_needs_review(api: Any, request_id: str) -> dict[str, Any] | None:
+    """The request's `needsReview` as the *requester* sees it. Some fields are computed for the viewer (for example
+    `canSavePreference`, which depends on whether this person already holds the preference), so the admin view of the same
+    request does not carry them: read those through the requester's own session."""
+    listing = api.my_requests()
+    for bucket in ("active", "history"):
+        for item in listing.get(bucket) or []:
+            if isinstance(item, dict) and item.get("id") == request_id:
+                review = item.get("needsReview")
+                return review if isinstance(review, dict) else None
+    return None
+
+
+def wait_for_cwa_book(cwa_client: Any, title: str, author: str, *, timeout: float = AVAILABLE_TIMEOUT_SECONDS) -> list[str]:
+    """Wait until CWA lists the book, returning its ids. Proves the copy was fetched, passed FL's checks and was
+    delivered, independently of whether FL goes on to mark the request Available."""
+    deadline = time.monotonic() + timeout
+    while True:
+        found = cwa_client.find_books(title, author)
+        if found:
+            return found
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"CWA never listed {title!r} by {author!r} within {timeout:.0f}s.")
         time.sleep(3)
 
 
