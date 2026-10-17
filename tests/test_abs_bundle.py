@@ -74,7 +74,14 @@ def ordered_multi_track_direct_acquisition_reaches_one_abs_item(ctx, scenario_fa
             provider_id = _required_option_string(option, "providerId")
             provider_result_id = _required_option_string(option, "providerResultId")
             acquired = scenario.api.acquire_direct(request_id, format_id, provider_id, provider_result_id)
-            if acquired.status != 200:
+            # Creating a request wakes the hosted worker at once, and with the source enabled it acquires this same
+            # bundle automatically, so this explicit call can lose that race. The product then refuses the second copy
+            # as a duplicate -- the right outcome. What this case proves is the bundle's path to Audiobookshelf, so
+            # accept that refusal and let the delivery assertions below decide.
+            lost_race_to_automatic_acquisition = (
+                acquired.status == 409 and "same content has already been staged" in str(acquired.body)
+            )
+            if acquired.status != 200 and not lost_race_to_automatic_acquisition:
                 raise AssertionError(f"Direct audiobook acquisition returned HTTP {acquired.status}: {acquired.body!r}")
 
             delivery = _poll_delivery(scenario.api, scenario.abs_client, request_id, timeout_seconds=90)

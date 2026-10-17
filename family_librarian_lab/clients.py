@@ -899,13 +899,21 @@ def _item_ids(list_response: dict[str, Any]) -> list[str]:
     return [item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)]
 
 
+def _fold(value: str) -> str:
+    return "".join(character for character in value if character.isalnum()).lower()
+
+
 def _find_matching_item_ids(list_response: dict[str, Any], title: str, author: str | None) -> list[str]:
     items = list_response.get("results") or list_response.get("items") or []
     matches: list[str] = []
     for item in items:
         metadata = (item.get("media") or {}).get("metadata") or {}
         item_title = metadata.get("title") or ""
-        if title.lower() not in item_title.lower():
+        # Audiobookshelf names an item from the file's own tags when they disagree with the upload folder. The folder
+        # (last segment of relPath) is the title we uploaded under, which is how Family Librarian recognises its own
+        # upload, so a folder named for the requested title counts as a title match too.
+        upload_folder = str(item.get("relPath") or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        if title.lower() not in item_title.lower() and _fold(upload_folder) != _fold(title):
             continue
         if author:
             item_author = metadata.get("authorName") or ""

@@ -37,3 +37,23 @@ def test_a_connection_closed_without_a_response_reads_as_unreachable():
     assert clients._http(url, timeout=5) == (0, b"")
 
     thread.join(timeout=5)
+
+
+def test_an_item_named_from_its_tag_is_still_found_by_the_folder_it_was_uploaded_under():
+    listing = {
+        "results": [
+            {
+                "id": "li_1",
+                "relPath": "Mara Quillon/Cinder Gate",
+                "media": {"metadata": {"title": "The Lantern Cycle Books 1-3", "authorName": "Mara Quillon"}},
+            },
+            {
+                "id": "li_2",
+                "relPath": "Someone Else/Another Book",
+                "media": {"metadata": {"title": "Another Book", "authorName": "Someone Else"}},
+            },
+        ]
+    }
+
+    assert clients._find_matching_item_ids(listing, "Cinder Gate", "Mara Quillon") == ["li_1"]
+    assert clients._find_matching_item_ids(listing, "Missing Title", "Mara Quillon") == []
