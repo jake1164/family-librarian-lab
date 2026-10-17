@@ -9,7 +9,7 @@ from typing import Callable
 from agent.suites import suite
 
 from family_librarian_lab.commands import ensure_shared_clamav, teardown_shared_clamav
-from family_librarian_lab.fixtures import clean_audiobook, malformed_audiobook
+from family_librarian_lab.fixtures import clean_audiobook, malformed_audiobook, tagged_audiobook
 
 SUITE = suite("abs", group="abs", order=21)
 
@@ -232,6 +232,26 @@ def ambiguous_library_editions_do_not_block_an_ordinary_request(ctx, scenario_fa
             return {"request_id": request_id, "abs_items": items}
 
     _run(ctx, "ABS-09", operation)
+
+
+@SUITE.case("ABS-10")
+def an_upload_is_named_by_the_requested_title_not_the_files_own_tag(ctx, scenario_factory):
+    """A requester can accept a variant (a collection, a dramatization) whose file carries its own title. Family
+    Librarian uploads it under the requested book's title and later finds it in Audiobookshelf by that title. If
+    Audiobookshelf instead named the item from the file's tag, that lookup would miss it and the delivery would wait
+    for verification for ever -- the gap CWA had for accepted collections. This proves which one Audiobookshelf does."""
+    def operation():
+        with scenario_factory("ABS-10") as scenario:
+            collection = tagged_audiobook(title="The Lantern Cycle Books 1-3", artist="Mara Quillon")
+            # seed_item() uploads the way Family Librarian does and then looks the item up by the title it was uploaded
+            # under; it raises if Audiobookshelf does not expose it under that title.
+            item_id = scenario.abs_client.seed_item(collection, "abs-10-collection.mp3", "Cinder Gate", "Mara Quillon")
+            by_requested_title = scenario.abs_client.find_items("Cinder Gate", "Mara Quillon")
+            if item_id not in by_requested_title:
+                raise AssertionError(f"The item is not found by the title it was uploaded under: {by_requested_title!r}")
+            return {"item_id": item_id, "found_as": "Cinder Gate"}
+
+    _run(ctx, "ABS-10", operation)
 
 
 def _poll_delivery(api, abs_client, request_id: str, *, timeout_seconds: float) -> dict[str, object] | None:

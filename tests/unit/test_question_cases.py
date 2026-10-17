@@ -142,3 +142,16 @@ def test_wait_for_cwa_book_returns_ids_and_reports_a_missing_book(monkeypatch):
     monkeypatch.setattr(q.time, "monotonic", lambda: next(ticks))
     with pytest.raises(AssertionError, match="CWA never listed 'The Lantern Cycle Books 1-3'"):
         q.wait_for_cwa_book(Cwa([[], []]), q.COLLECTION_TITLE, q.COLLECTION_AUTHOR, timeout=5)
+
+
+def test_tagged_audiobook_is_a_valid_id3_tag_followed_by_the_clean_audio():
+    from family_librarian_lab.fixtures import clean_audiobook, tagged_audiobook
+
+    data = tagged_audiobook(title="The Lantern Cycle Books 1-3", artist="Mara Quillon")
+    assert data[:3] == b"ID3" and data[3:5] == b"\x03\x00"
+    size = (data[6] << 21) | (data[7] << 14) | (data[8] << 7) | data[9]  # synchsafe tag size
+    tag, audio = data[10:10 + size], data[10 + size:]
+    assert audio == clean_audiobook()
+    assert b"TIT2" in tag and b"The Lantern Cycle Books 1-3" in tag
+    assert b"TPE1" in tag and b"Mara Quillon" in tag
+    assert all(byte < 0x80 for byte in data[6:10])

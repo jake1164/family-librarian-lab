@@ -137,6 +137,24 @@ def clean_audiobook(*, repeat: int = 20) -> bytes:
     return frame * repeat  # 20 repeats is ~0.5s -- enough for ffprobe to report a duration
 
 
+def tagged_audiobook(*, title: str, artist: str, repeat: int = 20) -> bytes:
+    """`clean_audiobook()` with an ID3v2.3 tag in front that names `title` and `artist`.
+
+    For proving what a destination does when a file's own metadata and the title Family Librarian uploads it under
+    disagree (an accepted collection or other variant carries its own title). The audio is still genuinely decodable."""
+
+    def text_frame(frame_id: bytes, text: str) -> bytes:
+        # ID3v2.3 text encodings are 0 (ISO-8859-1) and 1 (UTF-16); the fixture text is plain ASCII.
+        body = b"\x00" + text.encode("latin-1", errors="replace")
+        return frame_id + len(body).to_bytes(4, "big") + b"\x00\x00" + body
+
+    frames = text_frame(b"TIT2", title) + text_frame(b"TPE1", artist)
+    size = len(frames)
+    # The tag size is a 28-bit "synchsafe" integer: seven bits per byte.
+    synchsafe = bytes([(size >> 21) & 0x7F, (size >> 14) & 0x7F, (size >> 7) & 0x7F, size & 0x7F])
+    return b"ID3" + b"\x03\x00" + b"\x00" + synchsafe + frames + clean_audiobook(repeat=repeat)
+
+
 def malformed_but_plausible_mp3() -> bytes:
     """Return an MP3 that clears the shallow magic-byte content-type sniff
     (a real MPEG frame sync) but fails `AudioValidator`'s structural check.
