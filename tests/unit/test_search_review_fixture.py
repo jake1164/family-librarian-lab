@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import hashlib
 from http.client import HTTPConnection
+from io import BytesIO
 from pathlib import Path
 import sys
 import threading
+from zipfile import ZipFile
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "se-lab"))
 from family_librarian_lab.clients import SearchReviewControl, _http
-from family_librarian_lab.search_review_fixture import ALIAS, TITLE, make_server
+from family_librarian_lab.search_review_fixture import ALIAS, TITLE, TRIAGE_SCENARIOS, make_server
 
 
 @contextmanager
@@ -107,3 +110,69 @@ def test_streamed_provider_requests_decode_chunked_json_like_dotnet_httpclient()
         finally:
             connection.close()
         assert control.state()["searches"][0]["body"]["work"]["title"] == ALIAS
+
+
+def test_every_triage_scenario_speaks_the_real_http_protocol_and_records_calls(monkeypatch):
+    monkeypatch.setattr("family_librarian_lab.search_review_fixture.time.sleep", lambda _seconds: None)
+    with running_fixture() as base:
+        control = SearchReviewControl(base)
+        assert "audiobook" in call(base, "/source-a/manifest")[1]["capabilities"]["mediaTypes"]
+        for mode in sorted(TRIAGE_SCENARIOS):
+            control.configure("triage-" + mode)
+            media = "audiobook" if mode in ("parts", "parts-veto") else "ebook"
+            status, response = call(base, "/source-a/search", {"mediaType": media, "work": {"title": TITLE}})
+            assert status == 200 and response["candidates"], mode
+            status, model = call(base, "/v1/chat/completions", {"messages": []})
+            assert status == (503 if mode == "transport" else 200), mode
+            content = model["choices"][0]["message"]["content"]
+            if mode == "invalid-json":
+                assert content == "not JSON"
+            else:
+                assert json.loads(content)["schema"] == "candidate-triage/1", mode
+            state = control.state()
+            assert len(state["searches"]) == len(state["modelCalls"]) == 1, mode
+
+
+def test_stale_candidate_changes_only_after_the_initial_model_decision():
+    with running_fixture() as base:
+        control = SearchReviewControl(base)
+        control.configure("triage-changed")
+        query = {"mediaType": "ebook", "work": {"title": TITLE}}
+        first = call(base, "/source-a/search", query)[1]["candidates"][0]
+        call(base, "/v1/chat/completions", {"messages": []})
+        fresh = call(base, "/source-a/search", query)[1]["candidates"][0]
+        assert first["providerReference"] == fresh["providerReference"] == "copy-b"
+        assert first["edition"]["language"] == "en" and fresh["edition"]["language"] == "fr"
+
+
+def test_veto_and_tie_fixtures_are_distinct_releases_with_the_intended_condition():
+    with running_fixture() as base:
+        control = SearchReviewControl(base)
+        control.configure("triage-veto")
+        candidates = call(base, "/source-a/search", {"mediaType": "ebook", "work": {"title": TITLE}})[1]["candidates"]
+        assert len(candidates) == 2 and candidates[0]["release"]["name"] != candidates[1]["release"]["name"]
+        assert all(item["release"]["drm"] == "unknown" for item in candidates)
+
+
+@pytest.mark.parametrize("mode,author", [("author-delivery", "Mara Quillon"), ("author-held", "Other Writer")])
+def test_completed_jobs_serve_checksum_verified_epubs_with_intentional_file_identity(mode, author):
+    with running_fixture() as base:
+        SearchReviewControl(base).configure("triage-" + mode)
+        call(base, "/source-a/search", {"mediaType": "ebook", "work": {"title": TITLE}})
+        status, job = call(base, "/source-a/acquire", {"candidateReference": "copy-b"})
+        assert status == 202 and job["state"] == "completed"
+        status, outputs = call(base, f"/source-a/acquire/{job['jobId']}/outputs")
+        assert status == 200
+        output = outputs["outputs"][0]
+        status, raw = _http(base + f"/source-a/acquire/{job['jobId']}/outputs/{output['id']}")
+        assert status == 200 and len(raw) == output["sizeBytes"]
+        assert hashlib.sha256(raw).hexdigest() == output["checksums"][0]["value"]
+        with ZipFile(BytesIO(raw)) as epub:
+            assert epub.read("mimetype") == b"application/epub+zip"
+            opf = epub.read("OEBPS/content.opf").decode()
+            assert f"<dc:creator>{author}</dc:creator>" in opf and "<dc:title>Cinder Gate</dc:title>" in opf
+            assert "<title>Cinder Gate</title>" in epub.read("OEBPS/chapter.xhtml").decode()
+        # FL waits for acknowledged provider cleanup before scanning its staged copy.
+        assert _http(base + f"/source-a/acquire/{job['jobId']}", method="DELETE")[0] == 204
+        assert call(base, f"/source-a/acquire/{job['jobId']}")[0] == 404
+        assert call(base, f"/source-a/acquire/{job['jobId']}/outputs")[0] == 404

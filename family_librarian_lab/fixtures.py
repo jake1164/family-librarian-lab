@@ -22,6 +22,13 @@ def clean_epub() -> bytes:
     return _build_epub(chapter_text="A deterministic, harmless lab fixture.")
 
 
+def candidate_triage_epub(*, conflicting_author: bool = False) -> bytes:
+    """Invented work for proving that an AI-selected candidate still crosses real file identity checks."""
+    return _build_epub(title="Cinder Gate", author="Other Writer" if conflicting_author else "Mara Quillon",
+                       identifier="urn:uuid:family-librarian-lab-triage",
+                       chapter_text="Cinder Gate. A safe invented chapter for the controlled lab. " * 200)
+
+
 def eicar_epub() -> bytes:
     """Return a structurally valid EPUB containing the standard EICAR signature.
 
@@ -259,7 +266,7 @@ def _build_epub(
         if wrap_chapter_in_html:
             chapter = (
                 '<?xml version="1.0" encoding="UTF-8"?>\n'
-                '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>The Hobbit</title></head>'
+                f'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{title}</title></head>'
                 f"<body><p>{chapter_text}</p></body></html>"
             ).encode("utf-8")
         else:

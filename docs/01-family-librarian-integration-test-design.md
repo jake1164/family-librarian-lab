@@ -408,9 +408,40 @@ Manual AI settings are separate: `SearchGuidance` is opt-in, including after
 `./lab ai apply`; see `lab.env.example`. The default four roles do not exercise
 Phase 6.
 
-Phase 7 candidate triage requires additional cases once that product slice is
-implemented: corroborated author variants at Standard confidence, the same case
-remaining blocked at Strict, wrong-author/title/language conflicts, invented
-candidate IDs, and timeout/failure preserving deterministic behavior. Current
-search-review cases establish Phase 6 and source-review boundaries; they do not
-constitute Phase 7 acceptance.
+## Candidate triage regressions
+
+Run `./lab run --test-group candidate-triage` against a product revision that
+implements Phase 7. These 30 cases use the same invented work and controlled
+HTTP peers, with only `CandidateTriage` enabled when required. No live provider,
+catalog or model is needed. Every case starts with an empty application database
+and destination library and waits for a durable provider attempt before asserting
+submission or refusal.
+
+| Cases | Assertion |
+| --- | --- |
+| CT-01..03 | Keep the original candidate, veto it at Strict, or prefer the other genuinely tied candidate. |
+| CT-04..05 | A corroborated author-only conflict can proceed at Standard and stays blocked at Strict. |
+| CT-06..10 | Title resemblance alone, language/title/series conflicts and missing independent corroboration cannot authorize an author variant. |
+| CT-11..15 | Invented candidate/evidence IDs, another candidate's evidence, positive-only veto and preference for a lower-ranked candidate are rejected. |
+| CT-16..19 | Invalid JSON and HTTP failure preserve the deterministic choice; disabled triage makes no call, and SuggestOnly does not download. |
+| CT-20..21 | Changed fresh source facts prevent submission; Strict refuses AI preference. |
+| CT-22..23 | Complete audiobook parts use one triage call; vetoing a member defers the complete set. |
+| CT-24 | Cancel and ask again for the same work: identical evidence reuses the grounded veto without another model call or download; the provider's interval remains intact. |
+| CT-25 | Hostile source text remains bounded data; forged IDs in the scripted reply are rejected. |
+| CT-26 | A real delayed HTTP model response exceeds the linked deadline; the deterministic candidate still proceeds. |
+| CT-27 | A triaged author variant's correctly identified EPUB passes the real scanner/file checks and reaches CWA as Available. |
+| CT-28 | The same triage with a conflicting-author EPUB is held as Unmatched and remains absent from CWA. |
+| CT-29..30 | An AI author variant cannot displace an existing strong copy, including one first seen during fresh submission verification. |
+
+CT-01..26 and CT-29..30 stop at submission/refusal; their running fixture jobs do not claim
+file delivery coverage. CT-27..28 serve EPUB bytes with checksums through the
+real artifact pipeline. The timeout case expects the gateway's existing
+`TransportFailure` usage outcome for caller-token cancellation; product service
+tests separately assert the triage finding records `Timeout`. Scripted replies
+prove application enforcement, not real-model suggestion quality. Browser
+rendering and a previous-version upgrade deployment are outside these cases.
+
+For manual testing, append `CandidateTriage` to
+`FAMILY_LIBRARIAN_LAB_AI_ROLES` and run `./lab ai apply`. The role is separately
+opt-in and is not enabled by `SearchGuidance` or the default four roles. Phase 8
+artifact release guidance is a separate slice.

@@ -8,6 +8,7 @@ services:
       - "127.0.0.1:${FAMILY_LIBRARIAN_SEARCH_REVIEW_HOST_PORT:-18092}:8080"
     volumes:
       - ./family_librarian_lab/search_review_fixture.py:/fixture/search_review_fixture.py:ro
+      - ./family_librarian_lab/fixtures.py:/fixture/fixtures.py:ro
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
       interval: 2s

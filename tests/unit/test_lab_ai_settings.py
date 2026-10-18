@@ -35,6 +35,7 @@ def test_defaults_enable_the_original_four_roles_locally_without_reasoning():
     assert settings.enabled_roles == list(commands.DEFAULT_LAB_AI_ROLES)
     assert roles["VisionCoverIdentification"]["isEnabled"] is False
     assert roles["SearchGuidance"]["isEnabled"] is False, "search guidance remains an explicit opt-in"
+    assert roles["CandidateTriage"]["isEnabled"] is False, "decision-bearing triage remains an explicit opt-in"
     for role in roles.values():
         assert role["placement"] == "Local"
         assert role["localModel"] == "example/gemma4:12b"
@@ -70,6 +71,15 @@ def test_search_guidance_can_be_explicitly_enabled_after_a_database_reset():
     roles = _roles(settings)
     assert roles["SearchGuidance"]["localModel"] == "example/search"
     assert roles["CandidateAmbiguityAssessment"]["isEnabled"] is False
+
+
+def test_candidate_triage_requires_explicit_opt_in_and_supports_model_overrides():
+    settings = commands.lab_ai_settings({**BASE,
+        "FAMILY_LIBRARIAN_LAB_AI_ROLES": "candidatetriage",
+        "FAMILY_LIBRARIAN_LAB_AI_ROLE_MODELS": "CandidateTriage=example/triage"})
+    assert settings is not None and settings.enabled_roles == ["CandidateTriage"]
+    assert _roles(settings)["CandidateTriage"]["localModel"] == "example/triage"
+    assert _roles(settings)["SearchGuidance"]["isEnabled"] is False
 
 
 @pytest.mark.parametrize(

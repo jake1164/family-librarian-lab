@@ -29,10 +29,13 @@ for group, case in [
     ("cwa-local", "CWA-L-11"), ("cwa-local", "CWA-L-12"),
     ("gutenberg", "GUT-12"), ("gutenberg", "GUT-13"),
     ("search-review", "SR-01"), ("search-review", "SG-01"), ("search-review", "SG-08"),
+    ("candidate-triage", "CT-01"), ("candidate-triage", "CT-26"),
 ]:
     selected = select_suites(suites, group=group, case=case)
     assert sum(len(suite.cases) for suite in selected) == 1, case
 assert "pytest" not in sys.modules
+triage = select_suites(suites, group="candidate-triage")
+assert {case.test_id for suite in triage for case in suite.cases} == {f"CT-{n:02}" for n in range(1, 31)}
 print(f"Discovered {len(suites)} integration suites without pytest")
 '''
         result = subprocess.run(
