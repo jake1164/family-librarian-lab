@@ -164,6 +164,9 @@ EXTERNAL_PROVIDER_PROFILE = "external-provider"
 EXTERNAL_PROVIDER_SERVICE = "external-provider-fixture"
 EXTERNAL_PROVIDER_INTERNAL_URL = "http://external-provider-fixture:8080"
 EXTERNAL_PROVIDER_DEFAULT_HOST_PORT = 18091
+SEARCH_REVIEW_PROFILE = "search-review"
+SEARCH_REVIEW_INTERNAL_URL = "http://search-review-fixture:8080"
+SEARCH_REVIEW_DEFAULT_HOST_PORT = 18092
 #: lab.env-style switch passed to the fixture container. Off unless a suite (or `seed-questions`) turns it on, so
 #: every other case sees exactly the sample provider's original catalog.
 EXTERNAL_PROVIDER_QUESTION_FIXTURES_ENV = "FAMILY_LIBRARIAN_SAMPLE_PROVIDER_QUESTION_FIXTURES"
@@ -322,6 +325,24 @@ def _http(
         # urllib wraps only send-side failures in URLError; a destination that closes the connection while we read
         # the response (http.client.RemoteDisconnected, a reset) must read as "not reachable yet" so pollers retry.
         return 0, b""
+
+
+class SearchReviewControl:
+    """Control plane of the isolated search/model fixture; never a live provider."""
+
+    def __init__(self, host_base_url: str) -> None:
+        self.host_base_url = host_base_url.rstrip("/")
+
+    def configure(self, scenario: str) -> None:
+        status, body = _http(f"{self.host_base_url}/test/configure", method="POST", json_body={"scenario": scenario})
+        if status != 204:
+            raise AssertionError(f"Search fixture configure returned HTTP {status}: {body!r}")
+
+    def state(self) -> dict[str, Any]:
+        status, body = _http(f"{self.host_base_url}/test/state")
+        if status != 200:
+            raise AssertionError(f"Search fixture state returned HTTP {status}: {body!r}")
+        return json.loads(body)
 
 
 class SampleProviderControl:

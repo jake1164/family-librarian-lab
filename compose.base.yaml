@@ -1,4 +1,19 @@
 services:
+  search-review-fixture:
+    profiles: [search-review]
+    # Python 3.13.16, pinned multi-platform manifest; test-only stdlib server.
+    image: python:3.13-slim@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f
+    command: [python, -B, /fixture/search_review_fixture.py]
+    ports:
+      - "127.0.0.1:${FAMILY_LIBRARIAN_SEARCH_REVIEW_HOST_PORT:-18092}:8080"
+    volumes:
+      - ./family_librarian_lab/search_review_fixture.py:/fixture/search_review_fixture.py:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2).read()"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
   postgres:
     # Per-scenario database server. `lab run` normally leaves it out by
     # setting FAMILY_LIBRARIAN_LOCAL_DB_PROFILE to a profile nobody enables,

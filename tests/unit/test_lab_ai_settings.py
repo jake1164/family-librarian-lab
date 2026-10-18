@@ -27,13 +27,14 @@ def test_nothing_is_configured_without_an_endpoint():
     assert commands.lab_ai_settings({"FAMILY_LIBRARIAN_LAB_AI_MODEL": "example/model"}) is None
 
 
-def test_defaults_enable_every_text_role_locally_without_reasoning():
+def test_defaults_enable_the_original_four_roles_locally_without_reasoning():
     settings = commands.lab_ai_settings(BASE)
     assert settings is not None
     roles = _roles(settings)
     assert set(roles) == set(commands.FL_MODEL_ROLES), "every role is sent, so lab.env stays the source of truth"
     assert settings.enabled_roles == list(commands.DEFAULT_LAB_AI_ROLES)
     assert roles["VisionCoverIdentification"]["isEnabled"] is False
+    assert roles["SearchGuidance"]["isEnabled"] is False, "search guidance remains an explicit opt-in"
     for role in roles.values():
         assert role["placement"] == "Local"
         assert role["localModel"] == "example/gemma4:12b"
@@ -56,6 +57,19 @@ def test_listed_roles_overrides_and_reasoning_are_honoured_case_insensitively():
     assert roles["ArtifactValidationAssessment"]["isEnabled"] is False
     assert roles["IntentInterpretation"]["reasoning"] == "Inherit"
     assert settings.api_key == "secret"
+
+
+def test_search_guidance_can_be_explicitly_enabled_after_a_database_reset():
+    settings = commands.lab_ai_settings({
+        **BASE,
+        "FAMILY_LIBRARIAN_LAB_AI_ROLES": "searchguidance",
+        "FAMILY_LIBRARIAN_LAB_AI_ROLE_MODELS": "SEARCHGUIDANCE=example/search",
+    })
+    assert settings is not None
+    assert settings.enabled_roles == ["SearchGuidance"]
+    roles = _roles(settings)
+    assert roles["SearchGuidance"]["localModel"] == "example/search"
+    assert roles["CandidateAmbiguityAssessment"]["isEnabled"] is False
 
 
 @pytest.mark.parametrize(

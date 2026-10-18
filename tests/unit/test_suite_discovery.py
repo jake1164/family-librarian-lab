@@ -28,6 +28,7 @@ for group, case in [
     ("abs", "ABS-08"), ("abs", "ABS-09"), ("communications", "COMM-04"),
     ("cwa-local", "CWA-L-11"), ("cwa-local", "CWA-L-12"),
     ("gutenberg", "GUT-12"), ("gutenberg", "GUT-13"),
+    ("search-review", "SR-01"), ("search-review", "SG-01"), ("search-review", "SG-08"),
 ]:
     selected = select_suites(suites, group=group, case=case)
     assert sum(len(suite.cases) for suite in selected) == 1, case

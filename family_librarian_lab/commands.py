@@ -53,6 +53,7 @@ ALL_PROFILES = (
     # This one was missing, and EXTPROV-01's fixture kept host port 18091,
     # failing EXTPROV-02..04 at `up` (2026-09-30).
     clients.EXTERNAL_PROVIDER_PROFILE,
+    clients.SEARCH_REVIEW_PROFILE,
 )
 EXTERNAL_PROVIDER_FIXTURE_SERVICE = "external-provider-fixture"
 #: Every compose service built from FAMILY_LIBRARIAN_SOURCE_DIR; `lab run`
@@ -2134,6 +2135,11 @@ class _BaseScenario:
             )
         )
 
+    def search_review_control(self) -> clients.SearchReviewControl:
+        return clients.SearchReviewControl(_client_host_base(
+            self._values, clients.SEARCH_REVIEW_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_SEARCH_REVIEW_HOST_PORT"
+        ))
+
     def __enter__(self) -> "_BaseScenario":
         # A plain-text, unconditionally-printed marker: every case's own
         # `docker compose up`/`down` output streams live regardless of
@@ -2592,8 +2598,9 @@ FL_MODEL_ROLES = (
     "CandidateAmbiguityAssessment",
     "ArtifactValidationAssessment",
     "VisionCoverIdentification",
+    "SearchGuidance",
 )
-# Cover identification needs a vision-capable model, so it is only on when named.
+# Vision and search guidance are explicit opt-ins; preserve the original four defaults.
 DEFAULT_LAB_AI_ROLES = FL_MODEL_ROLES[:4]
 LAB_AI_REASONING_MODES = ("Inherit", "Disabled")
 

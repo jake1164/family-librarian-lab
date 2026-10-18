@@ -369,3 +369,48 @@ completion across both CWA and ABS, and a full previous-release upgrade deployme
 are not covered by these new cases. Product tests cover the underlying per-member
 format/status and migration behavior, but cannot substitute for those UI/deployment
 checks. Negative timing assertions cover their stated observation windows only.
+
+## Search guidance and source-review regressions
+
+Run `./lab run --test-group search-review` against the intended committed product
+revision. Each case gets a fresh Family Librarian/database and controlled HTTP
+sources/model in the `search-review` Compose profile. The fixture control port
+binds to loopback (18092; override `FAMILY_LIBRARIAN_SEARCH_REVIEW_HOST_PORT`).
+It uses the invented demo work **Cinder Gate**, by **Mara Quillon**; no live
+catalog, acquisition service or model is needed. CWA supplies the real passing
+ebook destination required to create requests. The app's scheduler, verification,
+model gateway, parser, persistence and authorization execute normally.
+
+| Case | Assertion |
+| --- | --- |
+| SR-01 | Two otherwise equivalent raw releases from one source remain distinct; missing source authors stay missing; requester approval of source-only review and invented candidate IDs is rejected. |
+| SG-01 | One model call across two sources proposes a new title search; only a returned copy independently matching the requested work is submitted for acquisition. |
+| SG-02 | A search result with the requested title but a conflicting author is never acquired. |
+| SG-03 | Repeating the requested title is schema-rejected; no extra search or acquisition follows. |
+| SG-04 | Guidance disabled: deterministic searches run, with zero model calls. |
+| SG-05 | `give_up` finishes extra searches without a download. |
+| SG-06 | An invented evidence ID is schema-rejected. |
+| SG-07 | URL proposals are schema-rejected. |
+| SG-08 | Proposals longer than 120 characters are schema-rejected. |
+
+Guidance negatives wait for persisted attempts from both sources, or a review
+after both have been searched; ordinary review intentionally stops later source
+processing. SR-01 waits for its source's persisted attempt and review before
+checking that nothing was acquired. Scripted model output deliberately supplies
+valid and invalid replies; this proves application enforcement, not the quality
+of a real model's suggestions. The positive case stops at a running fixture job;
+it does not serve file bytes or claim scan, artifact identity, delivery, or
+browser-rendering coverage. Existing security/destination suites cover those
+boundaries.
+
+Manual AI settings are separate: `SearchGuidance` is opt-in, including after
+`clean-books`. Include it in `FAMILY_LIBRARIAN_LAB_AI_ROLES` and run
+`./lab ai apply`; see `lab.env.example`. The default four roles do not exercise
+Phase 6.
+
+Phase 7 candidate triage requires additional cases once that product slice is
+implemented: corroborated author variants at Standard confidence, the same case
+remaining blocked at Strict, wrong-author/title/language conflicts, invented
+candidate IDs, and timeout/failure preserving deterministic behavior. Current
+search-review cases establish Phase 6 and source-review boundaries; they do not
+constitute Phase 7 acceptance.
