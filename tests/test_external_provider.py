@@ -197,8 +197,12 @@ def happy_path_acquisition_lands_in_cwa(ctx, scenario_factory):
                 raise AssertionError(f"Starting the acquisition did not record a Submitted provider attempt: {attempts!r}")
 
             books = scenario.cwa_client.find_books("Pride and Prejudice", "Jane Austen")
-            if not books:
-                raise AssertionError("CWA did not receive the acquired book.")
+            if len(books) != 1:
+                raise AssertionError(f"CWA must receive exactly one acquired copy, found {len(books)}: {books!r}")
+            imports = [item for item in scenario.api.publishing_queue().get("libraryImports", [])
+                       if item.get("requestId") == request_id]
+            if len(imports) != 1 or imports[0].get("status") != "Available":
+                raise AssertionError(f"Automatic fulfillment and the admin acquisition must create one verified import: {imports!r}")
             return {"request_id": request_id, "job_id": job_id, "request": request, "opds_books": books}
 
     _run(ctx, "EXTPROV-01", operation)

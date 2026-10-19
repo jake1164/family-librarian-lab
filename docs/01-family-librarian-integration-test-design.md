@@ -31,6 +31,12 @@ This lab owns the missing tests:
 
 ## Test system and isolation model
 
+`EXTPROV-01` leaves automatic fulfillment enabled while an administrator explicitly
+acquires the same external candidate. Both paths must share active provider work:
+the scenario requires Available, exactly one verified library import for the request, and
+exactly one matching CWA catalog entry. Duplicate imports must not be hidden by
+choosing an arbitrary OPDS match or disabling the automatic worker.
+
 Every scenario starts its own Compose project and uses a run-specific project name, network, named volumes, bootstrap credentials, and fixture title. The PostgreSQL database **and** the CWA/ABS library state are fresh. A test run must never point at a household library, an operator's CWA, or an operator's Audiobookshelf instance.
 
 ```text
