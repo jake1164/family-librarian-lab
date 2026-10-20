@@ -17,9 +17,9 @@ import time
 from uuid import uuid4
 
 if __package__:
-    from .fixtures import artifact_decision_epub, candidate_triage_epub
+    from .fixtures import artifact_decision_epub, artifact_release_epub, candidate_triage_epub
 else:
-    from fixtures import artifact_decision_epub, candidate_triage_epub
+    from fixtures import artifact_decision_epub, artifact_release_epub, candidate_triage_epub
 
 TITLE = "Cinder Gate"
 AUTHOR = "Mara Quillon"
@@ -37,6 +37,9 @@ SCENARIOS |= {"triage-" + name for name in TRIAGE_SCENARIOS}
 ARTIFACT_SCENARIOS = {"hold", "off", "no-objection", "positive-hold", "forged-id", "invalid-json", "transport"}
 SCENARIOS |= {"artifact-" + name for name in ARTIFACT_SCENARIOS}
 WEAK_EVIDENCE_ID = "idv.ev-compare-heading-language"
+RELEASE_SCENARIOS = {"author", "off", "role-off", "inconclusive", "title", "language", "concern", "forged-id",
+                     "unknown", "other-dimension", "invalid-json", "transport", "non-admin"}
+SCENARIOS |= {"release-" + name for name in RELEASE_SCENARIOS}
 
 
 class Fixture:
@@ -69,7 +72,7 @@ class Fixture:
             candidates = []
             if self.scenario.startswith("triage-"):
                 candidates = self.triage_candidates(body)
-            elif self.scenario.startswith("artifact-"):
+            elif self.scenario.startswith(("artifact-", "release-")):
                 if body.get("mediaType", "").casefold() == "ebook":
                     candidates = [candidate("copy-a", TITLE, AUTHOR, "Cinder Gate copy a.epub")]
             elif self.scenario == "source-review":
@@ -94,6 +97,8 @@ class Fixture:
                 return completion(reply)
             if self.scenario.startswith("artifact-"):
                 return completion(self.artifact_reply(body))
+            if self.scenario.startswith("release-"):
+                return completion(self.release_reply(body))
             value = {"duplicate": TITLE, "url": "https://example.test/book", "too-long": "x" * 121}.get(self.scenario, ALIAS)
             reply = {"schema": "search-guidance/1", "give_up": self.scenario == "give-up", "suggestions": []}
             if not reply["give_up"]:
@@ -101,6 +106,35 @@ class Fixture:
                     "evidence_ids": ["r9999" if self.scenario == "invented-id" else "req-title"],
                     "note": "Try an alternate bibliographic title."}]
             return completion(reply)
+
+    def release_reply(self, body: dict):
+        """Read supplied ids by code/polarity; never rely on a fixed evidence id chosen by the test model."""
+        mode = self.scenario.removeprefix("release-")
+        if mode == "invalid-json":
+            return "not JSON"
+        shown = []
+        for message in body.get("messages", []):
+            if message.get("role") == "user":
+                for line in str(message.get("content", "")).splitlines():
+                    parts = [part.strip() for part in line.split(" | ")]
+                    if len(parts) >= 4:
+                        shown.append(parts)
+        if mode == "concern":
+            ids = [p[0] for p in shown if p[2] == "profile.compare.headings_other_language" and p[1] == "Weak"]
+            # The actual code in the product is read from the supplied heading-language comparison.
+            ids = ids or [p[0] for p in shown if p[1] == "Weak" and "heading" in p[2]]
+            return {"schema": "artifact-decision/1", "verdict": "hold", "claims": [
+                {"kind": "suggests_wrong_language", "evidence_ids": ids[:1], "note": "The headings suggest another language."}]}
+        wanted = {"artifact.identity_title.agrees", "artifact.language.declared_matches_request", "profile.compare.series_position_agrees"}
+        ids = [p[0] for p in shown if p[2] in wanted and p[1] == "Positive"]
+        if mode == "forged-id":
+            ids = ["idv.forged"]
+        elif mode == "unknown":
+            ids = [p[0] for p in shown if p[1] == "Unknown"][:1]
+        elif mode == "other-dimension":
+            ids = [p[0] for p in shown if p[1] == "Positive" and p[2].startswith(("artifact.security.", "artifact.structure."))][:1]
+        return {"schema": "artifact-decision/1", "verdict": "release", "claims": [
+            {"kind": "supports_declared_identity", "evidence_ids": ids, "note": "Independent observations support the declared work."}]}
 
     def artifact_reply(self, body: dict):
         """Reply to the artifact-decision prompt using only ids that the prompt actually shows."""
@@ -313,7 +347,7 @@ def make_server(address: tuple[str, int]) -> ThreadingHTTPServer:
                     reply = fixture.model(body)
                     if fixture.scenario == "triage-timeout":
                         time.sleep(25)  # exceeds FL's linked 20-second triage budget; lock is not held
-                    self.respond(503 if fixture.scenario in ("triage-transport", "artifact-transport") else 200, reply)
+                    self.respond(503 if fixture.scenario in ("triage-transport", "artifact-transport", "release-transport") else 200, reply)
                 elif parts[0] in ("source-a", "source-b") and parts[1:] == ["search"]:
                     self.respond(200, fixture.search(parts[0], body))
                 elif parts[0] in ("source-a", "source-b") and parts[1:] == ["acquire"]:
@@ -329,6 +363,9 @@ def make_server(address: tuple[str, int]) -> ThreadingHTTPServer:
                             job.update(status="Completed", state="completed", phase="completed", pollAfterSeconds=1)
                         elif fixture.scenario.startswith("artifact-"):
                             fixture.outputs[job_id] = artifact_decision_epub()
+                            job.update(status="Completed", state="completed", phase="completed", pollAfterSeconds=1)
+                        elif fixture.scenario.startswith("release-"):
+                            fixture.outputs[job_id] = artifact_release_epub(fixture.scenario.removeprefix("release-"))
                             job.update(status="Completed", state="completed", phase="completed", pollAfterSeconds=1)
                         fixture.jobs[job_id] = job
                         self.respond(202, job)

@@ -392,14 +392,15 @@ class FamilyLibrarianApi:
         return _object(response.body, "release provider downloads")
 
     def configure_model_gateway(
-        self, *, endpoint_url: str, api_key: str | None, roles: list[dict[str, Any]]
+        self, *, endpoint_url: str, api_key: str | None, roles: list[dict[str, Any]], allow_model_hold_release: bool = False
     ) -> dict[str, Any]:
         """Save the AI endpoint and every role, store the key (if any), then enable the gateway. Local-only:
         cloud stays off, and limits are left at Family Librarian's own defaults."""
         saved = self._request(
             "PUT",
             "/api/v1/admin/model-gateway/",
-            json_body={"endpointUrl": endpoint_url, "allowCloud": False, "roles": roles},
+            json_body={"endpointUrl": endpoint_url, "allowCloud": False, "roles": roles,
+                       "allowModelHoldRelease": allow_model_hold_release},
         )
         _require_status(saved, 200, "Model gateway settings")
         if api_key:
@@ -408,6 +409,16 @@ class FamilyLibrarianApi:
         enabled = self._request("PUT", "/api/v1/admin/model-gateway/enabled", json_body={"enabled": True})
         _require_status(enabled, 200, "Model gateway enable")
         return _object(enabled.body, "Model gateway settings")
+
+    def set_model_hold_release(self, allow: bool) -> ApiResponse:
+        """Change the explicit release permission through the administrator-only audited settings endpoint."""
+        current = self._request("GET", "/api/v1/admin/model-gateway/")
+        _require_status(current, 200, "Model gateway settings")
+        value = _object(current.body, "Model gateway settings")
+        return self._request("PUT", "/api/v1/admin/model-gateway/", json_body={
+            "endpointUrl": value.get("endpointUrl"), "allowCloud": value.get("allowCloud", False),
+            "roles": value.get("roles", []), "allowModelHoldRelease": allow,
+        })
 
     def matrix_link_status(self) -> dict[str, Any]:
         """Household member's own Matrix identity link state -- call on a

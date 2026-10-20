@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "se-lab"))
 from family_librarian_lab.clients import SearchReviewControl, _http
 from family_librarian_lab.search_review_fixture import ALIAS, ARTIFACT_SCENARIOS, TITLE, TRIAGE_SCENARIOS, WEAK_EVIDENCE_ID, make_server
+from family_librarian_lab.search_review_fixture import RELEASE_SCENARIOS
 
 
 @contextmanager
@@ -188,6 +189,44 @@ def _decision(base, mode):
     status, model = call(base, "/v1/chat/completions", {"messages": [
         {"role": "system", "content": "artifact-decision/1"}, {"role": "user", "content": PROMPT}]})
     return status, model["choices"][0]["message"]["content"]
+
+
+def test_every_release_scenario_serves_real_bytes_and_reads_evidence_ids_from_the_prompt():
+    prompt = ("UNTRUSTED DATA\n"
+              "idv.changed-title | Positive | artifact.identity_title.agrees | IdentityCorroboration\n"
+              "idv.changed-language | Positive | artifact.language.declared_matches_request | Language\n"
+              "idv.changed-series | Positive | profile.compare.series_position_agrees | Profile\n"
+              "idv.changed-heading | Weak | profile.compare.headings_other_language | Profile\n"
+              "idv.changed-unknown | Unknown | artifact.identity_author.absent | IdentityCorroboration\n"
+              "sec.changed-clean | Positive | artifact.security.scan_clean | Security\n")
+    with running_fixture() as base:
+        for mode in sorted(RELEASE_SCENARIOS):
+            SearchReviewControl(base).configure("release-" + mode)
+            status, search = call(base, "/source-a/search", {"mediaType": "ebook", "work": {"title": TITLE}})
+            assert status == 200 and len(search["candidates"]) == 1, mode
+            status, job = call(base, "/source-a/acquire", {"candidateReference": "copy-a"})
+            assert status == 202 and job["state"] == "completed", mode
+            output = call(base, f"/source-a/acquire/{job['jobId']}/outputs")[1]["outputs"][0]
+            status, raw = _http(base + f"/source-a/acquire/{job['jobId']}/outputs/{output['id']}")
+            assert status == 200 and hashlib.sha256(raw).hexdigest() == output["checksums"][0]["value"]
+            with ZipFile(BytesIO(raw)) as epub:
+                opf = epub.read("OEBPS/content.opf").decode()
+                if mode != "concern":
+                    assert "The Lantern Cycle" in opf and "9791000000022" in opf
+                    assert ("<dc:language>fr</dc:language>" in opf) == (mode == "language")
+                    assert ("<dc:creator></dc:creator>" in opf) == (mode == "inconclusive")
+            status, model = call(base, "/v1/chat/completions", {"messages": [{"role": "user", "content": prompt}]})
+            assert status == (503 if mode == "transport" else 200)
+            content = model["choices"][0]["message"]["content"]
+            if mode == "invalid-json":
+                assert content == "not JSON"
+            else:
+                reply = json.loads(content)
+                ids = reply["claims"][0]["evidence_ids"]
+                expected = {"forged-id": ["idv.forged"], "unknown": ["idv.changed-unknown"],
+                            "other-dimension": ["sec.changed-clean"], "concern": ["idv.changed-heading"]}
+                assert ids == expected.get(mode, ["idv.changed-title", "idv.changed-language", "idv.changed-series"]), mode
+            assert len(SearchReviewControl(base).state()["modelCalls"]) == 1
 
 
 @pytest.mark.parametrize("mode,verdict,cited", [

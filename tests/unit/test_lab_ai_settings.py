@@ -109,5 +109,6 @@ def test_applying_sends_the_settings_and_never_prints_the_key(capsys: pytest.Cap
     commands._apply_lab_ai(api, {**BASE, "FAMILY_LIBRARIAN_LAB_AI_API_KEY": "secret-key"})  # type: ignore[arg-type]
     assert api.sent["endpoint_url"] == BASE["FAMILY_LIBRARIAN_LAB_AI_ENDPOINT_URL"]
     assert api.sent["api_key"] == "secret-key"
+    assert api.sent["allow_model_hold_release"] is False, "AI apply and clean-books never enable model release implicitly"
     assert len(api.sent["roles"]) == len(commands.FL_MODEL_ROLES)  # type: ignore[arg-type]
     assert "secret-key" not in capsys.readouterr().out

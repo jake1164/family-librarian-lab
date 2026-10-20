@@ -2754,7 +2754,8 @@ def _apply_lab_ai(api: FamilyLibrarianApi, values: dict[str, str]) -> None:
     settings = lab_ai_settings(values)
     if settings is None:
         return
-    api.configure_model_gateway(endpoint_url=settings.endpoint_url, api_key=settings.api_key, roles=list(settings.roles))
+    api.configure_model_gateway(endpoint_url=settings.endpoint_url, api_key=settings.api_key, roles=list(settings.roles),
+                                allow_model_hold_release=False)
     print(
         f"Family Librarian AI configured from lab.env: {settings.endpoint_url}, "
         f"roles {', '.join(settings.enabled_roles) or 'none'}.",

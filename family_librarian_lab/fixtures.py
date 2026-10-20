@@ -41,6 +41,19 @@ def artifact_decision_epub() -> bytes:
                        chapter_text="", body_html=headings * 40)
 
 
+def artifact_release_epub(mode: str = "author") -> bytes:
+    """Invented held EPUBs. A byline beyond the deterministic two-edit exception has independent series agreement."""
+    if mode == "concern":
+        return artifact_decision_epub()
+    return _build_epub(title="Other Gate" if mode == "title" else "Cinder Gate",
+                       author="" if mode == "inconclusive" else "Mara Quillington",
+                       language="fr" if mode == "language" else "en",
+                       identifier="urn:isbn:9791000000022",
+                       metadata_extra='<meta name="calibre:series" content="The Lantern Cycle"/>'
+                                      '<meta name="calibre:series_index" content="2"/>',
+                       chapter_text="A safe invented Cinder Gate chapter. " * 200)
+
+
 def eicar_epub() -> bytes:
     """Return a structurally valid EPUB containing the standard EICAR signature.
 
@@ -250,6 +263,7 @@ def _build_epub(
     extra_payload: bytes | None = None,
     wrap_chapter_in_html: bool = True,
     body_html: str | None = None,
+    metadata_extra: str = "",
 ) -> bytes:
     output = BytesIO()
     with ZipFile(output, "w") as archive:
@@ -271,7 +285,7 @@ def _build_epub(
             b'<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
             + f'<dc:identifier id="book-id">{identifier}</dc:identifier>'.encode("utf-8")
             + f'<dc:title>{title}</dc:title><dc:creator>{author}</dc:creator>'.encode("utf-8")
-            + f'<dc:language>{language}</dc:language></metadata><manifest>'.encode("utf-8")
+            + f'<dc:language>{language}</dc:language>{metadata_extra}</metadata><manifest>'.encode("utf-8")
             + b'<item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/>'
             + b'</manifest><spine><itemref idref="chapter"/></spine></package>',
             ZIP_DEFLATED,

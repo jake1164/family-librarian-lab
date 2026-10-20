@@ -459,8 +459,8 @@ ids out of the prompt it is sent.
 | AD-06..07 | Invalid JSON and an HTTP 503 leave the deterministic approval intact: delivered and Available. |
 
 These prove application enforcement against scripted replies, not the quality of
-a real model's judgement. Hold release (8b) and excerpts (8c) are not covered
-because they are not implemented. The role is opt-in after `clean-books`: add
+a real model's judgement. Hold release has a separate group below; excerpts (8c)
+remain deferred. The role is opt-in after `clean-books`: add
 `ArtifactValidationDecision` to `FAMILY_LIBRARIAN_LAB_AI_ROLES` and run
 `./lab ai apply` to exercise it by hand.
 
@@ -475,4 +475,42 @@ rendering and a previous-version upgrade deployment are outside these cases.
 For manual testing, append `CandidateTriage` to
 `FAMILY_LIBRARIAN_LAB_AI_ROLES` and run `./lab ai apply`. The role is separately
 opt-in and is not enabled by `SearchGuidance` or the default four roles. Phase 8
-artifact release guidance is a separate slice.
+artifact release also needs its separate default-off permission.
+
+## Artifact release regressions
+
+Run `./lab run --test-group artifact-release` against the intended Phase 8b product
+and lab revisions after committing, pushing and `./lab sync`. Host proof remains
+pending until the saved results are reported. Run `artifact-decision` and
+`external-provider` as regressions on the same revisions.
+
+These cases use invented Cinder Gate EPUBs from the controlled protocol fixture.
+The author spelling differs beyond the deterministic exception, while title,
+language, series position and ISBN independently agree. The inconclusive fixture
+has no author metadata, rather than a contradictory author. Only
+`ArtifactValidationDecision` is enabled; release additionally needs
+`AllowModelHoldRelease`, set through the administrator-only audited settings API.
+The model reads evidence ids from the prompt. Assertions concern FL storage,
+findings, evidence, destination delivery and request state, never model quality.
+Successful releases must pass through Trusted (Archived after CWA verification), be present in CWA and Available, with the model
+decision and source=model release evidence. Every refusal must stay Unmatched,
+without release evidence or delivery. Ordinary AI configuration after clean-books
+explicitly resets the release permission to false.
+
+| Case | Assertion |
+| --- | --- |
+| AR-01 | Switch on, only author Negative, grounded release: Trusted, CWA delivery, Available, model release evidence and cited finding. |
+| AR-02 | Same fixture/reply with switch off: held, zero calls. |
+| AR-03 | Eligible content-inconclusive hold with Positive identity evidence: released and delivered. |
+| AR-04..05 | Additional title or language Negative: held, zero calls. |
+| AR-06 | A grounded 8a model-concern hold cannot be released by identity retry even with release enabled; exactly one hold call. |
+| AR-07..09 | Only forged ids, Unknown facts or Positive security/structure facts: schema-rejected, held. |
+| AR-10..11 | Invalid JSON or HTTP 503: held. |
+| AR-12 | Decision role off despite release permission: held, zero calls. |
+| AR-13 | A member cannot enable release; permission remains false, held with zero calls. |
+
+The exhaustive Negative catalog, accepted-collection tier-B exception, changes
+during/after the call, audit actor and transactional persistence are additionally
+covered by product tests. No tier-C excerpt extractor or new pipeline stage is
+part of this slice. These lab cases are committed-revision acceptance tests;
+unit/protocol tests alone do not constitute host acceptance.
