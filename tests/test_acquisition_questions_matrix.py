@@ -96,17 +96,17 @@ def _link_household_member(scenario) -> str:
 
 def _wait_for_dm(household, room: str, needle: str, *, timeout: float = _DISPATCH_TIMEOUT_SECONDS) -> str:
     """Read the DM room until the bot sends a message containing `needle`, skipping earlier chatter."""
-    deadline = time.monotonic() + timeout
     seen: list[str] = []
-    while time.monotonic() < deadline:
-        received = household.wait_for_message(
-            room_id=room, timeout=max(1.0, min(15.0, deadline - time.monotonic()))
-        )
-        if received is None:
-            continue
-        seen.append(received[1])
-        if needle.lower() in received[1].lower():
-            return received[1]
+
+    def matches(_room: str, text: str) -> bool:
+        seen.append(text)
+        return needle.lower() in text.lower()
+
+    # The client advances its cursor past the entire sync batch. Filter while it scans that batch so
+    # an earlier verification echo or acknowledgement cannot discard a later question or answer.
+    received = household.wait_for_message(room_id=room, predicate=matches, timeout=timeout)
+    if received is not None:
+        return received[1]
     raise AssertionError(f"The bot never sent a message containing {needle!r}; saw {seen!r}")
 
 
