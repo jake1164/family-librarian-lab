@@ -17,9 +17,9 @@ import time
 from uuid import uuid4
 
 if __package__:
-    from .fixtures import candidate_triage_epub
+    from .fixtures import artifact_decision_epub, candidate_triage_epub
 else:
-    from fixtures import candidate_triage_epub
+    from fixtures import artifact_decision_epub, candidate_triage_epub
 
 TITLE = "Cinder Gate"
 AUTHOR = "Mara Quillon"
@@ -33,6 +33,10 @@ TRIAGE_SCENARIOS = {
     "author-delivery", "author-held", "author-with-strong", "author-fresh-strong",
 }
 SCENARIOS |= {"triage-" + name for name in TRIAGE_SCENARIOS}
+# Phase 8a: one correctly identified EPUB with a Weak heading-language fact; the scripted model decides what to cite.
+ARTIFACT_SCENARIOS = {"hold", "off", "no-objection", "positive-hold", "forged-id", "invalid-json", "transport"}
+SCENARIOS |= {"artifact-" + name for name in ARTIFACT_SCENARIOS}
+WEAK_EVIDENCE_ID = "idv.ev-compare-heading-language"
 
 
 class Fixture:
@@ -65,6 +69,9 @@ class Fixture:
             candidates = []
             if self.scenario.startswith("triage-"):
                 candidates = self.triage_candidates(body)
+            elif self.scenario.startswith("artifact-"):
+                if body.get("mediaType", "").casefold() == "ebook":
+                    candidates = [candidate("copy-a", TITLE, AUTHOR, "Cinder Gate copy a.epub")]
             elif self.scenario == "source-review":
                 for suffix in ("A", "B"):
                     candidates.append(candidate(f"release-{suffix}", None, None,
@@ -85,6 +92,8 @@ class Fixture:
             if self.scenario.startswith("triage-"):
                 reply = self.triage_reply()
                 return completion(reply)
+            if self.scenario.startswith("artifact-"):
+                return completion(self.artifact_reply(body))
             value = {"duplicate": TITLE, "url": "https://example.test/book", "too-long": "x" * 121}.get(self.scenario, ALIAS)
             reply = {"schema": "search-guidance/1", "give_up": self.scenario == "give-up", "suggestions": []}
             if not reply["give_up"]:
@@ -92,6 +101,31 @@ class Fixture:
                     "evidence_ids": ["r9999" if self.scenario == "invented-id" else "req-title"],
                     "note": "Try an alternate bibliographic title."}]
             return completion(reply)
+
+    def artifact_reply(self, body: dict):
+        """Reply to the artifact-decision prompt using only ids that the prompt actually shows."""
+        mode = self.scenario.removeprefix("artifact-")
+        if mode == "invalid-json":
+            return "not JSON"
+        shown = {}
+        for message in body.get("messages", []):
+            if message.get("role") != "user":
+                continue
+            for line in str(message.get("content", "")).splitlines():
+                parts = [part.strip() for part in line.split(" | ")]
+                if len(parts) >= 3 and parts[0].startswith(("idv.", "sec.", "tech.")):
+                    shown.setdefault(parts[1], parts[0])
+        if mode in ("no-objection", "off"):
+            return {"schema": "artifact-decision/1", "verdict": "no_objection", "claims": [
+                {"kind": "insufficient_information", "evidence_ids": [], "note": "Nothing in the supplied facts is concerning."}]}
+        if mode == "positive-hold":
+            kind, ids = "suggests_incomplete", [shown.get("Positive", "idv.ev-title")]
+        elif mode == "forged-id":
+            kind, ids = "suggests_wrong_language", ["idv.ev-forged"]
+        else:
+            kind, ids = "suggests_wrong_language", [WEAK_EVIDENCE_ID]
+        return {"schema": "artifact-decision/1", "verdict": "hold", "claims": [
+            {"kind": kind, "evidence_ids": ids, "note": "The headings look like another language."}]}
 
     def triage_candidates(self, body: dict) -> list[dict]:
         mode = self.scenario.removeprefix("triage-")
@@ -279,7 +313,7 @@ def make_server(address: tuple[str, int]) -> ThreadingHTTPServer:
                     reply = fixture.model(body)
                     if fixture.scenario == "triage-timeout":
                         time.sleep(25)  # exceeds FL's linked 20-second triage budget; lock is not held
-                    self.respond(503 if fixture.scenario == "triage-transport" else 200, reply)
+                    self.respond(503 if fixture.scenario in ("triage-transport", "artifact-transport") else 200, reply)
                 elif parts[0] in ("source-a", "source-b") and parts[1:] == ["search"]:
                     self.respond(200, fixture.search(parts[0], body))
                 elif parts[0] in ("source-a", "source-b") and parts[1:] == ["acquire"]:
@@ -292,6 +326,9 @@ def make_server(address: tuple[str, int]) -> ThreadingHTTPServer:
                         job = {"jobId": job_id, "status": "InProgress", "state": "running", "phase": "acquiring", "pollAfterSeconds": 30}
                         if fixture.scenario in ("triage-author-delivery", "triage-author-held"):
                             fixture.outputs[job_id] = candidate_triage_epub(conflicting_author=fixture.scenario.endswith("held"))
+                            job.update(status="Completed", state="completed", phase="completed", pollAfterSeconds=1)
+                        elif fixture.scenario.startswith("artifact-"):
+                            fixture.outputs[job_id] = artifact_decision_epub()
                             job.update(status="Completed", state="completed", phase="completed", pollAfterSeconds=1)
                         fixture.jobs[job_id] = job
                         self.respond(202, job)

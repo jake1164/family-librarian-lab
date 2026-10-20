@@ -439,6 +439,31 @@ submission or refusal.
 | CT-28 | The same triage with a conflicting-author EPUB is held as Unmatched and remains absent from CWA. |
 | CT-29..30 | An AI author variant cannot displace an existing strong copy, including one first seen during fresh submission verification. |
 
+## Artifact decision regressions
+
+Run `./lab run --test-group artifact-decision` against a product revision that
+implements Phase 8a. These 7 cases serve one invented, correctly identified EPUB
+through the real scanner, identity pipeline and CWA delivery. Its title, author
+and package language match, but its headings carry another language's cue word,
+so the profile comparison records a Weak heading-language fact: the only kind of
+observation a model may cite to add a hold here. Only `ArtifactValidationDecision`
+is enabled, and only when the case needs it; the scripted model reads the evidence
+ids out of the prompt it is sent.
+
+| Cases | Assertion |
+| --- | --- |
+| AD-01 | A grounded hold (citing the Weak fact) leaves the file `Unmatched` with `identity.hold.model_concern`, a decision finding for the administrator, nothing in CWA, the request not Available and the candidate fetched once. |
+| AD-02 | Role disabled: the same file is delivered and the request is Available, with zero model calls. |
+| AD-03 | `no_objection` changes nothing: delivered and Available after one call. |
+| AD-04..05 | A hold citing only Positive evidence, or an invented evidence id, is schema-rejected and the file is delivered. |
+| AD-06..07 | Invalid JSON and an HTTP 503 leave the deterministic approval intact: delivered and Available. |
+
+These prove application enforcement against scripted replies, not the quality of
+a real model's judgement. Hold release (8b) and excerpts (8c) are not covered
+because they are not implemented. The role is opt-in after `clean-books`: add
+`ArtifactValidationDecision` to `FAMILY_LIBRARIAN_LAB_AI_ROLES` and run
+`./lab ai apply` to exercise it by hand.
+
 CT-01..26 and CT-29..30 stop at submission/refusal; their running fixture jobs do not claim
 file delivery coverage. CT-27..28 serve EPUB bytes with checksums through the
 real artifact pipeline. The timeout case expects the gateway's existing

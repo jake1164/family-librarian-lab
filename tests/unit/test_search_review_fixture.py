@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "se-lab"))
 from family_librarian_lab.clients import SearchReviewControl, _http
-from family_librarian_lab.search_review_fixture import ALIAS, TITLE, TRIAGE_SCENARIOS, make_server
+from family_librarian_lab.search_review_fixture import ALIAS, ARTIFACT_SCENARIOS, TITLE, TRIAGE_SCENARIOS, WEAK_EVIDENCE_ID, make_server
 
 
 @contextmanager
@@ -176,3 +176,52 @@ def test_completed_jobs_serve_checksum_verified_epubs_with_intentional_file_iden
         assert _http(base + f"/source-a/acquire/{job['jobId']}", method="DELETE")[0] == 204
         assert call(base, f"/source-a/acquire/{job['jobId']}")[0] == 404
         assert call(base, f"/source-a/acquire/{job['jobId']}/outputs")[0] == 404
+
+
+PROMPT = ("UNTRUSTED DATA\nDECLARED\ntitle: Cinder Gate\nEVIDENCE\n"
+          "idv.ev-title | Positive | title.exact | Title\n"
+          f"{WEAK_EVIDENCE_ID} | Weak | profile.headings_other_language | Profile\n")
+
+
+def _decision(base, mode):
+    SearchReviewControl(base).configure("artifact-" + mode)
+    status, model = call(base, "/v1/chat/completions", {"messages": [
+        {"role": "system", "content": "artifact-decision/1"}, {"role": "user", "content": PROMPT}]})
+    return status, model["choices"][0]["message"]["content"]
+
+
+@pytest.mark.parametrize("mode,verdict,cited", [
+    ("hold", "hold", [WEAK_EVIDENCE_ID]), ("no-objection", "no_objection", []),
+    ("positive-hold", "hold", ["idv.ev-title"]), ("forged-id", "hold", ["idv.ev-forged"]),
+])
+def test_artifact_decision_replies_cite_only_what_each_scenario_intends(mode, verdict, cited):
+    with running_fixture() as base:
+        status, content = _decision(base, mode)
+        reply = json.loads(content)
+        assert status == 200 and reply["schema"] == "artifact-decision/1" and reply["verdict"] == verdict
+        assert [i for claim in reply["claims"] for i in claim["evidence_ids"]] == cited
+
+
+def test_artifact_decision_failure_modes_are_not_json_or_unavailable():
+    with running_fixture() as base:
+        assert _decision(base, "invalid-json") == (200, "not JSON")
+        assert _decision(base, "transport")[0] == 503
+    assert ARTIFACT_SCENARIOS >= {"hold", "off", "transport"}
+
+
+def test_artifact_scenario_serves_one_candidate_and_an_epub_with_the_heading_language_cue():
+    with running_fixture() as base:
+        SearchReviewControl(base).configure("artifact-hold")
+        assert call(base, "/source-a/search", {"mediaType": "audiobook", "work": {"title": TITLE}})[1]["candidates"] == []
+        candidates = call(base, "/source-a/search", {"mediaType": "ebook", "work": {"title": TITLE}})[1]["candidates"]
+        assert [c["providerReference"] for c in candidates] == ["copy-a"]
+        status, job = call(base, "/source-a/acquire", {"candidateReference": "copy-a"})
+        assert status == 202 and job["state"] == "completed"
+        output = call(base, f"/source-a/acquire/{job['jobId']}/outputs")[1]["outputs"][0]
+        status, raw = _http(base + f"/source-a/acquire/{job['jobId']}/outputs/{output['id']}")
+        assert status == 200 and hashlib.sha256(raw).hexdigest() == output["checksums"][0]["value"]
+        with ZipFile(BytesIO(raw)) as epub:
+            opf = epub.read("OEBPS/content.opf").decode()
+            body = epub.read("OEBPS/chapter.xhtml").decode()
+        assert "<dc:creator>Mara Quillon</dc:creator>" in opf and "<dc:language>en</dc:language>" in opf
+        assert body.count("<h1>Hörbuch Kapitel") >= 5, "at least five headings carry the cue"

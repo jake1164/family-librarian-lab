@@ -2600,8 +2600,9 @@ FL_MODEL_ROLES = (
     "VisionCoverIdentification",
     "SearchGuidance",
     "CandidateTriage",
+    "ArtifactValidationDecision",
 )
-# Vision, search guidance and candidate triage are explicit opt-ins; preserve the original four defaults.
+# Vision, search guidance, candidate triage and artifact decisions are explicit opt-ins; preserve the original four defaults.
 DEFAULT_LAB_AI_ROLES = FL_MODEL_ROLES[:4]
 LAB_AI_REASONING_MODES = ("Inherit", "Disabled")
 

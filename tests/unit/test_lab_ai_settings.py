@@ -36,6 +36,7 @@ def test_defaults_enable_the_original_four_roles_locally_without_reasoning():
     assert roles["VisionCoverIdentification"]["isEnabled"] is False
     assert roles["SearchGuidance"]["isEnabled"] is False, "search guidance remains an explicit opt-in"
     assert roles["CandidateTriage"]["isEnabled"] is False, "decision-bearing triage remains an explicit opt-in"
+    assert roles["ArtifactValidationDecision"]["isEnabled"] is False, "artifact holds remain an explicit opt-in"
     for role in roles.values():
         assert role["placement"] == "Local"
         assert role["localModel"] == "example/gemma4:12b"

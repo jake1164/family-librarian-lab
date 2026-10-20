@@ -29,6 +29,18 @@ def candidate_triage_epub(*, conflicting_author: bool = False) -> bytes:
                        chapter_text="Cinder Gate. A safe invented chapter for the controlled lab. " * 200)
 
 
+def artifact_decision_epub() -> bytes:
+    """Correctly identified Cinder Gate whose chapter headings carry another language's cue word.
+
+    Title, author and package language all match, so the deterministic checks approve it. Six h1 headings with a
+    German-language cue give the profile comparison its Weak heading-language fact, the only kind of observation a
+    model may cite to add a hold here."""
+    headings = "".join(f"<h1>Hörbuch Kapitel {n}</h1><p>Cinder Gate. A safe invented chapter for the controlled lab.</p>"
+                       for n in range(1, 7))
+    return _build_epub(title="Cinder Gate", author="Mara Quillon", identifier="urn:uuid:family-librarian-lab-artifact-decision",
+                       chapter_text="", body_html=headings * 40)
+
+
 def eicar_epub() -> bytes:
     """Return a structurally valid EPUB containing the standard EICAR signature.
 
@@ -237,6 +249,7 @@ def _build_epub(
     language: str = "en",
     extra_payload: bytes | None = None,
     wrap_chapter_in_html: bool = True,
+    body_html: str | None = None,
 ) -> bytes:
     output = BytesIO()
     with ZipFile(output, "w") as archive:
@@ -267,7 +280,7 @@ def _build_epub(
             chapter = (
                 '<?xml version="1.0" encoding="UTF-8"?>\n'
                 f'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{title}</title></head>'
-                f"<body><p>{chapter_text}</p></body></html>"
+                f"<body>{body_html if body_html is not None else f'<p>{chapter_text}</p>'}</body></html>"
             ).encode("utf-8")
         else:
             chapter = chapter_text.encode("utf-8")
