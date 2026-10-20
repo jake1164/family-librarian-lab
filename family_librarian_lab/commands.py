@@ -2607,8 +2607,8 @@ FL_MODEL_ROLES = (
     "CandidateTriage",
     "ArtifactValidationDecision",
 )
-# Vision, search guidance, candidate triage and artifact decisions are explicit opt-ins; preserve the original four defaults.
-DEFAULT_LAB_AI_ROLES = FL_MODEL_ROLES[:4]
+# A configured lab exercises every text feature. Vision needs a separately chosen compatible model.
+DEFAULT_LAB_AI_ROLES = tuple(role for role in FL_MODEL_ROLES if role != "VisionCoverIdentification")
 LAB_AI_REASONING_MODES = ("Inherit", "Disabled")
 
 
@@ -2617,6 +2617,7 @@ class LabAiSettings:
     endpoint_url: str
     api_key: str | None
     roles: tuple[dict[str, object], ...]
+    allow_model_hold_release: bool = False
 
     @property
     def enabled_roles(self) -> list[str]:
@@ -2671,7 +2672,10 @@ def lab_ai_settings(values: dict[str, str]) -> LabAiSettings | None:
         }
         for role in FL_MODEL_ROLES
     )
-    return LabAiSettings(endpoint_url, api_key, roles)
+    release_text = values.get("FAMILY_LIBRARIAN_LAB_AI_ALLOW_HOLD_RELEASE", "false").strip().lower() or "false"
+    if release_text not in ("true", "false"):
+        raise SystemExit("FAMILY_LIBRARIAN_LAB_AI_ALLOW_HOLD_RELEASE must be true or false.")
+    return LabAiSettings(endpoint_url, api_key, roles, release_text == "true")
 
 
 #: The built-in sources a manually tested lab turns on: Project Gutenberg (provider id ``gutendex``) and LibriVox. A fresh
@@ -2760,10 +2764,12 @@ def _apply_lab_ai(api: FamilyLibrarianApi, values: dict[str, str]) -> None:
     if settings is None:
         return
     api.configure_model_gateway(endpoint_url=settings.endpoint_url, api_key=settings.api_key, roles=list(settings.roles),
-                                allow_model_hold_release=False)
+                                allow_model_hold_release=settings.allow_model_hold_release)
     print(
         f"Family Librarian AI configured from lab.env: {settings.endpoint_url}, "
-        f"roles {', '.join(settings.enabled_roles) or 'none'}.",
+        f"roles {', '.join(settings.enabled_roles) or 'none'}; "
+        f"hold release {'on' if settings.allow_model_hold_release else 'off (separate opt-in)'}. "
+        "Cloud sharing stays off. Vision needs an explicit role choice and a vision-capable model.",
         flush=True,
     )
 

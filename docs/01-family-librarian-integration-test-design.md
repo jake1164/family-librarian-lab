@@ -416,10 +416,12 @@ it does not serve file bytes or claim scan, artifact identity, delivery, or
 browser-rendering coverage. Existing security/destination suites cover those
 boundaries.
 
-Manual AI settings are separate: `SearchGuidance` is opt-in, including after
-`clean-books`. Include it in `FAMILY_LIBRARIAN_LAB_AI_ROLES` and run
-`./lab ai apply`; see `lab.env.example`. The default four roles do not exercise
-Phase 6.
+Manual AI setup enables all implemented text roles when the AI endpoint/model are configured,
+including `SearchGuidance`, `CandidateTriage` and `ArtifactValidationDecision`, on `up`,
+`clean-books` and `./lab ai apply`. A nonblank `FAMILY_LIBRARIAN_LAB_AI_ROLES` is an exact override;
+leave it blank for the current defaults. Vision requires a compatible model and explicit role choice.
+Cloud sharing stays off; eligible hold release requires the separate
+`FAMILY_LIBRARIAN_LAB_AI_ALLOW_HOLD_RELEASE=true` opt-in. See `lab.env.example`.
 
 ## Candidate triage regressions
 
@@ -466,10 +468,9 @@ ids out of the prompt it is sent.
 | AD-06..07 | Invalid JSON and an HTTP 503 leave the deterministic approval intact: delivered and Available. |
 
 These prove application enforcement against scripted replies, not the quality of
-a real model's judgement. Hold release has a separate group below; excerpts (8c)
-remain deferred. The role is opt-in after `clean-books`: add
-`ArtifactValidationDecision` to `FAMILY_LIBRARIAN_LAB_AI_ROLES` and run
-`./lab ai apply` to exercise it by hand.
+a real model's judgement. Hold release has a separate group below; excerpts have their
+own artifact-excerpt group. Manual lab AI setup includes `ArtifactValidationDecision`
+among its text defaults; an explicit role-list override must include it to exercise it.
 
 CT-01..26 and CT-29..30 stop at submission/refusal; their running fixture jobs do not claim
 file delivery coverage. CT-27..28 serve EPUB bytes with checksums through the
@@ -479,10 +480,10 @@ tests separately assert the triage finding records `Timeout`. Scripted replies
 prove application enforcement, not real-model suggestion quality. Browser
 rendering and a previous-version upgrade deployment are outside these cases.
 
-For manual testing, append `CandidateTriage` to
-`FAMILY_LIBRARIAN_LAB_AI_ROLES` and run `./lab ai apply`. The role is separately
-opt-in and is not enabled by `SearchGuidance` or the default four roles. Phase 8
-artifact release also needs its separate default-off permission.
+Manual lab AI setup includes `CandidateTriage` among its text defaults. If using an
+explicit `FAMILY_LIBRARIAN_LAB_AI_ROLES` override, include it and run `./lab ai apply`.
+Product installations still default these roles off. Artifact release requires its
+separate default-off permission even in the manual lab.
 
 ## Artifact release regressions
 

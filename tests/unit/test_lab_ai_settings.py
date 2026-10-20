@@ -27,16 +27,15 @@ def test_nothing_is_configured_without_an_endpoint():
     assert commands.lab_ai_settings({"FAMILY_LIBRARIAN_LAB_AI_MODEL": "example/model"}) is None
 
 
-def test_defaults_enable_the_original_four_roles_locally_without_reasoning():
+def test_defaults_enable_all_text_features_locally_without_reasoning():
     settings = commands.lab_ai_settings(BASE)
     assert settings is not None
     roles = _roles(settings)
     assert set(roles) == set(commands.FL_MODEL_ROLES), "every role is sent, so lab.env stays the source of truth"
     assert settings.enabled_roles == list(commands.DEFAULT_LAB_AI_ROLES)
     assert roles["VisionCoverIdentification"]["isEnabled"] is False
-    assert roles["SearchGuidance"]["isEnabled"] is False, "search guidance remains an explicit opt-in"
-    assert roles["CandidateTriage"]["isEnabled"] is False, "decision-bearing triage remains an explicit opt-in"
-    assert roles["ArtifactValidationDecision"]["isEnabled"] is False, "artifact holds remain an explicit opt-in"
+    assert set(settings.enabled_roles) == set(commands.FL_MODEL_ROLES) - {"VisionCoverIdentification"}
+    assert settings.allow_model_hold_release is False, "lifting holds needs separate permission"
     for role in roles.values():
         assert role["placement"] == "Local"
         assert role["localModel"] == "example/gemma4:12b"
@@ -74,13 +73,24 @@ def test_search_guidance_can_be_explicitly_enabled_after_a_database_reset():
     assert roles["CandidateAmbiguityAssessment"]["isEnabled"] is False
 
 
-def test_candidate_triage_requires_explicit_opt_in_and_supports_model_overrides():
+def test_an_explicit_candidate_triage_list_is_exact_and_supports_model_overrides():
     settings = commands.lab_ai_settings({**BASE,
         "FAMILY_LIBRARIAN_LAB_AI_ROLES": "candidatetriage",
         "FAMILY_LIBRARIAN_LAB_AI_ROLE_MODELS": "CandidateTriage=example/triage"})
     assert settings is not None and settings.enabled_roles == ["CandidateTriage"]
     assert _roles(settings)["CandidateTriage"]["localModel"] == "example/triage"
     assert _roles(settings)["SearchGuidance"]["isEnabled"] is False
+
+
+def test_hold_release_permission_is_explicit_and_applied(capsys):
+    class Api:
+        def configure_model_gateway(self, **kwargs):
+            self.sent = kwargs
+
+    api = Api()
+    commands._apply_lab_ai(api, {**BASE, "FAMILY_LIBRARIAN_LAB_AI_ALLOW_HOLD_RELEASE": "true"})
+    assert api.sent["allow_model_hold_release"] is True
+    assert "hold release on" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -90,6 +100,7 @@ def test_candidate_triage_requires_explicit_opt_in_and_supports_model_overrides(
         {"FAMILY_LIBRARIAN_LAB_AI_ROLES": "NotARole"},
         {"FAMILY_LIBRARIAN_LAB_AI_REASONING": "Deep"},
         {"FAMILY_LIBRARIAN_LAB_AI_ROLE_MODELS": "IntentInterpretation"},
+        {"FAMILY_LIBRARIAN_LAB_AI_ALLOW_HOLD_RELEASE": "maybe"},
     ],
 )
 def test_a_mistake_in_lab_env_stops_instead_of_half_configuring(extra: dict[str, str]):
