@@ -31,8 +31,10 @@ import re
 import subprocess
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -387,6 +389,15 @@ class CwaClient:
     username: str = CWA_DEFAULT_USERNAME
     password: str = CWA_DEFAULT_PASSWORD
 
+    def download_epub(self, book_id: str) -> bytes:
+        if not re.fullmatch(r"[0-9]+", book_id):
+            raise ValueError("An OPDS numeric book id is required.")
+        status, body = _http(f"{self.host_base_url}/opds/download/{book_id}/epub/",
+                             basic_auth=(self.username, self.password))
+        if status != 200:
+            raise AssertionError(f"CWA EPUB download returned HTTP {status}.")
+        return body
+
     def ready(self) -> bool:
         status, _ = _http(f"{self.host_base_url}/opds", basic_auth=(self.username, self.password))
         return status == 200
@@ -441,6 +452,94 @@ class CwaClient:
 _CSRF_INPUT_PATTERN = re.compile(r"""name=["']csrf_token["'][^>]*value=["']([^"']*)["']""", re.IGNORECASE)
 
 
+class _CwaSettingsForm:
+    def __init__(self) -> None:
+        self.fields: list[tuple[str, str]] = []
+        self.checkboxes: dict[str, bool] = {}
+
+
+class _CwaSettingsForms(HTMLParser):
+    """Capture successful form controls so toggling a fixture flag preserves the other settings."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.forms: list[_CwaSettingsForm] = []
+        self.current: _CwaSettingsForm | None = None
+        self.select_name: str | None = None
+        self.multiple = False
+        self.options: list[tuple[str, bool]] = []
+        self.option: dict[str, str | None] | None = None
+        self.textarea_name: str | None = None
+        self.text = ""
+
+    def handle_starttag(self, tag: str, attributes: list[tuple[str, str | None]]) -> None:
+        attrs = dict(attributes)
+        name = attrs.get("name")
+        if tag == "form":
+            self.current = _CwaSettingsForm()
+            self.forms.append(self.current)
+        if self.current is None:
+            return
+        if tag == "input" and name:
+            kind = attrs.get("type", "text")
+            checked = "checked" in attrs
+            if kind == "checkbox":
+                self.current.checkboxes[name] = checked
+            if "disabled" not in attrs and kind not in ("submit", "reset", "button", "file", "image"):
+                if kind not in ("checkbox", "radio") or checked:
+                    self.current.fields.append((name, attrs.get("value") or ("on" if kind in ("checkbox", "radio") else "")))
+        elif tag == "select":
+            self.select_name = name if "disabled" not in attrs else None
+            self.multiple = "multiple" in attrs
+            self.options = []
+        elif tag == "option" and self.select_name:
+            self._finish_option()
+            self.option = attrs
+            self.text = ""
+        elif tag == "textarea":
+            self.textarea_name = name if "disabled" not in attrs else None
+            self.text = ""
+
+    def handle_data(self, data: str) -> None:
+        if self.option is not None or self.textarea_name:
+            self.text += data
+
+    def _finish_option(self) -> None:
+        if self.option is not None:
+            if "disabled" not in self.option:
+                value = self.option.get("value")
+                self.options.append((self.text if value is None else value, "selected" in self.option))
+            self.option = None
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "option":
+            self._finish_option()
+        elif tag == "select" and self.current is not None:
+            self._finish_option()
+            selected = [value for value, chosen in self.options if chosen]
+            if not selected and not self.multiple and self.options:
+                selected = [self.options[0][0]]
+            if self.select_name:
+                self.current.fields.extend((self.select_name, value) for value in selected)
+            self.select_name = None
+        elif tag == "textarea" and self.current is not None:
+            if self.textarea_name:
+                self.current.fields.append((self.textarea_name, self.text))
+            self.textarea_name = None
+        elif tag == "form":
+            self.current = None
+
+
+def _cwa_preservation_form(page: str, flags: tuple[str, ...]) -> _CwaSettingsForm:
+    parser = _CwaSettingsForms()
+    parser.feed(page)
+    parser.close()
+    matches = [form for form in parser.forms if all(flag in form.checkboxes for flag in flags)]
+    if len(matches) != 1:
+        raise AssertionError(f"CWA settings form is missing or ambiguous for {', '.join(flags)}.")
+    return matches[0]
+
+
 @dataclass(slots=True)
 class CwaAdminSession:
     """Drives CWA's real admin web UI -- a stateful, CSRF-protected
@@ -476,7 +575,7 @@ class CwaAdminSession:
         with self._opener.open(request, timeout=15) as response:
             return response.status, response.read().decode("utf-8", errors="replace")
 
-    def _post_form(self, path: str, fields: dict[str, str]) -> tuple[int, str]:
+    def _post_form(self, path: str, fields: dict[str, str] | list[tuple[str, str]]) -> tuple[int, str]:
         data = urllib.parse.urlencode(fields).encode("ascii")
         request = urllib.request.Request(f"{self.host_base_url}{path}", data=data, method="POST")
         with self._opener.open(request, timeout=15) as response:
@@ -503,6 +602,62 @@ class CwaAdminSession:
             return False
         self._csrf_token = post_login_token.group(1)
         return True
+
+    def configure_preserved_artifacts(self) -> None:
+        """Keep the approved source bytes through ingest and OPDS download."""
+        if not self.sign_in():
+            raise AssertionError("CWA admin sign-in failed while configuring artifact preservation.")
+        settings = (
+            ("/admin/config", "/admin/ajaxconfig", ("config_embed_metadata",)),
+            ("/cwa-settings", "/cwa-settings", ("auto_convert", "auto_metadata_enforcement",
+                                                 "kindle_epub_fixer", "auto_metadata_fetch_enabled")),
+        )
+        for page_path, save_path, flags in settings:
+            status, page = self._get(page_path)
+            if status != 200:
+                raise AssertionError(f"CWA {page_path} returned HTTP {status}.")
+            form = _cwa_preservation_form(page, flags)
+            if not any(form.checkboxes[flag] for flag in flags):
+                continue
+            fields = [(name, value) for name, value in form.fields if name not in flags]
+            if not any(name == "csrf_token" and value for name, value in fields):
+                token = _CSRF_INPUT_PATTERN.search(page)
+                csrf = token.group(1) if token else self._csrf_token
+                if not csrf:
+                    raise AssertionError(f"CWA {page_path} has no CSRF token.")
+                fields = [(name, value) for name, value in fields if name != "csrf_token"]
+                fields.append(("csrf_token", csrf))
+            if save_path == "/cwa-settings":
+                fields.append(("submit_button", "Submit"))
+            status, body = self._post_form(save_path, fields)
+            if status != 200:
+                raise AssertionError(f"CWA {save_path} rejected preservation settings: HTTP {status}.")
+            if save_path == "/admin/ajaxconfig":
+                response = json.loads(body)
+                result = response.get("result", [])
+                if not any(item.get("type") == "success" for item in result) or any(item.get("type") == "danger" for item in result):
+                    raise AssertionError("CWA rejected preservation settings.")
+                if response.get("reboot"):
+                    self._wait_after_config_restart(page_path)
+            status, saved_page = self._get(page_path)
+            if status != 200:
+                raise AssertionError(f"CWA {page_path} readback returned HTTP {status}.")
+            saved = _cwa_preservation_form(saved_page, flags)
+            enabled = [flag for flag in flags if saved.checkboxes[flag]]
+            if enabled:
+                raise AssertionError(f"CWA artifact rewriting is still enabled: {', '.join(enabled)}.")
+
+    def _wait_after_config_restart(self, page_path: str) -> None:
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            try:
+                status, _ = self._get(page_path)
+                if status == 200:
+                    return
+            except (urllib.error.URLError, OSError, http.client.HTTPException):
+                pass
+            time.sleep(0.5)
+        raise AssertionError("CWA did not become ready after saving preservation settings.")
 
     def configure_mail_settings(
         self, *, smtp_host: str, smtp_port: int, login: str, password: str, from_address: str,

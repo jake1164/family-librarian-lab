@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import time
+import hashlib
 
 from agent.suites import suite
 from family_librarian_lab import clients, question_cases as q
 from family_librarian_lab.commands import FL_MODEL_ROLES, ensure_shared_clamav, teardown_shared_clamav
+from family_librarian_lab.fixtures import artifact_release_epub
 
 SUITE = suite("artifact-release", group="artifact-release", order=40,
               extra_profiles=(clients.SEARCH_REVIEW_PROFILE, clients.CWA_PROFILE, clients.ABS_PROFILE))
@@ -74,7 +76,15 @@ def _exercise(scenario, mode, calls, released, outcome):
         assert api._request("GET", "/api/v1/admin/model-gateway/").body["allowModelHoldRelease"] is False
     request_id, _ = api.create_demo_request("Ebook", slug="cinder-gate")
     if released:
-        q.wait_for_cwa_book(scenario.cwa_client, "Cinder Gate", None)
+        books = q.wait_for_cwa_book(scenario.cwa_client, "Cinder Gate", None)
+        assert len(books) == 1, f"Expected one CWA copy of the fictional fixture, got {books}."
+        expected = artifact_release_epub(mode)
+        actual = scenario.cwa_client.download_epub(books[0])
+        assert actual == expected, (
+            "CWA changed the approved fictional fixture before destination verification: "
+            f"expected size={len(expected)} sha256={hashlib.sha256(expected).hexdigest()}, "
+            f"downloaded size={len(actual)} sha256={hashlib.sha256(actual).hexdigest()}"
+        )
         q.wait_for_status(api, request_id, "Available")
         assets = _recent(api)
         # CWA verification archives Trusted assets immediately after marking the request Available.

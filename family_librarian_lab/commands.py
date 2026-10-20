@@ -971,6 +971,11 @@ def _wire_destinations(
     cwa-local scenario, this suite included."""
     wiring = DestinationWiring()
 
+    if any(profile in profiles for profile in _CWA_SCENARIO_PROFILES):
+        clients.CwaAdminSession(host_base_url=_client_host_base(
+            values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT"
+        )).configure_preserved_artifacts()
+
     if clients.CWA_PROFILE in profiles:
         wiring.cwa_client = clients.CwaClient(
             host_base_url=_client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")

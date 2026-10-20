@@ -82,7 +82,14 @@ Instead, one real ClamAV container is brought up once per **suite** (`ensure_sha
 
 The SFTP sidecar is the only writer exposed to Family Librarian in the SFTP profiles. Family Librarian must not mount CWA's ingest or library volume there. CWA sees the same backing ingest volume, making this a genuine remote-ingest topology rather than a local copy followed by a cosmetic SFTP probe.
 
-The CWA fixture configuration disables conversion, metadata rewriting, EPUB fixing, and auto-send. That preserves the first-integration contract: the published item is the approved fixture artifact and CWA ingestion, not CWA post-processing, is what is under test.
+Before local or SFTP CWA wiring, the lab disables download-time metadata embedding,
+automatic conversion, metadata enforcement/fetch and the EPUB fixer through CWA's
+supported administrator forms. It preserves other form values, handles a configuration-save
+restart, and reads the flags back; an unsupported form or unsaved setting fails setup.
+Fresh fixture accounts leave auto-send off. The fixer can replace ZIP timestamps even
+when it reports no issues, while download embedding changes the OPF. Establishing the
+product's documented byte-preserving CWA configuration keeps the approved fixture artifact
+intact; CWA ingestion is what is under test.
 
 ## Fixtures and test observability
 
@@ -496,6 +503,12 @@ Successful releases must pass through Trusted (Archived after CWA verification),
 decision and source=model release evidence. Every refusal must stay Unmatched,
 without release evidence or delivery. Ordinary AI configuration after clean-books
 explicitly resets the release permission to false.
+
+AR-01 and AR-03 also require one catalog copy whose actual OPDS EPUB download is
+byte-for-byte equal to the invented source fixture before waiting for Available.
+Unexpected CWA rewriting therefore fails immediately with sizes and SHA-256 values,
+rather than becoming an unexplained five-minute verification timeout. Book content
+is not included in the failure report.
 
 | Case | Assertion |
 | --- | --- |
