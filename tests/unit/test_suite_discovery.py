@@ -32,6 +32,7 @@ for group, case in [
     ("candidate-triage", "CT-01"), ("candidate-triage", "CT-26"),
     ("artifact-decision", "AD-01"), ("artifact-decision", "AD-07"),
     ("artifact-release", "AR-01"), ("artifact-release", "AR-13"),
+    ("artifact-excerpt", "AX-01"), ("artifact-excerpt", "AX-11"),
 ]:
     selected = select_suites(suites, group=group, case=case)
     assert sum(len(suite.cases) for suite in selected) == 1, case
@@ -42,6 +43,8 @@ artifact = select_suites(suites, group="artifact-decision")
 assert {case.test_id for suite in artifact for case in suite.cases} == {f"AD-{n:02}" for n in range(1, 8)}
 release = select_suites(suites, group="artifact-release")
 assert {case.test_id for suite in release for case in suite.cases} == {f"AR-{n:02}" for n in range(1, 14)}
+excerpts = select_suites(suites, group="artifact-excerpt")
+assert {case.test_id for suite in excerpts for case in suite.cases} == {f"AX-{n:02}" for n in range(1, 12)}
 print(f"Discovered {len(suites)} integration suites without pytest")
 '''
         result = subprocess.run(

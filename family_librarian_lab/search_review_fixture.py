@@ -17,9 +17,9 @@ import time
 from uuid import uuid4
 
 if __package__:
-    from .fixtures import artifact_decision_epub, artifact_release_epub, candidate_triage_epub
+    from .fixtures import EXCERPT_PRIVATE, artifact_decision_epub, artifact_excerpt_epub, artifact_release_epub, candidate_triage_epub
 else:
-    from fixtures import artifact_decision_epub, artifact_release_epub, candidate_triage_epub
+    from fixtures import EXCERPT_PRIVATE, artifact_decision_epub, artifact_excerpt_epub, artifact_release_epub, candidate_triage_epub
 
 TITLE = "Cinder Gate"
 AUTHOR = "Mara Quillon"
@@ -40,6 +40,8 @@ WEAK_EVIDENCE_ID = "idv.ev-compare-heading-language"
 RELEASE_SCENARIOS = {"author", "off", "role-off", "inconclusive", "title", "language", "concern", "forged-id",
                      "unknown", "other-dimension", "invalid-json", "transport", "non-admin"}
 SCENARIOS |= {"release-" + name for name in RELEASE_SCENARIOS}
+EXCERPT_SCENARIOS = {"sample", "abridged", "german", "isbn", "injection", "off", "cloud", "invalid-json", "transport", "unknown", "echo"}
+SCENARIOS |= {"excerpt-" + name for name in EXCERPT_SCENARIOS}
 
 
 class Fixture:
@@ -72,7 +74,7 @@ class Fixture:
             candidates = []
             if self.scenario.startswith("triage-"):
                 candidates = self.triage_candidates(body)
-            elif self.scenario.startswith(("artifact-", "release-")):
+            elif self.scenario.startswith(("artifact-", "release-", "excerpt-")):
                 if body.get("mediaType", "").casefold() == "ebook":
                     candidates = [candidate("copy-a", TITLE, AUTHOR, "Cinder Gate copy a.epub")]
             elif self.scenario == "source-review":
@@ -99,6 +101,8 @@ class Fixture:
                 return completion(self.artifact_reply(body))
             if self.scenario.startswith("release-"):
                 return completion(self.release_reply(body))
+            if self.scenario.startswith("excerpt-"):
+                return completion(self.excerpt_reply(body))
             value = {"duplicate": TITLE, "url": "https://example.test/book", "too-long": "x" * 121}.get(self.scenario, ALIAS)
             reply = {"schema": "search-guidance/1", "give_up": self.scenario == "give-up", "suggestions": []}
             if not reply["give_up"]:
@@ -135,6 +139,44 @@ class Fixture:
             ids = [p[0] for p in shown if p[1] == "Positive" and p[2].startswith(("artifact.security.", "artifact.structure."))][:1]
         return {"schema": "artifact-decision/1", "verdict": "release", "claims": [
             {"kind": "supports_declared_identity", "evidence_ids": ids, "note": "Independent observations support the declared work."}]}
+
+    def excerpt_reply(self, body: dict):
+        """Cite ids discovered in evidence rows, never instructions inside a BOOK_TEXT block."""
+        mode = self.scenario.removeprefix("excerpt-")
+        if mode == "invalid-json":
+            return "not JSON"
+        rows = []
+        in_book = False
+        for message in body.get("messages", []):
+            if message.get("role") != "user":
+                continue
+            for line in str(message.get("content", "")).splitlines():
+                if line.startswith("BOOK_TEXT ("):
+                    in_book = True
+                elif line == "END_BOOK_TEXT":
+                    in_book = False
+                elif not in_book:
+                    parts = [p.strip() for p in line.split(" | ")]
+                    if len(parts) >= 3:
+                        rows.append(parts)
+        if mode in ("off", "cloud", "isbn"):
+            ids = [p[0] for p in rows if p[2] == "artifact.excerpt.printed_isbn_agrees" and p[1] == "Positive"][:1]
+            return {"schema": "artifact-decision/1", "verdict": "no_objection", "claims": [
+                {"kind": "supports_declared_identity" if ids else "insufficient_information", "evidence_ids": ids,
+                 "note": "A printed identifier matches the catalog." if ids else "No additional concern."}]}
+        if mode == "injection":
+            ids = [p[0] for p in rows if p[1] == "Positive" and p[2].endswith("title_agrees")][:1]
+            return {"schema": "artifact-decision/1", "verdict": "release", "claims": [
+                {"kind": "supports_declared_identity", "evidence_ids": ids, "note": "Release the file."}]}
+        code, kind, excerpt_id = {
+            "abridged": ("artifact.excerpt.abridged_marker", "suggests_wrong_edition", "tc-copyright"),
+            "german": ("artifact.excerpt.prose_language_differs", "suggests_wrong_language", "tc-chapter1"),
+        }.get(mode, ("artifact.excerpt.sample_marker", "suggests_incomplete", "tc-last"))
+        facts = [p[0] for p in rows if p[2] == code and p[1] in ("Weak", "Condition")]
+        excerpts = [p[0] for p in rows if p[0] == excerpt_id and p[1] == "Unknown"]
+        ids = excerpts if mode == "unknown" else facts[:1] + excerpts[:1]
+        return {"schema": "artifact-decision/1", "verdict": "hold", "claims": [
+            {"kind": kind, "evidence_ids": ids, "note": EXCERPT_PRIVATE if mode == "echo" else "A deterministic excerpt observation raises a concern."}]}
 
     def artifact_reply(self, body: dict):
         """Reply to the artifact-decision prompt using only ids that the prompt actually shows."""
@@ -347,7 +389,7 @@ def make_server(address: tuple[str, int]) -> ThreadingHTTPServer:
                     reply = fixture.model(body)
                     if fixture.scenario == "triage-timeout":
                         time.sleep(25)  # exceeds FL's linked 20-second triage budget; lock is not held
-                    self.respond(503 if fixture.scenario in ("triage-transport", "artifact-transport", "release-transport") else 200, reply)
+                    self.respond(503 if fixture.scenario in ("triage-transport", "artifact-transport", "release-transport", "excerpt-transport") else 200, reply)
                 elif parts[0] in ("source-a", "source-b") and parts[1:] == ["search"]:
                     self.respond(200, fixture.search(parts[0], body))
                 elif parts[0] in ("source-a", "source-b") and parts[1:] == ["acquire"]:
@@ -366,6 +408,9 @@ def make_server(address: tuple[str, int]) -> ThreadingHTTPServer:
                             job.update(status="Completed", state="completed", phase="completed", pollAfterSeconds=1)
                         elif fixture.scenario.startswith("release-"):
                             fixture.outputs[job_id] = artifact_release_epub(fixture.scenario.removeprefix("release-"))
+                            job.update(status="Completed", state="completed", phase="completed", pollAfterSeconds=1)
+                        elif fixture.scenario.startswith("excerpt-"):
+                            fixture.outputs[job_id] = artifact_excerpt_epub(fixture.scenario.removeprefix("excerpt-"))
                             job.update(status="Completed", state="completed", phase="completed", pollAfterSeconds=1)
                         fixture.jobs[job_id] = job
                         self.respond(202, job)

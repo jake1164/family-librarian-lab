@@ -527,3 +527,42 @@ during/after the call, audit actor and transactional persistence are additionall
 covered by product tests. No tier-C excerpt extractor or new pipeline stage is
 part of this slice. These lab cases are committed-revision acceptance tests;
 unit/protocol tests alone do not constitute host acceptance.
+
+## Artifact excerpt regressions
+
+Run `./lab run --test-group artifact-excerpt` against the intended committed
+Phase 8c product and lab revisions. Pair it with `artifact-decision`,
+`artifact-release`, `external-provider` and `candidate-triage`; a final `all`
+run is recommended. Host acceptance remains pending until saved runs are reported.
+
+AX uses the invented Cinder Gate work with matching title, author and package
+language. Separate copyright, chapter and last-page spine items isolate excerpt
+cues from tier-B headings. Only ArtifactValidationDecision is enabled. The scripted
+model reads evidence IDs from prompt rows outside BOOK_TEXT; it makes no external
+calls. Assertions concern FL's storage/hold/usage/delivery behavior, not model quality.
+Successful grounded concerns must remain Unmatched with identity.hold.model_concern,
+never reach CWA or Available, and fetch the candidate exactly once. Fallbacks must
+retain ordinary deterministic delivery and never apply a model release.
+
+| Case | Fixture / assertion |
+| --- | --- |
+| AX-01 | Last-page sample phrase plus its deterministic Condition and supporting tc-last citation holds. |
+| AX-02 | Copyright-page Abridged plus its Condition and tc-copyright citation holds. |
+| AX-03 | German chapter prose with English accepted plus its Weak cue and tc-chapter1 citation holds. |
+| AX-04 | Printed matching catalog ISBN is Positive before the call; no objection preserves delivery. |
+| AX-05 | Chapter injection asks for release; FL rejects that verdict and retains ordinary approval. No release evidence. |
+| AX-06 | Role off: zero calls, normal delivery. Product tests also prove zero extraction. |
+| AX-07 | Cloud role, AllowCloudExcerpts false: no BOOK_TEXT or private prose sent; normal delivery. Grants a small cloud budget (the default is zero) at the local scripted HTTP endpoint with Cloud placement. |
+| AX-08 | Invalid JSON preserves deterministic approval. |
+| AX-09 | HTTP 503 preserves deterministic approval. |
+| AX-10 | Unknown excerpt-only hold citation is rejected; ordinary approval remains. |
+| AX-11 | Model note quoting eight consecutive excerpt words is rejected before persistence. |
+
+For every enabled non-cloud case the fixture records the actual prompt and asserts
+BOOK_TEXT/private fictional prose was received. The same prose is absent from FL's
+asset/finding, usage and request API responses. Admin responses expose cited excerpt
+IDs only; full database (all tables) and captured-log privacy are product-level
+PostgreSQL/HTTP tests. Raw fixture prompts remain isolated lab test data. Excerpts
+never enter production evidence, semantic claims, ledger/audit, logs, exceptions or
+API responses. Audio has no excerpts; extraction and review share the 45-second cap.
+No acquisition protocol or trust boundary changes.
