@@ -196,7 +196,14 @@ def happy_path_acquisition_lands_in_cwa(ctx, scenario_factory):
             if not submitted:
                 raise AssertionError(f"Starting the acquisition did not record a Submitted provider attempt: {attempts!r}")
 
-            books = scenario.cwa_client.find_books("Pride and Prejudice", "Jane Austen")
+            # CWA can briefly close its catalog connection after ingest. Retry
+            # empty reads, but stop on any result so duplicates still fail.
+            catalog_deadline = time.monotonic() + 10
+            while True:
+                books = scenario.cwa_client.find_books("Pride and Prejudice", "Jane Austen")
+                if books or time.monotonic() >= catalog_deadline:
+                    break
+                time.sleep(1)
             if len(books) != 1:
                 raise AssertionError(f"CWA must receive exactly one acquired copy, found {len(books)}: {books!r}")
             imports = [item for item in scenario.api.publishing_queue().get("libraryImports", [])
