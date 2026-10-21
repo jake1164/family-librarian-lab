@@ -164,6 +164,8 @@ services:
       - Conversation__Enabled=${FAMILY_LIBRARIAN_CONVERSATION_ENABLED:-false}
       - Conversation__WebEnabled=${FAMILY_LIBRARIAN_CONVERSATION_WEB_ENABLED:-false}
       - Conversation__MatrixEnabled=${FAMILY_LIBRARIAN_CONVERSATION_MATRIX_ENABLED:-false}
+      # Temporary diagnostic (off by default): log model replies that Family Librarian's own validation rejected.
+      - ModelGateway__Debug__CaptureRejectedReplies=${FAMILY_LIBRARIAN_MODEL_CAPTURE_REJECTED_REPLIES:-false}
       # Overridden per-scenario to lab-host-gateway/the published host port
       # when a suite's shared ClamAV (see the `clamav` service above) is in
       # play -- see ensure_shared_clamav()/`_BaseScenario`'s extra_env in
