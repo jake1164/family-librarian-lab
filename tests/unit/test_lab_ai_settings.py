@@ -60,6 +60,21 @@ def test_listed_roles_overrides_and_reasoning_are_honoured_case_insensitively():
     assert settings.api_key == "secret"
 
 
+@pytest.mark.parametrize("text", ["Low", "low", " LOW "])
+def test_low_reasoning_is_accepted_for_models_that_cannot_switch_reasoning_off(text: str):
+    # Family Librarian's "Ask for low reasoning" mode: models such as gpt-oss refuse "none" and, left on their default, spend a
+    # small output cap on hidden reasoning. lab.env must be able to restore that setting after clean-books.
+    settings = commands.lab_ai_settings({**BASE, "FAMILY_LIBRARIAN_LAB_AI_REASONING": text})
+    assert settings is not None
+    assert {role["reasoning"] for role in settings.roles} == {"Low"}
+
+
+def test_the_reasoning_error_names_every_accepted_mode():
+    with pytest.raises(SystemExit) as error:
+        commands.lab_ai_settings({**BASE, "FAMILY_LIBRARIAN_LAB_AI_REASONING": "Deep"})
+    assert "Inherit, Disabled, Low" in str(error.value)
+
+
 def test_search_guidance_can_be_explicitly_enabled_after_a_database_reset():
     settings = commands.lab_ai_settings({
         **BASE,

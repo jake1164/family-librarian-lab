@@ -2609,7 +2609,7 @@ FL_MODEL_ROLES = (
 )
 # A configured lab exercises every text feature. Vision needs a separately chosen compatible model.
 DEFAULT_LAB_AI_ROLES = tuple(role for role in FL_MODEL_ROLES if role != "VisionCoverIdentification")
-LAB_AI_REASONING_MODES = ("Inherit", "Disabled")
+LAB_AI_REASONING_MODES = ("Inherit", "Disabled", "Low")
 
 
 @dataclass(slots=True, frozen=True)
