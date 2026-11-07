@@ -57,7 +57,9 @@ def artifact_excerpt_epub(mode: str = "sample") -> bytes:
     copyright_text = EXCERPT_PRIVATE + (" Abridged edition." if mode == "abridged" else " All rights reserved.")
     if mode == "isbn":
         copyright_text += " ISBN 979-1-000000-02-2."
-    ending = EXCERPT_PRIVATE + (" Continue reading - buy the full book." if mode in ("sample", "off", "cloud", "invalid-json", "transport", "unknown", "echo") else " The end.")
+    # Family Librarian asks the model for a hold decision only when some evidence could ground one, so the isbn and injection
+    # scenarios carry the sample marker too: the model must be called for those cases to prove what it is shown and what it may do.
+    ending = EXCERPT_PRIVATE + (" Continue reading - buy the full book." if mode in ("sample", "off", "cloud", "invalid-json", "transport", "unknown", "echo", "isbn", "injection") else " The end.")
     base = _build_epub(title="Cinder Gate", author="Mara Quillon", chapter_text=prose,
                        identifier="urn:uuid:family-librarian-lab-excerpt")
     output = BytesIO()

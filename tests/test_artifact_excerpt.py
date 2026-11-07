@@ -19,7 +19,7 @@ CASES = (
     ("AX-04", "isbn", False, "Succeeded"),
     ("AX-05", "injection", False, "SchemaRejected"),
     ("AX-06", "off", False, None),
-    ("AX-07", "cloud", False, "Succeeded"),
+    ("AX-07", "cloud", False, None),
     ("AX-08", "invalid-json", False, "InvalidJson"),
     ("AX-09", "transport", False, "failure"),
     ("AX-10", "unknown", False, "SchemaRejected"),
@@ -83,7 +83,10 @@ def _exercise(scenario, mode, held, outcome):
         q.wait_for_status(api, request_id, "Available")
         assert not any(asset.get("identityHoldCode") for asset in api.list_assets()), api.list_assets()
     state = control.state()
-    calls = 0 if mode == "off" else 1
+    # With excerpt sharing off, a cloud model is shown no book text, so no excerpt fact exists and nothing could ground a hold:
+    # Family Librarian makes no call at all (the strongest form of "the cloud model sees no excerpt"; the gating with evidence
+    # present is covered by the product's unit tests).
+    calls = 0 if mode in ("off", "cloud") else 1
     assert state["searches"] and len(state["acquisitions"]) == 1, state
     assert len(state["modelCalls"]) == calls, {"mode": mode, "model_calls": len(state["modelCalls"])}
     if calls:

@@ -119,7 +119,9 @@ def _exercise(scenario, mode, level, targets, calls, outcome):
     if outcome == "failure":
         assert rows and all(row["outcome"] != "Succeeded" for row in rows), rows
     elif outcome:
-        assert len(rows) == 1 and rows[0]["outcome"] == outcome, rows
+        # The usage summary splits rows by observed workflow effect (for example one call that selected a copy and one that changed
+        # nothing), so assert that every call had the expected outcome rather than that there is exactly one row.
+        assert rows and all(row["outcome"] == outcome for row in rows), rows
     if not targets:
         assert not api.list_assets(), "Refused triage must not produce an asset."
         assert not api.admin_request(request_id)["providerJobs"], "Refused triage must not leave a provider job."
