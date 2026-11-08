@@ -4,25 +4,38 @@ All agents working in this repository, including Claude Code and Codex, must rea
 changing, running, or reviewing anything here. It applies on every machine, including the shared lab host
 (`toontown-int-srv2`, `/opt/family-librarian-lab`).
 
-## The lab host is a deployment target, not a workspace
+## Temporary experiments are allowed; leave the shared lab restored
 
-The checkout on the lab host exists to *run* committed code. It is not a place to develop.
+The normal deployed state runs committed code. Within an authorized task, reversible experiments may use
+uncommitted workstation files copied to the host, direct host edits, or temporary configuration/image overrides.
+A commit or push is not required before an experiment or merely to clean one up. Durable fixes belong in a normal
+clone for owner review; committing, pushing and permanent deployment retain their separate authorization rules.
 
-- Make every change in git: edit in a normal clone, commit, push, then `git pull --ff-only` on the host.
-- Do not leave uncommitted edits to tracked files on the lab host. A host edit is allowed only as a short-lived
-  experiment, and it must be resolved before the session ends by one of:
-  1. **Commit and push it**, then pull, or
-  2. **Abandon it**, after saving it (see "Never discard work you did not write").
-- Until resolved, an experiment must be declared in `LOCAL_EDITS.md` at the repo root (leave it untracked so it
-  shows in `git status`). Each entry states: what changed, why, who or which agent made it, the date, and the
-  condition under which it will be removed. An edit with no entry is treated as an accident.
+- Before changing the host, record the lab and product revisions, tracked/untracked status, affected configuration
+  and running-image identities. Preserve the starting contents of every path you will change. Prefer an isolated
+  worktree or temporary overlay when that makes restoration simpler. Do not overwrite or discard pre-existing work.
+- Declare the experiment in `LOCAL_EDITS.md` at the lab repo root (leave it untracked). Record what changes, why,
+  who made it, the date, the baseline and the restoration steps. Keep any needed patch or backup until restoration
+  is verified. A documented experiment is still temporary; the entry alone does not satisfy cleanup.
 - The same applies to host-only files that git does not track (`external-providers/*.local.yaml`,
   `external-providers.local.yaml`, `lab.env`). They are real configuration, so changing one needs a dated
   `.bak-<reason>` copy beside it and a `LOCAL_EDITS.md` entry. A temporary pin (for example a hand-built
   `image:` standing in for a `build:`) must carry its removal condition in a comment, and the build identity
   `./lab up` prints (the "Build revisions" block) must be checked afterwards so a stale pin is noticed.
-- Never copy uncommitted files from a workstation onto the host. The selected branch and the lab checkout must
-  contain the intended committed changes first.
+- Before reporting completion, preserve useful changes in the workstation clone or a recoverable patch, then
+  restore the affected host paths, configuration, image selections and running services to the captured baseline,
+  unless the owner separately authorized the intended permanent deployment. No task-introduced tracked edits,
+  untracked experiment files, ignored configuration changes or experimental images may remain active on the lab.
+  Remove only your experiment entries and temporary files/backups after restoration is verified.
+- Verify both the lab and affected product checkouts, the effective configuration, running build/image identities
+  and service health. Clean Git status alone is insufficient: a running experimental image or ignored override
+  can survive a source rollback. Preserve legitimate baseline configuration and report pre-existing differences;
+  do not delete someone else's files to claim a clean lab. If restoration is blocked, report the unresolved drift
+  and do not call the task complete.
+- Label results from uncommitted code as experimental and record the baseline plus the patch/source identity.
+  Acceptance of a committed revision requires a run of that revision unless the owner explicitly accepts the
+  experimental evidence. Workstation changes may remain uncommitted awaiting review; the shared lab must not be
+  left running an unfinished experiment.
 
 ## What the lab does to help
 
@@ -60,13 +73,15 @@ source checkouts under `repos/`, so those checkouts are disposable; the lab repo
 ## Submodule
 
 `se-lab/` is a git submodule of a separate repository (`Sydney-Elvis/se-lab`), shared with other product labs.
-Change it in its own repository, push it there, then bump the submodule pointer here in a separate commit. Do
-not leave edits inside `se-lab/` uncommitted, and do not edit it only on the lab host.
+Make durable changes in its own repository, obtain commit/push approval there, then bump the submodule pointer
+here in a separate approved commit. Temporary submodule experiments follow the same baseline and restoration
+rules above, including restoring the host's submodule checkout and gitlink; do not leave a host-only fix behind.
 
 ## Before reporting work complete
 
 - Run the lab's unit tests (`tests/unit`) after any change to `family_librarian_lab/`. State plainly if a check
   was skipped or could not run.
-- On the lab host, finish with `git status`. It must be clean, or every difference must be explained in
-  `LOCAL_EDITS.md`. Say which in your summary.
+- After host work, finish with `git status` for the lab and affected product/submodule checkouts, and verify the
+  intended configuration, running images and service health. Leave no task-introduced experimental drift.
+  Report pre-existing differences separately; documenting a new difference is not a substitute for restoring it.
 - Never create a Git commit without first asking the user for an explicit yes-or-no confirmation.
