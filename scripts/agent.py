@@ -20,6 +20,7 @@ configure(
 
 # Registration must happen before the shared CLI parser is constructed.
 import family_librarian_lab.commands  # noqa: F401, E402
+import family_librarian_lab.metadata_command  # noqa: F401, E402
 
 from agent.cli import main  # noqa: E402
 

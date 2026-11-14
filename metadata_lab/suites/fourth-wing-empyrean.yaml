@@ -1,0 +1,77 @@
+suite: fourth-wing-empyrean
+version: 1
+# Every expected value below is UNVERIFIED (`verified_on: null`). The values came from
+# an earlier discussion and from live probes made on 2026-11-14; they are references to
+# compare against, not facts. `source` says where a human should confirm each one before
+# treating a `differs_from_reference` as a provider problem.
+providers: all
+cases:
+  - id: fw-book-record
+    description: "Book record completeness for Fourth Wing, by ISBN and by title."
+    reference:
+      source: "Open Library edition OL39767438M + work OL29226517W (captured 2026-11-14); confirm against the publisher's page for the 2023 Red Tower Books hardcover"
+      verified_on: null
+    input:
+      title: "Fourth Wing"
+      author: "Rebecca Yarros"
+      isbn: "9781649374042"
+    operations: [book_by_isbn, book_by_title]
+    traversal: false
+    options: {max_pages: 3}
+    expect:
+      book_by_isbn:
+        title: "Fourth Wing"
+        authors: ["Rebecca Yarros"]
+        isbn13: "9781649374042"
+        min_fields: [publisher, published, pages, language, cover]
+      book_by_title:
+        title: "Fourth Wing"
+        authors: ["Rebecca Yarros"]
+
+  - id: fw-series
+    description: "The Empyrean membership and positions, including the 3.5 entry."
+    reference:
+      source: "Wikidata series Q124618108 (parts with ordinals 1/2/3, captured via Inventaire 2026-11-14); the 3.5 position for Threshing Day needs the author's or publisher's own series page to confirm"
+      verified_on: null
+    input:
+      title: "Fourth Wing"
+      author: "Rebecca Yarros"
+      isbn: "9781649374042"
+      series: "The Empyrean"
+    operations: [series_for_book, series_members]
+    traversal: false
+    options: {max_pages: 3}
+    expect:
+      series_for_book:
+        series: "The Empyrean"
+        series_aliases: ["Empyrean", "Empyrean Series"]
+      series_members:
+        series: "The Empyrean"
+        members:
+          - title: "Fourth Wing"
+            position: "1"
+          - title: "Iron Flame"
+            position: "2"
+          - title: "Onyx Storm"
+            position: "3"
+          - title: "Threshing Day"
+            position: "3.5"
+
+  - id: fw-author
+    description: "Author resolution, works and the author's other series."
+    reference:
+      source: "Open Library author OL7825177A (alternate name 'Yarros, Rebecca', 40 works) and the author's own site; the Flight & Glory / Empyrean split needs her site or the publisher's series pages to confirm"
+      verified_on: null
+    input:
+      author: "Rebecca Yarros"
+    operations: [author_resolve, author_works, author_series]
+    traversal: false
+    options: {max_pages: 3}
+    expect:
+      author_resolve:
+        name: "Rebecca Yarros"
+        aliases: ["Yarros, Rebecca"]
+      author_works:
+        titles: ["Fourth Wing", "Iron Flame"]
+      author_series:
+        series: ["The Empyrean", "Flight & Glory"]
