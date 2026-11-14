@@ -9,6 +9,14 @@ repos/
 runtime/
 .ai_docs/
 
+# AI scratch / local agent state carried between machines by Syncthing
+.claude/
+.codex/
+
+# Syncthing local metadata
+.stfolder/
+.stignore
+
 # External-provider plugin registry and per-provider Compose overlays --
 # entirely untracked so a real/private integration's identity, repo URL, and
 # secrets never appear in this public repo. See docs/ for the registry format.
