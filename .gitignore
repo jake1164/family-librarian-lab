@@ -23,3 +23,7 @@ runtime/
 external-providers.local.yaml
 external-providers/
 
+
+# macOS / Syncthing conflict artifacts
+.DS_Store
+*.sync-conflict-*
