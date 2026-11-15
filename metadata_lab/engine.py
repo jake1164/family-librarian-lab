@@ -45,6 +45,16 @@ UNFINISHED_OUTCOMES = frozenset({Outcome.NOT_RUN.value})
 
 HttpFactory = Callable[[str], Any]
 AdapterMap = Mapping[str, type[ProviderAdapter]]
+ProgressCallback = Callable[[Mapping[str, Any]], None]
+
+
+class RunCancelled(Exception):
+    """Signals a requested stop; ``run_suite`` handles it exactly like Ctrl-C.
+
+    Raised by the ``should_cancel`` callback so a caller without a keyboard (the
+    local UI) reuses the one cancel path instead of a second implementation.
+    """
+
 
 _ONE_OFF_REFERENCE = "one-off query: no reference fixture exists, so nothing is compared"
 
@@ -525,8 +535,16 @@ def run_suite(
     as_of: str | None = None,
     harness: Mapping[str, Any] | None = None,
     resume: Mapping[str, Any] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
-    """Run a suite and return the result document. The only way to run a suite."""
+    """Run a suite and return the result document. The only way to run a suite.
+
+    ``should_cancel`` and ``progress`` exist for callers with no terminal: the
+    first is checked before each planned row and stops the run through the same
+    path as ``KeyboardInterrupt``, the second receives a small dict per row so a
+    UI can show where the run is without parsing the result document.
+    """
 
     started_at = _utc_now()
     selected = _select_providers(adapters, providers, suite.providers)
@@ -597,13 +615,43 @@ def run_suite(
 
     done: set[tuple[str, str, str, str]] = set()
     http_by_provider: dict[str, Any] = {}
+    total_rows = len({(case.id, pid, op.value, mode.value) for case, pid, op, mode in plan})
+    calls_used = 0
+
+    def append_row(case_id: str, row: Mapping[str, Any]) -> None:
+        nonlocal calls_used
+        by_case[case_id]["results"].append(row)
+        calls_used += int((row.get("stats") or {}).get("calls") or 0)
+
+    def report(
+        case: Case | None, provider_id: str | None, operation: Operation | None, mode: Mode | None
+    ) -> None:
+        if progress is None:
+            return
+        progress(
+            {
+                "case": case.id if case is not None else None,
+                "provider": provider_id,
+                "operation": operation.value if operation is not None else None,
+                "mode": mode.value if mode is not None else None,
+                "rows_done": len(done),
+                "rows_total": total_rows,
+                "calls": calls_used,
+            }
+        )
+
+    report(None, None, None, None)
     try:
         for case, provider_id, operation, mode in plan:
             key = (case.id, provider_id, operation.value, mode.value)
             if key in done:
                 continue
+            if should_cancel is not None and should_cancel():
+                raise RunCancelled
+            report(case, provider_id, operation, mode)
             if provider_id in excluded:
-                by_case[case.id]["results"].append(
+                append_row(
+                    case.id,
                     _skipped_row(
                         case,
                         provider_id,
@@ -611,14 +659,14 @@ def run_suite(
                         mode,
                         "excluded",
                         "not run: provider excluded for this run",
-                    )
+                    ),
                 )
                 done.add(key)
                 continue
             if key in resume_index:
                 reused = dict(resume_index[key])
                 reused["resumed"] = True
-                by_case[case.id]["results"].append(reused)
+                append_row(case.id, reused)
                 done.add(key)
                 continue
 
@@ -636,7 +684,7 @@ def run_suite(
                 for row in chain:
                     chain_key = (case.id, provider_id, row["operation"], row["mode"])
                     if chain_key not in done and chain_key not in resume_index:
-                        by_case[case.id]["results"].append(row)
+                        append_row(case.id, row)
                     done.add(chain_key)
                 continue
 
@@ -650,9 +698,9 @@ def run_suite(
                 configured=configured[provider_id],
                 as_of=resolved_as_of,
             )
-            by_case[case.id]["results"].append(row)
+            append_row(case.id, row)
             done.add(key)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, RunCancelled):
         status = "cancelled"
         for case, provider_id, operation, mode in plan:
             key = (case.id, provider_id, operation.value, mode.value)
@@ -669,6 +717,7 @@ def run_suite(
                 )
             )
             done.add(key)
+    report(None, None, None, None)
 
     document = {
         "schema": SCHEMA,
@@ -777,6 +826,8 @@ def run_oneoff(
 
 __all__ = [
     "SCHEMA",
+    "ProgressCallback",
+    "RunCancelled",
     "build_oneoff_suite",
     "git_revision",
     "run_oneoff",

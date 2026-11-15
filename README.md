@@ -13,6 +13,9 @@ the plan and current status.
 The proposed Family Librarian test profiles, scenario matrix, and implementation
 order are in [the integration-test design](docs/01-family-librarian-integration-test-design.md).
 
+The read-only metadata comparison tool (how to start its local page, read a result and compare two runs)
+is described in [the metadata comparison lab runbook](docs/03-metadata-comparison-lab.md).
+
 ## Base lifecycle (implementation-order step 1)
 
 The initial `base` profile starts only Family Librarian, PostgreSQL, and ClamAV.

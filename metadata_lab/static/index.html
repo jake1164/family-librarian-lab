@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Metadata comparison lab</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 68rem; padding: 1rem 1rem 4rem; line-height: 1.4; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.05rem; margin: 1.6rem 0 .5rem; border-bottom: 1px solid #8884; padding-bottom: .2rem; }
+  p, li { font-size: .9rem; }
+  .note { color: #666; font-size: .82rem; }
+  .panel { border: 1px solid #8884; border-radius: .5rem; padding: .7rem .85rem; margin: .5rem 0; }
+  .badge { display: inline-block; border: 1px solid currentColor; border-radius: .4rem; padding: 0 .35rem; font-size: .74rem; font-weight: 600; }
+  .ok { background: #1b7f3b22; } .bad { background: #b71c1c22; } .warn { background: #a15c0022; } .muted { background: #9e9e9e1a; color: #555; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .4rem .8rem; }
+  label { font-size: .87rem; display: block; }
+  input[type=text], input[type=date], select { font: inherit; font-size: .87rem; padding: .15rem .3rem; width: 100%; box-sizing: border-box; }
+  button { font: inherit; font-size: .87rem; padding: .3rem .7rem; border-radius: .35rem; border: 1px solid #8888; background: #8881; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { border-color: #1565c0; background: #1565c022; font-weight: 600; }
+  button.danger { border-color: #b71c1c; background: #b71c1c22; }
+  .tabs { display: flex; gap: .4rem; margin-bottom: .6rem; }
+  .tabs button[aria-selected=true] { border-color: #1565c0; background: #1565c022; font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; font-size: .82rem; margin-top: .4rem; }
+  th, td { border: 1px solid #8884; padding: .2rem .4rem; text-align: left; vertical-align: top; }
+  th { background: #8881; }
+  code { font-size: .82rem; }
+  iframe { width: 100%; height: 34rem; border: 1px solid #8884; border-radius: .35rem; background: #fff; }
+  .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin: .4rem 0; }
+  .pass { color: #1b7f3b; } .fail { color: #b71c1c; font-weight: 600; }
+  .bar { height: .5rem; background: #8883; border-radius: .25rem; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: #1565c0; transition: width .2s; }
+  ul.ops { list-style: none; padding: 0; margin: .15rem 0 0; display: flex; flex-wrap: wrap; gap: .3rem; }
+  ul.ops li { font-size: .72rem; border: 1px solid #8884; border-radius: .3rem; padding: 0 .3rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<h1>Metadata comparison lab</h1>
+<p class="note">Read-only comparison of book metadata catalogues. Every result is measured by the same
+engine as the command line. There is no overall score, no ranking and no recommendation here.</p>
+
+<section class="panel" id="harness-panel">
+  <div class="row">
+    <span id="harness-badge" class="badge muted">harness: checking…</span>
+    <span id="harness-stamp" class="note"></span>
+    <button id="selftest-btn" type="button">Run self-test</button>
+  </div>
+  <p id="harness-note" class="note">The self-test is offline, takes about 3 seconds, and is what makes a
+  result trustworthy.</p>
+  <div id="selftest-results" hidden></div>
+</section>
+
+<h2>1. Providers</h2>
+<p class="note">Keys are read by the server from its own environment; this page only ever learns
+&quot;configured&quot; or &quot;not configured&quot;.</p>
+<div id="providers" class="panel"></div>
+<p class="note" id="provider-hint"></p>
+
+<h2>2. Run</h2>
+<div class="panel">
+  <div class="tabs" role="tablist">
+    <button type="button" id="tab-oneoff" role="tab" aria-selected="true">One-off query</button>
+    <button type="button" id="tab-suite" role="tab" aria-selected="false">Suite</button>
+  </div>
+
+  <div id="pane-oneoff">
+    <div class="grid">
+      <label>Query type
+        <select id="oneoff-kind">
+          <option value="book">book (by title)</option>
+          <option value="isbn">isbn</option>
+          <option value="author">author</option>
+          <option value="series">series</option>
+        </select>
+      </label>
+      <label>Title<input type="text" id="f-title" placeholder="Fourth Wing"></label>
+      <label>Author<input type="text" id="f-author" placeholder="Rebecca Yarros"></label>
+      <label>ISBN<input type="text" id="f-isbn" placeholder="9781649374042"></label>
+      <label>Series<input type="text" id="f-series" placeholder="The Empyrean"></label>
+    </div>
+    <p class="note" id="oneoff-hint"></p>
+    <div class="row">
+      <button type="button" class="primary" id="oneoff-run">Run query</button>
+      <button type="button" id="save-case">Save as case (YAML)</button>
+    </div>
+    <p class="note">Only the fields the chosen type needs are sent. The page cannot ask for a URL: the
+    server accepts provider ids and typed fields only.</p>
+  </div>
+
+  <div id="pane-suite" hidden>
+    <div class="grid">
+      <label>Suite<select id="suite-select"></select></label>
+      <label>Case filter (none selected = every case)
+        <select id="suite-cases" multiple size="6"></select>
+      </label>
+      <label>Tag filter (comma separated)<input type="text" id="suite-tags" placeholder="first-six"></label>
+      <label>As-of date<input type="date" id="suite-asof"></label>
+      <label style="align-self:end">Traversal
+        <span><input type="checkbox" id="suite-traversal"> also follow the chain</span>
+      </label>
+    </div>
+    <p class="note" id="suite-estimate">Pick a suite to see a call estimate.</p>
+    <div class="row">
+      <button type="button" class="primary" id="suite-run">Run suite</button>
+    </div>
+    <p class="note" id="suite-confirm" hidden></p>
+  </div>
+
+  <p class="note" style="border-left:3px solid #a15c00; padding-left:.5rem;">
+    <strong>Rate limits:</strong> Inventaire blocks bursts with HTTP 429 and stays blocked for a while.
+    Space runs out (tens of minutes), try a new thing on one provider at a time, and never retry a
+    throttled run in a loop.
+  </p>
+</div>
+
+<h2>3. Progress</h2>
+<div class="panel" id="progress-panel" hidden>
+  <div class="row">
+    <strong id="progress-status">queued</strong>
+    <span class="note" id="progress-detail"></span>
+    <button type="button" class="danger" id="cancel-btn">Cancel run</button>
+  </div>
+  <div class="bar"><div id="progress-bar"></div></div>
+  <p class="note" id="progress-error"></p>
+</div>
+
+<h2>4. Result</h2>
+<div class="panel" id="result-panel" hidden>
+  <p id="result-summary" class="note"></p>
+  <div class="row">
+    <a id="dl-report" href="#" target="_blank" rel="noreferrer">Open report.html</a>
+    <a id="dl-result" href="#">Download result.json</a>
+    <a id="dl-ai" href="#">Download ai.json</a>
+  </div>
+  <iframe id="result-frame" title="Generated report" sandbox
+          referrerpolicy="no-referrer" src="about:blank"></iframe>
+  <p class="note">The report above is the file the run wrote; this page does not re-render it.</p>
+</div>
+
+<h2>5. Past runs</h2>
+<div class="panel">
+  <div class="row">
+    <label style="flex:1 1 14rem">Filter <input type="text" id="runs-filter" placeholder="suite, provider or date"></label>
+    <label style="flex:0 1 10rem">Status
+      <select id="runs-status">
+        <option value="">any</option>
+        <option value="complete">complete</option>
+        <option value="cancelled">cancelled</option>
+        <option value="error">error</option>
+      </select>
+    </label>
+    <button type="button" id="runs-reload">Reload</button>
+    <button type="button" id="compare-btn">Compare selected two</button>
+  </div>
+  <p class="note">Results are stored under <code>results/metadata-compare/</code> on the server.</p>
+  <table>
+    <thead><tr><th></th><th>Run</th><th>Suite</th><th>When</th><th>Providers</th><th>Status</th><th>Harness</th><th></th></tr></thead>
+    <tbody id="runs-body"></tbody>
+  </table>
+  <div id="compare-out" hidden></div>
+</div>
+
+<script>
+"use strict";
+
+const state = { providers: [], suites: [], runs: [], job: null, timer: null, suiteConfirm: null };
+
+function el(id) { return document.getElementById(id); }
+
+function text(node, value) {
+  node.textContent = value === null || value === undefined ? "" : String(value);
+  return node;
+}
+
+function make(tag, className, content) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (content !== undefined) text(node, content);
+  return node;
+}
+
+async function api(path, options = {}) {
+  const init = { method: options.method || "GET", headers: {} };
+  if (options.body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(options.body);
+  }
+  const response = await fetch(path, init);
+  const type = response.headers.get("Content-Type") || "";
+  const payload = type.includes("json") ? await response.json() : await response.text();
+  if (!response.ok) {
+    throw new Error((payload && payload.error) || response.status + " " + response.statusText);
+  }
+  return payload;
+}
+
+/* --- harness ------------------------------------------------------------- */
+
+const HARNESS_TEXT = {
+  validated: "validated: the code that would produce a run passed the self-test",
+  stale: "STALE: the code changed after the last passing self-test - click Run self-test",
+  not_run: "missing: no self-test has run here yet - click Run self-test",
+};
+
+function renderHarness(payload) {
+  const status = payload.status || "not_run";
+  const badge = el("harness-badge");
+  badge.className = "badge " + (status === "validated" ? "ok" : status === "stale" ? "bad" : "warn");
+  text(badge, "harness: " + status);
+  text(el("harness-note"), HARNESS_TEXT[status] || status);
+  const parts = [];
+  if (payload.selftest_id) parts.push("self-test " + payload.selftest_id);
+  if (payload.ran_at) parts.push("ran " + payload.ran_at);
+  if (payload.passed !== undefined && payload.passed !== null) {
+    parts.push(payload.passed + " passed / " + payload.failed + " failed");
+  }
+  text(el("harness-stamp"), parts.join(" · "));
+}
+
+async function loadHarness() {
+  try {
+    renderHarness(await api("/api/harness"));
+  } catch (error) {
+    text(el("harness-note"), "Cannot read the harness status: " + error.message);
+  }
+}
+
+function renderSelftest(payload) {
+  const box = el("selftest-results");
+  box.hidden = false;
+  box.replaceChildren();
+  box.append(make("p", "note", payload.passed + "/" + payload.results.length + " passed in " +
+    payload.duration_s + "s · stamp " + payload.stamp));
+  const list = make("ul");
+  list.style.cssText = "list-style:none;padding:0;columns:2;font-size:.78rem";
+  for (const item of payload.results) {
+    const line = make("li", item.ok ? "pass" : "fail",
+      (item.ok ? "PASS " : "FAIL ") + item.id + "  " + item.title);
+    if (!item.ok) line.append(document.createTextNode(" - " + item.detail));
+    list.append(line);
+  }
+  box.append(list);
+  renderHarness(payload.harness);
+}
+
+el("selftest-btn").addEventListener("click", async () => {
+  const button = el("selftest-btn");
+  button.disabled = true;
+  text(button, "Running self-test…");
+  try {
+    renderSelftest(await api("/api/selftest", { method: "POST", body: {} }));
+  } catch (error) {
+    const box = el("selftest-results");
+    box.hidden = false;
+    box.replaceChildren(make("p", "fail", "Self-test failed to run: " + error.message));
+  } finally {
+    button.disabled = false;
+    text(button, "Run self-test");
+  }
+});
+
+/* --- providers ----------------------------------------------------------- */
+
+const NEEDS = { book: "title", isbn: "isbn", author: "author", series: "series" };
+
+function selectedProviders() {
+  return state.providers.filter((provider) => provider.selected).map((provider) => provider.id);
+}
+
+function renderProviders() {
+  const box = el("providers");
+  box.replaceChildren();
+  for (const provider of state.providers) {
+    const wrapper = make("div");
+    const line = make("div", "row");
+    const label = make("label");
+    label.style.cssText = "display:flex;gap:.4rem;align-items:center;flex:1 1 18rem;font-weight:600";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = provider.selected;
+    checkbox.addEventListener("change", () => {
+      provider.selected = checkbox.checked;
+      updateEstimate();
+      updateProviderHint();
+    });
+    label.append(checkbox, document.createTextNode(provider.display_name + " (" + provider.id + ")"));
+    line.append(label);
+    line.append(make("span", "badge " + (provider.configured ? "ok" : "warn"),
+      provider.configured ? "configured" : "not configured"));
+    line.append(make("span", "badge " + (provider.verified_live ? "ok" : "muted"),
+      provider.verified_live ? "verified live" : "not verified live"));
+    const ops = make("ul", "ops");
+    for (const [name, support] of Object.entries(provider.declared || {})) {
+      const item = make("li", support === "supported" ? "" : "muted", name + ": " + support);
+      const reason = (provider.unsupported_reasons || {})[name];
+      item.title = reason ? reason.reason : support;
+      ops.append(item);
+    }
+    wrapper.append(line, ops);
+    box.append(wrapper);
+  }
+  updateProviderHint();
+  updateEstimate();
+}
+
+function updateProviderHint() {
+  const names = selectedProviders();
+  text(el("provider-hint"),
+    names.length === 0 ? "No provider selected: pick at least one."
+      : names.length === 1 ? "1 provider selected: " + names[0] + "."
+      : names.length + " providers selected: " + names.join(", ") + " (that multiplies the calls).");
+}
+
+async function loadProviders() {
+  const payload = await api("/api/providers");
+  state.providers = payload.providers.map((provider) => ({ ...provider, selected: false }));
+  // One provider by default: a one-off must never spend a burst by accident.
+  const first = state.providers.find((provider) => provider.configured) || state.providers[0];
+  if (first) first.selected = true;
+  renderProviders();
+}
+
+/* --- suites -------------------------------------------------------------- */
+
+function currentSuite() {
+  return state.suites.find((suite) => suite.name === el("suite-select").value) || null;
+}
+
+function chosenCases(suite) {
+  const wanted = new Set(Array.from(el("suite-cases").selectedOptions).map((option) => option.value));
+  const tags = el("suite-tags").value.split(",").map((tag) => tag.trim()).filter(Boolean);
+  return suite.cases.filter((item) => {
+    if (wanted.size && !wanted.has(item.id)) return false;
+    if (tags.length && !tags.some((tag) => item.tags.includes(tag))) return false;
+    return true;
+  });
+}
+
+function estimateFor(suite, cases) {
+  const providers = Math.max(selectedProviders().length, 1);
+  const traversalOps = el("suite-traversal").checked ? 5 : 0;
+  let estimated = 0;
+  let bound = 0;
+  for (const item of cases) {
+    const operations = item.operations.length + traversalOps;
+    estimated += operations * 4;                  // what an operation costs in practice
+    bound += operations * (item.max_calls || 10); // the per-case budget ceiling
+  }
+  return { providers, estimated: estimated * providers, bound: bound * providers };
+}
+
+function updateEstimate() {
+  const suite = currentSuite();
+  if (!suite) { text(el("suite-estimate"), "Pick a suite to see a call estimate."); return; }
+  const cases = chosenCases(suite);
+  if (!cases.length) { text(el("suite-estimate"), "The current filter matches no case."); return; }
+  const estimate = estimateFor(suite, cases);
+  text(el("suite-estimate"),
+    cases.length + " case(s) x " + estimate.providers + " provider(s): about " + estimate.estimated +
+    " calls, hard ceiling " + estimate.bound + ". Traversal adds five operations per case.");
+}
+
+function renderSuiteCases() {
+  const suite = currentSuite();
+  const select = el("suite-cases");
+  select.replaceChildren();
+  if (!suite) return;
+  for (const item of suite.cases) {
+    const option = document.createElement("option");
+    option.value = item.id;
+    text(option, item.id + " — " + item.operations.join(", ") +
+      (item.tags.length ? " [" + item.tags.join(",") + "]" : ""));
+    select.append(option);
+  }
+  el("suite-asof").value = suite.as_of || "";
+  updateEstimate();
+}
+
+async function loadSuites() {
+  const payload = await api("/api/suites");
+  state.suites = payload.suites || [];
+  const select = el("suite-select");
+  select.replaceChildren();
+  for (const suite of state.suites) {
+    const option = document.createElement("option");
+    option.value = suite.name;
+    text(option, suite.name + " (v" + suite.version + ", " + suite.cases.length + " cases)");
+    select.append(option);
+  }
+  if ((payload.broken || []).length) {
+    el("pane-suite").prepend(make("p", "fail",
+      "Broken suite file(s): " + payload.broken.map((item) => item.name).join(", ")));
+  }
+  renderSuiteCases();
+}
+
+/* --- tabs ---------------------------------------------------------------- */
+
+function showTab(name) {
+  const oneoff = name === "oneoff";
+  el("tab-oneoff").setAttribute("aria-selected", String(oneoff));
+  el("tab-suite").setAttribute("aria-selected", String(!oneoff));
+  el("pane-oneoff").hidden = !oneoff;
+  el("pane-suite").hidden = oneoff;
+  resetSuiteConfirm();
+}
+
+function resetSuiteConfirm() {
+  state.suiteConfirm = null;
+  el("suite-confirm").hidden = true;
+  el("suite-run").textContent = "Run suite";
+}
+
+el("tab-oneoff").addEventListener("click", () => showTab("oneoff"));
+el("tab-suite").addEventListener("click", () => showTab("suite"));
+el("suite-select").addEventListener("change", () => { renderSuiteCases(); resetSuiteConfirm(); });
+el("suite-cases").addEventListener("change", () => { updateEstimate(); resetSuiteConfirm(); });
+el("suite-tags").addEventListener("input", () => { updateEstimate(); resetSuiteConfirm(); });
+el("suite-asof").addEventListener("change", resetSuiteConfirm);
+el("suite-traversal").addEventListener("change", () => { updateEstimate(); resetSuiteConfirm(); });
+el("oneoff-kind").addEventListener("change", updateOneoffHint);
+
+/* --- running ------------------------------------------------------------- */
+
+function updateOneoffHint() {
+  text(el("oneoff-hint"), "This query type needs " + NEEDS[el("oneoff-kind").value] + ".");
+}
+
+function fieldsFromForm() {
+  const kind = el("oneoff-kind").value;
+  const fields = {};
+  for (const name of [NEEDS[kind]]) {
+    const value = el("f-" + name).value.trim();
+    if (value) fields[name] = value;
+  }
+  return { kind, fields };
+}
+
+el("oneoff-run").addEventListener("click", async () => {
+  const { kind, fields } = fieldsFromForm();
+  try {
+    const payload = await api("/api/run", {
+      method: "POST",
+      body: { mode: "oneoff", kind, fields, providers: selectedProviders() },
+    });
+    watchJob(payload.job.id);
+  } catch (error) {
+    showProgressError(error.message);
+  }
+});
+
+el("suite-run").addEventListener("click", async () => {
+  const suite = currentSuite();
+  if (!suite) return;
+  const cases = chosenCases(suite);
+  if (!cases.length) { showProgressError("The current filter matches no case."); return; }
+  if (!state.suiteConfirm) {
+    const estimate = estimateFor(suite, cases);
+    state.suiteConfirm = true;
+    el("suite-run").textContent = "Click again to spend about " + estimate.estimated + " calls";
+    el("suite-confirm").hidden = false;
+    text(el("suite-confirm"), "A suite spends real quota (hard ceiling " + estimate.bound +
+      " calls). Review the estimate, then click again.");
+    return;
+  }
+  const caseIds = Array.from(el("suite-cases").selectedOptions).map((option) => option.value);
+  const tags = el("suite-tags").value.split(",").map((tag) => tag.trim()).filter(Boolean);
+  try {
+    const payload = await api("/api/run", {
+      method: "POST",
+      body: {
+        mode: "suite",
+        suite: suite.name,
+        providers: selectedProviders(),
+        case_ids: caseIds,
+        tags,
+        as_of: el("suite-asof").value || null,
+        traversal: el("suite-traversal").checked,
+        confirmed: true,
+      },
+    });
+    resetSuiteConfirm();
+    watchJob(payload.job.id);
+  } catch (error) {
+    showProgressError(error.message);
+  }
+});
+
+function showProgressError(message) {
+  el("progress-panel").hidden = false;
+  el("progress-error").textContent = message;
+}
+
+function renderProgress(job) {
+  el("progress-panel").hidden = false;
+  text(el("progress-status"), job.kind + " " + job.status);
+  const progress = job.progress || {};
+  const done = progress.rows_done || 0;
+  const total = progress.rows_total || 0;
+  el("progress-bar").style.width = (total ? Math.round((done / total) * 100) : 0) + "%";
+  const where = progress.case
+    ? progress.case + " / " + progress.provider + " / " + progress.mode + " " + progress.operation
+    : (job.status === "queued" || job.status === "running" ? "waiting for the first row" : "finished");
+  text(el("progress-detail"),
+    done + "/" + (total || "?") + " rows · " + (progress.calls || 0) + " calls · " + where);
+  el("cancel-btn").disabled = !(job.status === "queued" || job.status === "running");
+  el("progress-error").textContent = job.error || "";
+}
+
+function watchJob(jobId) {
+  if (state.timer) clearInterval(state.timer);
+  el("result-panel").hidden = true;
+  state.job = { id: jobId };
+  const tick = async () => {
+    try {
+      const payload = await api("/api/jobs/" + encodeURIComponent(jobId));
+      renderProgress(payload.job);
+      if (["complete", "cancelled", "error"].includes(payload.job.status)) {
+        clearInterval(state.timer);
+        state.timer = null;
+        if (payload.job.status !== "error") showResult(payload.job);
+        loadRuns();
+      }
+    } catch (error) {
+      clearInterval(state.timer);
+      state.timer = null;
+      showProgressError(error.message);
+    }
+  };
+  tick();
+  state.timer = setInterval(tick, 800);
+}
+
+el("cancel-btn").addEventListener("click", async () => {
+  if (!state.job) return;
+  try {
+    const payload = await api("/api/jobs/" + encodeURIComponent(state.job.id) + "/cancel",
+      { method: "POST", body: {} });
+    renderProgress(payload.job);
+  } catch (error) {
+    showProgressError(error.message);
+  }
+});
+
+function showResult(job) {
+  const files = job.files || {};
+  el("result-panel").hidden = false;
+  el("result-frame").src = files["report.html"] || "about:blank";
+  for (const [id, name] of [["dl-report", "report.html"], ["dl-result", "result.json"], ["dl-ai", "ai.json"]]) {
+    const link = el(id);
+    link.href = files[name] || "#";
+    if (files[name]) link.removeAttribute("aria-disabled");
+    else link.setAttribute("aria-disabled", "true");
+  }
+  text(el("result-summary"), job.status + " · suite " + (job.suite || "?") + " · run " +
+    (job.run_id || "?") + " · " + (job.progress.calls || 0) + " calls");
+}
+
+/* --- past runs ----------------------------------------------------------- */
+
+function renderRuns() {
+  const needle = el("runs-filter").value.trim().toLowerCase();
+  const status = el("runs-status").value;
+  const body = el("runs-body");
+  body.replaceChildren();
+  for (const run of state.runs) {
+    const haystack = [run.id, run.suite, (run.providers || []).join(" "), run.started_at]
+      .join(" ").toLowerCase();
+    if (needle && !haystack.includes(needle)) continue;
+    if (status && run.status !== status) continue;
+    const row = document.createElement("tr");
+    const pick = make("td");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = run.id;
+    pick.append(checkbox);
+    row.append(pick);
+    row.append(make("td", "", run.id));
+    row.append(make("td", "", (run.suite || "?") + (run.resumed ? " (resumed)" : "") +
+      (run.partial ? " (partial run)" : "") +
+      (run.partial_rows ? " — " + run.partial_rows + " partial row(s)" : "")));
+    row.append(make("td", "", (run.started_at || "").replace("T", " ").replace("Z", "")));
+    row.append(make("td", "", (run.providers || []).join(", ")));
+    row.append(make("td", "", run.status || "?"));
+    row.append(make("td", "", run.harness || "?"));
+    const open = make("td");
+    const button = make("button", "", "Open");
+    button.addEventListener("click", () => openRun(run));
+    open.append(button);
+    row.append(open);
+    body.append(row);
+  }
+  if (!body.children.length) {
+    const row = document.createElement("tr");
+    const cell = make("td", "note", "No run matches this filter.");
+    cell.colSpan = 8;
+    row.append(cell);
+    body.append(row);
+  }
+}
+
+function openRun(run) {
+  const base = "/api/runs/" + encodeURIComponent(run.id) + "/";
+  el("result-panel").hidden = false;
+  el("result-frame").src = base + "report.html";
+  el("dl-report").href = base + "report.html";
+  el("dl-result").href = base + "result.json";
+  el("dl-ai").href = base + "ai.json";
+  text(el("result-summary"), run.status + " · suite " + (run.suite || "?") + " · run " + run.id);
+}
+
+async function loadRuns() {
+  try {
+    state.runs = (await api("/api/runs")).runs || [];
+    renderRuns();
+  } catch (error) {
+    showProgressError("Cannot list runs: " + error.message);
+  }
+}
+
+el("runs-reload").addEventListener("click", loadRuns);
+el("runs-filter").addEventListener("input", renderRuns);
+el("runs-status").addEventListener("change", renderRuns);
+
+el("compare-btn").addEventListener("click", async () => {
+  const picked = Array.from(el("runs-body").querySelectorAll("input[type=checkbox]:checked"))
+    .map((checkbox) => checkbox.value);
+  const out = el("compare-out");
+  out.hidden = false;
+  if (picked.length !== 2) {
+    out.replaceChildren(make("p", "fail", "Tick exactly two runs to compare."));
+    return;
+  }
+  try {
+    out.replaceChildren(renderCompare(await api("/api/compare?a=" + encodeURIComponent(picked[0]) +
+      "&b=" + encodeURIComponent(picked[1]))));
+  } catch (error) {
+    out.replaceChildren(make("p", "fail", "Compare failed: " + error.message));
+  }
+});
+
+function renderCompare(payload) {
+  const wrapper = document.createElement("div");
+  wrapper.append(make("p", "note", payload.a.id + " → " + payload.b.id + " · semantic view " +
+    (payload.semantic_equal ? "identical" : "different") + " · " +
+    payload.semantic_changes.length + " changed row(s), " + payload.changes.length + " detail(s)"));
+  if (!payload.changes.length) {
+    wrapper.append(make("p", "note", "No provider, outcome or timing change."));
+    return wrapper;
+  }
+  const table = document.createElement("table");
+  const head = document.createElement("tr");
+  for (const name of ["kind", "case", "provider", "operation", "before", "after"]) {
+    head.append(make("th", "", name));
+  }
+  table.append(head);
+  for (const change of payload.changes.slice(0, 300)) {
+    const row = document.createElement("tr");
+    row.append(make("td", "", change.kind));
+    row.append(make("td", "", change.case || ""));
+    row.append(make("td", "", change.provider || ""));
+    row.append(make("td", "", change.operation || ""));
+    row.append(make("td", "", change.before_outcome ?? change.before_ms ?? ""));
+    row.append(make("td", "", change.after_outcome ?? change.after_ms ?? ""));
+    table.append(row);
+  }
+  wrapper.append(table);
+  return wrapper;
+}
+
+/* --- save as case -------------------------------------------------------- */
+
+el("save-case").addEventListener("click", async () => {
+  const { kind, fields } = fieldsFromForm();
+  try {
+    const response = await fetch("/api/case", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, fields }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || response.status + " " + response.statusText);
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "case-" + kind + ".yaml";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  } catch (error) {
+    showProgressError("Cannot save the case: " + error.message);
+  }
+});
+
+/* --- start --------------------------------------------------------------- */
+
+(async function start() {
+  updateOneoffHint();
+  await loadHarness();
+  try {
+    await loadProviders();
+  } catch (error) {
+    el("providers").replaceChildren(make("p", "fail", "Cannot list providers: " + error.message));
+  }
+  try {
+    await loadSuites();
+  } catch (error) {
+    el("pane-suite").prepend(make("p", "fail", "Cannot list suites: " + error.message));
+  }
+  await loadRuns();
+})();
+</script>
+</body>
+</html>

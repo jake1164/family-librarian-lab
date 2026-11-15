@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+from typing import Callable, Mapping
 
+from .http import HttpClient
 from .model import Operation
 from .providers.base import ProviderAdapter
 
@@ -52,4 +54,15 @@ def sorted_operations() -> list[Operation]:
     return list(Operation)
 
 
-__all__ = ["discover", "sorted_operations"]
+def http_factory(adapters: Mapping[str, type[ProviderAdapter]]) -> Callable[[str], HttpClient]:
+    """One ``HttpClient`` per provider, paced at that adapter's minimum interval."""
+
+    def factory(provider_id: str) -> HttpClient:
+        adapter_cls = adapters.get(provider_id)
+        interval = float(getattr(adapter_cls, "min_interval_s", 1.0)) if adapter_cls else 1.0
+        return HttpClient(provider_id=provider_id, min_interval_s=interval)
+
+    return factory
+
+
+__all__ = ["discover", "http_factory", "sorted_operations"]

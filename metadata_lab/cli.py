@@ -11,23 +11,19 @@ import argparse
 import json
 import sys
 from dataclasses import replace
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from . import config, registry
+from . import artifacts, config, registry
 from .cases import CaseValidationError, Suite, load_suite_file, suite_from_result
 from .compare import compare
 from .engine import build_oneoff_suite, run_oneoff, run_suite
-from .export import ai_export, full_export
-from .http import HttpClient
 from .model import Mode, Operation, ProviderError, RunMode
 from .providers.base import ProviderAdapter
 from .replay import ReplayHttp
-from .report import write_report
 from .selftest.stamp import harness_status
 
-DEFAULT_OUT_ROOT = Path("results") / "metadata-compare"
+DEFAULT_OUT_ROOT = artifacts.DEFAULT_RESULTS
 EXIT_USAGE = 2
 
 
@@ -36,12 +32,7 @@ def _adapters() -> dict[str, type[ProviderAdapter]]:
 
 
 def _http_factory(adapters: dict[str, type[ProviderAdapter]]):
-    def factory(provider_id: str) -> HttpClient:
-        adapter_cls = adapters.get(provider_id)
-        interval = float(getattr(adapter_cls, "min_interval_s", 1.0)) if adapter_cls else 1.0
-        return HttpClient(provider_id=provider_id, min_interval_s=interval)
-
-    return factory
+    return registry.http_factory(adapters)
 
 
 def _split_providers(value: str | None) -> list[str] | None:
@@ -65,39 +56,11 @@ def _resolve_suite(target: str) -> Suite:
 
 
 def _timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return artifacts.timestamp()
 
 
 def _out_dir(value: str | None, label: str) -> Path:
-    root = Path(value) if value else DEFAULT_OUT_ROOT
-    directory = root / f"{_timestamp()}-{label}"
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
-
-
-def _write_result(document: dict[str, Any], directory: Path) -> Path:
-    path = directory / "result.json"
-    path.write_text(json.dumps(document, indent=2, ensure_ascii=False), encoding="utf-8")
-    return path
-
-
-def _resolved_secrets(
-    adapters: dict[str, type[ProviderAdapter]], document: dict[str, Any]
-) -> set[str]:
-    """Credential values actually used, for the export's leak assertion.
-
-    The values never leave this function: ``full_export`` only compares them.
-    """
-
-    secrets: set[str] = set()
-    for entry in document.get("providers", []):
-        adapter_cls = adapters.get(str(entry.get("id")))
-        if adapter_cls is None:
-            continue
-        value = config.resolve_credential(adapter_cls)
-        if value:
-            secrets.add(value)
-    return secrets
+    return artifacts.run_directory(Path(value) if value else DEFAULT_OUT_ROOT, label)
 
 
 def _write_outputs(
@@ -107,15 +70,7 @@ def _write_outputs(
 ) -> tuple[Path, Path, Path]:
     """Write result.json, ai.json and report.html for one run."""
 
-    secrets = _resolved_secrets(adapters, document)
-    full = full_export(document, secrets)
-    result_path = _write_result(full, directory)
-    ai_path = directory / "ai.json"
-    ai_path.write_text(
-        json.dumps(ai_export(full), indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    report_path = write_report(full, directory / "report.html")
-    return result_path, ai_path, report_path
+    return artifacts.write_outputs(document, directory, adapters)
 
 
 def _print_summary(document: dict[str, Any]) -> None:
@@ -403,6 +358,27 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Start the local UI. Keys stay on the server; the page only sees booleans."""
+
+    from .serve import ServerConfig, is_loopback, serve
+
+    if not is_loopback(args.host) and not args.allow_remote:
+        print(
+            f"{args.host} is not a loopback address; pass --allow-remote to bind it anyway "
+            "(this server spends API quota with server-held keys)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    config = ServerConfig(
+        host=args.host,
+        port=args.port,
+        results_root=Path(args.results) if args.results else DEFAULT_OUT_ROOT,
+    )
+    serve(config)
+    return 0
+
+
 def _cmd_compare(args: argparse.Namespace) -> int:
     documents = []
     for name in (args.first, args.second):
@@ -504,6 +480,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     smoke.add_argument("--providers", help="comma-separated provider ids")
     smoke.set_defaults(func=_cmd_smoke)
+
+    serve = subparsers.add_parser(
+        "serve", help="local read-only UI on http://127.0.0.1:8765/ (one run at a time)"
+    )
+    serve.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=8765, help="bind port (default 8765)")
+    serve.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="required to bind a non-loopback address (spends API quota with server-held keys)",
+    )
+    serve.add_argument("--results", help=f"results root (default {DEFAULT_OUT_ROOT})")
+    serve.set_defaults(func=_cmd_serve)
     return parser
 
 
