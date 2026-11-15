@@ -1,0 +1,37 @@
+suite: quality-p05-project-hail-mary
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p05-project-hail-mary
+    tier: easy
+    tags: [isbn, format, date]
+    description: "Project Hail Mary, ISBN 9780593135204: hardcover published 2021-05-04 by Ballantine Books."
+    reference:
+      source: "https://openlibrary.org/api/books?bibkeys=ISBN:9780593135204&format=json&jscmd=details (physical_format hardcover, publish_date May 04, 2021, publishers [Ballantine Books], number_of_pages 496, language eng) and https://openlibrary.org/api/books?bibkeys=ISBN:9780593135204&format=json&jscmd=data"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      isbn: "9780593135204"
+      title: "Project Hail Mary"
+      author: "Andy Weir"
+    operations: [book_by_isbn, book_by_title]
+    expect:
+      book_by_isbn:
+        title: "Project Hail Mary"
+        authors: ["Andy Weir"]
+        isbn13: "9780593135204"
+        format: hardcover
+        published: "2021-05-04"
+        min_fields: [publisher, published, pages, language]
+        fact_type: fixed
+        source: "https://openlibrary.org/books/OL30036715M"
+        verified_on: "2026-11-14"
+        confidence: medium
+      book_by_title:
+        title: "Project Hail Mary"
+        authors: ["Andy Weir"]
+        fact_type: fixed
+        source: "https://openlibrary.org/books/OL30036715M"
+        verified_on: "2026-11-14"
+        confidence: medium

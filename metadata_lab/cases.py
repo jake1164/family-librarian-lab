@@ -337,7 +337,20 @@ def _check_string_list(mapping: Mapping[str, Any], key: str, where: str) -> None
             _fail(f"{where}.{key}", "must be a list of strings")
 
 
+def _plain(value: Any) -> Any:
+    """Turn YAML-parsed dates into ISO text so an expectation stays JSON-serialisable."""
+
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain(item) for item in value]
+    return value
+
+
 def _parse_expect(value: Any, operations: tuple[Operation, ...], where: str) -> dict[str, Any]:
+    value = _plain(value)
     if value is None:
         return {}
     mapping = _require_mapping(value, where, "expect")

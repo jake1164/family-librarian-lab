@@ -1,0 +1,44 @@
+suite: quality-p08-threshing-day
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p08-threshing-day
+    tier: medium
+    tags: [first-six, fractional_position, work_type, forbid, freshness]
+    description: "The Empyrean carries a 2026 entry at position 3.5 that is not main novel number 4."
+    reference:
+      source: "https://en.wikipedia.org/wiki/Rebecca_Yarros (\"On September 29, 2026, Threshing Day was released as a companion volume to the series featuring 13 stories told from the perspectives of 13 different characters\"; bibliography entry \"Threshing Day (short story collection). Red Tower Books. 2026\") and https://openlibrary.org/works/OL45870364W/editions.json (an edition of 'Threshing Day', series 'The Empyrean Series, Book 3.5')"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Empyrean"
+      title: "Fourth Wing"
+      author: "Rebecca Yarros"
+    operations: [series_members]
+    notes:
+      - "Position 3.5 comes from the Open Library edition record (series 'The Empyrean Series, Book 3.5'); the 2026-09-29 date and the short-story-collection type come from the Wikipedia Rebecca Yarros article."
+      - "The edition title 'Threshing Day (Wing and Claw Collection)' is not used as evidence of the work type: the same 'Wing and Claw Collection' wording appears on special editions of Fourth Wing and Iron Flame."
+    expect:
+      series_members:
+        series: "The Empyrean"
+        fact_type: time_sensitive
+        source: "https://openlibrary.org/works/OL45870364W/editions.json"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Threshing Day"
+            position: "3.5"
+            accepted_positions: ["3.5"]
+            position_scheme: publication
+            work_type: collection
+            published: "2026-09-29"
+            fact_type: time_sensitive
+            valid_until: "2026-12-31"
+            source: "https://openlibrary.org/works/OL45870364W/editions.json (position 3.5) and https://en.wikipedia.org/wiki/Rebecca_Yarros (released 2026-09-29; short story collection)"
+            verified_on: "2026-11-14"
+            confidence: medium
+        forbid:
+          - {title: "Threshing Day", work_type: novel}
+          - {title: "Threshing Day", position: "4"}

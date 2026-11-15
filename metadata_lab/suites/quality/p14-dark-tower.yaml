@@ -1,0 +1,79 @@
+suite: quality-p14-dark-tower
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p14-dark-tower
+    tier: hard
+    tags: [first-six, accepted_alternatives, position_scheme, position]
+    description: "The Dark Tower: The Wind Through the Keyhole is the eighth novel published but sits between volumes four and five in story order."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q280898 (seven parts numbered 1-7; The Wind Through the Keyhole listed without a P1545 ordinal) and https://en.wikipedia.org/wiki/The_Dark_Tower:_The_Wind_Through_the_Keyhole (\"it is the eighth novel, but it is set chronologically between volumes four and five\")"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Dark Tower"
+      title: "The Dark Tower: The Gunslinger"
+      author: "Stephen King"
+    operations: [series_members]
+    notes:
+      - "The 4.5 value is the story-order reading of 'set between volumes four and five'; 8 is the publication order. Both are accepted so the matched scheme can be recorded."
+    expect:
+      series_members:
+        series: "The Dark Tower"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q280898"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "The Dark Tower: The Gunslinger"
+            position: "1"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=1)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower II: The Drawing of the Three"
+            position: "2"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=2)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower III: The Waste Lands"
+            position: "3"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=3)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower IV: Wizard and Glass"
+            position: "4"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=4)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower V: Wolves of the Calla"
+            position: "5"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=5)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower VI: Song of Susannah"
+            position: "6"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=6)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower VII: The Dark Tower"
+            position: "7"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=7)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower: The Wind Through the Keyhole"
+            position: "4.5"
+            accepted_positions: ["4.5", "8"]
+            position_scheme: story
+            fact_type: definition_dependent
+            source: "https://en.wikipedia.org/wiki/The_Dark_Tower:_The_Wind_Through_the_Keyhole (eighth novel, set between volumes four and five)"
+            verified_on: "2026-11-14"
+            confidence: medium

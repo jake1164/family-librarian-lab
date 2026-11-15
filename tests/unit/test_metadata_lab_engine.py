@@ -919,6 +919,26 @@ def test_expired_reference_is_needs_review_never_differs():
     assert document["run"]["as_of"] == "2026-11-14"
 
 
+def test_manual_review_member_is_needs_review_never_scored():
+    case = make_case(
+        operations=(Operation.SERIES_MEMBERS,),
+        case_input={"series": "The Empyrean", "author": "Rebecca Yarros"},
+        expect={
+            "series_members": {
+                "series": "The Empyrean",
+                "members": [{"title": "Threshing Day", "position": "4", "manual_review": True}],
+            }
+        },
+    )
+    document = run(make_suite(case), {"rich": RichMembers})
+    row = document["cases"][0]["results"][0]
+    check_ = next(c for c in row["checks"] if c["name"] == "series.member[0]")
+
+    assert check_["outcome"] == "needs_review"
+    assert "manual_review" in check_["evidence"]
+    assert row["outcome"] == "needs_review"
+
+
 def test_agreement_rule_makes_disagreeing_records_ambiguous():
     class TwoSeries(ProviderAdapter):
         id = "twoseries"

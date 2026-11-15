@@ -1,0 +1,44 @@
+suite: quality-p18-new-spring
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p18-new-spring
+    tier: hard
+    tags: [forbid, prequel, position]
+    description: "The Wheel of Time: New Spring is a prequel numbered 0 and must not replace The Eye of the World as number 1."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q4470 (P527: The Eye of the World P1545=1, New Spring P1545=0) and https://en.wikipedia.org/wiki/New_Spring (\"a prequel in the Wheel of Time series\")"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Wheel of Time"
+      title: "The Eye of the World"
+      author: "Robert Jordan"
+    operations: [series_members]
+    notes:
+      - "Wikidata numbers New Spring 0; a provider that numbers it 1 is a verifiable error. Position 0 versus 'unnumbered' is a scheme difference, so the member is definition_dependent."
+    expect:
+      series_members:
+        series: "The Wheel of Time"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q4470"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "The Eye of the World"
+            position: "1"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q4470 (The Eye of the World, P1545=1)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "New Spring"
+            position: "0"
+            position_scheme: publication
+            fact_type: definition_dependent
+            source: "https://www.wikidata.org/wiki/Q4470 (New Spring, P1545=0)"
+            verified_on: "2026-11-14"
+            confidence: medium
+        forbid:
+          - {title: "New Spring", position: "1"}

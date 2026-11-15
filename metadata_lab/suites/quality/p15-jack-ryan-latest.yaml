@@ -1,0 +1,45 @@
+suite: quality-p15-jack-ryan-latest
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p15-jack-ryan-latest
+    tier: hard
+    tags: [first-six, as_of, valid_until, authors, date]
+    description: "Jack Ryan as of 2026-11-14: Rules of Engagement released 2026-05-19 and The Coldest War scheduled for 2026-11-24."
+    reference:
+      source: "https://openlibrary.org/search.json?q=series%3A%22Jack+Ryan%22&fields=title,author_name,first_publish_year (returns 'Tom Clancy Rules of Engagement' by Ward Larsen and 'Tom Clancy The Coldest War') and https://openlibrary.org/books/OL62376271M.json (The Coldest War, publish_date 2026-11-24, publisher Penguin) and https://openlibrary.org/search.json?title=Rules+of+Engagement&author=Larsen (first_publish_year 2026, publish_date 2026-05-19)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "Jack Ryan"
+      title: "Rules of Engagement"
+      author: "Ward Larsen"
+    operations: [series_members]
+    notes:
+      - "The Coldest War edition record names no author, and the Wikipedia Jack Ryan (character) article lists M. P. Woodward's Jack Ryan novels as Shadow State (2024), Line of Demarcation (2025) and Terminal Velocity (2025) without this title. The plan's attribution to M. P. Woodward is therefore not confirmed here, so no member author expectation is made for that title; the title and the 2026-11-24 date are confirmed by the edition record."
+      - "valid_until on both members keeps the evaluation date explicit; after 2026-12-31 the release status must be re-checked."
+    expect:
+      series_members:
+        series: "Jack Ryan"
+        fact_type: time_sensitive
+        source: "https://openlibrary.org/search.json?q=series%3A%22Jack+Ryan%22&fields=title,author_name,first_publish_year"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Rules of Engagement"
+            published: "2026-05-19"
+            authors: ["Ward Larsen"]
+            fact_type: time_sensitive
+            valid_until: "2026-12-31"
+            source: "https://openlibrary.org/search.json?title=Rules+of+Engagement&author=Larsen"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Coldest War"
+            published: "2026-11-24"
+            fact_type: time_sensitive
+            valid_until: "2026-12-31"
+            source: "https://openlibrary.org/books/OL62376271M.json (title, publish_date 2026-11-24, publisher Penguin)"
+            verified_on: "2026-11-14"
+            confidence: medium

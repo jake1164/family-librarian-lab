@@ -1,0 +1,37 @@
+suite: quality-p11-memorys-legion
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p11-memorys-legion
+    tier: medium
+    tags: [first-six, work_type, forbid, collection]
+    description: "Memory's Legion is a collection of Expanse short fiction, not main novel number 10."
+    reference:
+      source: "https://en.wikipedia.org/wiki/Memory%27s_Legion (\"a collection of science fiction short stories and novellas ... Published by Orbit Books on March 15, 2022\") and https://www.wikidata.org/wiki/Q107316456 (\"2022 short story collection by James S. A. Corey\", P179 The Expanse with no series ordinal)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Expanse"
+      title: "Memory's Legion"
+      author: "James S. A. Corey"
+    operations: [series_members]
+    notes:
+      - "Wikidata records no P1545 ordinal for Memory's Legion while every main novel carries one (1-9), which is the evidence that it is not main novel 10."
+    expect:
+      series_members:
+        series: "The Expanse"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q107316456"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Memory's Legion"
+            work_type: collection
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q107316456 and https://en.wikipedia.org/wiki/Memory%27s_Legion"
+            verified_on: "2026-11-14"
+            confidence: medium
+        forbid:
+          - {title: "Memory's Legion", position: "10"}

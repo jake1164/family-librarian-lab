@@ -1,0 +1,48 @@
+suite: quality-p20-dune-franchise
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p20-dune-franchise
+    tier: hard
+    tags: [authors, work_type, forbid]
+    description: "Dune: Frank Herbert's six original novels stay distinct from later franchise works written by Brian Herbert and Kevin J. Anderson."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q6095696 (the six Frank Herbert novels, ordinals 1-6) and https://www.wikidata.org/wiki/Q18010882 (\"set of all the Dune series by Frank Herbert, Brian Herbert and Kevin J. Anderson\") and https://openlibrary.org/search.json?title=Dune%3A+House+Atreides&fields=title,author_name (House Atreides by Brian Herbert and Kevin J. Anderson, 1999)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "Dune"
+      title: "Dune"
+      author: "Frank Herbert"
+    operations: [series_members]
+    notes:
+      - "Two Dune series exist in the sources: Frank Herbert's six (Q6095696) and the franchise-wide set (Q18010882). This fixture asserts Frank Herbert's six as the coverage expectation and treats franchise works as extras, except when they are attributed to Frank Herbert."
+    expect:
+      series_members:
+        series: "Dune"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q6095696"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        main_count: 6
+        members:
+          - title: "Dune"
+            position: "1"
+            work_type: novel
+            authors: ["Frank Herbert"]
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q6095696 (Dune Q190192, P1545=1)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Chapterhouse: Dune"
+            position: "6"
+            work_type: novel
+            authors: ["Frank Herbert"]
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q282814 (P179 Dune, P1545=6; author Frank Herbert)"
+            verified_on: "2026-11-14"
+            confidence: medium
+        forbid:
+          - {title: "Dune: House Atreides", authors: ["Frank Herbert"]}

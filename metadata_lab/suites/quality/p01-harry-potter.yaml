@@ -1,0 +1,70 @@
+suite: quality-p01-harry-potter
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p01-harry-potter
+    tier: easy
+    tags: [first-six, count, position]
+    description: "Harry Potter: seven original novels by J. K. Rowling, with the third entry at position 3."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q8337 (P527 lists the seven novels plus the prequel short story) and https://en.wikipedia.org/wiki/Harry_Potter (\"a series of seven children's fantasy novels\"); ordinals confirmed per book on Wikipedia, e.g. https://en.wikipedia.org/wiki/Harry_Potter_and_the_Prisoner_of_Azkaban (\"The third novel in the Harry Potter series\")"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "Harry Potter"
+      title: "Harry Potter and the Philosopher's Stone"
+      author: "J. K. Rowling"
+    operations: [series_members]
+    expect:
+      series_members:
+        series: "Harry Potter"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q8337"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        main_count: 7
+        members:
+          - title: "Harry Potter and the Philosopher's Stone"
+            position: "1"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Philosopher%27s_Stone (\"the first novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Chamber of Secrets"
+            position: "2"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Chamber_of_Secrets (\"The second novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Prisoner of Azkaban"
+            position: "3"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Prisoner_of_Azkaban (\"The third novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Goblet of Fire"
+            position: "4"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Goblet_of_Fire (\"the fourth novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Order of the Phoenix"
+            position: "5"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Order_of_the_Phoenix (\"the fifth and longest novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Half-Blood Prince"
+            position: "6"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Half-Blood_Prince (\"the sixth and penultimate novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Deathly Hallows"
+            position: "7"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Deathly_Hallows (\"the seventh and final novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium

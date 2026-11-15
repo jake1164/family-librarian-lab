@@ -1,0 +1,39 @@
+suite: quality-p16-winds-of-winter
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p16-winds-of-winter
+    tier: hard
+    tags: [forbid, position, freshness]
+    description: "A Song of Ice and Fire: The Winds of Winter is the planned sixth novel and must not be treated as published."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q2712708 (instance of 'unpublished work', P179 A Song of Ice and Fire, P1545=6, no P577 publication date) and https://en.wikipedia.org/wiki/The_Winds_of_Winter (\"the planned sixth and penultimate novel\") and https://www.wikidata.org/wiki/Q45875 (A Dream of Spring at P1545=7)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "A Song of Ice and Fire"
+      title: "A Game of Thrones"
+      author: "George R. R. Martin"
+    operations: [series_members]
+    notes:
+      - "The plan asks that no unverified release date be accepted. A forbid entry needs a specific value to compare against, and no release date exists in any source opened here, so this fixture cannot express that assertion; the 2026-11-24 style checks belong to P15. Recorded as a schema gap rather than guessed."
+      - "Position 7 belongs to A Dream of Spring, so a member at position 7 is a verifiable error."
+    expect:
+      series_members:
+        series: "A Song of Ice and Fire"
+        fact_type: time_sensitive
+        source: "https://www.wikidata.org/wiki/Q2712708"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "The Winds of Winter"
+            position: "6"
+            fact_type: time_sensitive
+            valid_until: "2026-12-31"
+            source: "https://www.wikidata.org/wiki/Q2712708 (P1545=6, unpublished work, no publication date)"
+            verified_on: "2026-11-14"
+            confidence: medium
+        forbid:
+          - {title: "The Winds of Winter", position: "7"}

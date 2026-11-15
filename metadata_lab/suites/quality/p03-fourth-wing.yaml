@@ -1,0 +1,52 @@
+suite: quality-p03-fourth-wing
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p03-fourth-wing
+    tier: easy
+    tags: [series_for_book, position]
+    description: "Fourth Wing is the first book in Rebecca Yarros's Empyrean series."
+    reference:
+      source: "https://en.wikipedia.org/wiki/Fourth_Wing (\"It is the first book in the Empyrean series\") and https://www.wikidata.org/wiki/Q124618108 (series Q124618108: Fourth Wing P1545=1, Iron Flame P1545=2, Onyx Storm P1545=3)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      title: "Fourth Wing"
+      author: "Rebecca Yarros"
+      series: "The Empyrean"
+    operations: [series_for_book, series_members]
+    expect:
+      series_for_book:
+        series: "The Empyrean"
+        series_aliases: ["Empyrean", "Empyrean Series"]
+        fact_type: fixed
+        source: "https://www.wikidata.org/wiki/Q124618108"
+        verified_on: "2026-11-14"
+        confidence: medium
+      series_members:
+        series: "The Empyrean"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q124618108"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Fourth Wing"
+            position: "1"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q120798796 (P179 The Empyrean, P1545=1)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Iron Flame"
+            position: "2"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q123452043 (P179 The Empyrean, P1545=2)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Onyx Storm"
+            position: "3"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q124618108 (Onyx Storm, P1545=3)"
+            verified_on: "2026-11-14"
+            confidence: medium

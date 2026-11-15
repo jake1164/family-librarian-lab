@@ -1,0 +1,64 @@
+suite: quality-p04-dune
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p04-dune
+    tier: easy
+    tags: [subtitle, count, position]
+    description: "Frank Herbert's six original Dune novels, from Dune at position 1 to Chapterhouse: Dune at position 6."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q6095696 (novel series by Frank Herbert; P527 ordinals 1-6) and https://www.wikidata.org/wiki/Q282814 (Chapterhouse: Dune, P179 Dune, P1545=6)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "Dune"
+      title: "Dune"
+      author: "Frank Herbert"
+    operations: [series_members]
+    expect:
+      series_members:
+        series: "Dune"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q6095696"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        main_count: 6
+        members:
+          - title: "Dune"
+            position: "1"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q6095696 (Dune Q190192, P1545=1)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Dune Messiah"
+            position: "2"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q437383 (P179 Dune, P1545=2)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Children of Dune"
+            position: "3"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q437365 (P179 Dune, P1545=3)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "God Emperor of Dune"
+            position: "4"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q6095696 (God Emperor of Dune, P1545=4)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Heretics of Dune"
+            position: "5"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q6095696 (Heretics of Dune, P1545=5)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Chapterhouse: Dune"
+            position: "6"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q282814 (P179 Dune, P1545=6)"
+            verified_on: "2026-11-14"
+            confidence: medium

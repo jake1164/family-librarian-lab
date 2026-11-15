@@ -160,6 +160,16 @@ def _expired(expectation: Mapping[str, Any], as_of: str | None) -> bool:
     return bool(valid_until and as_of and str(valid_until) < str(as_of))
 
 
+def _review_reason(expectation: Mapping[str, Any], as_of: str | None) -> str | None:
+    """Why this expectation must not be scored automatically, or ``None``."""
+
+    if _expired(expectation, as_of):
+        return f"reference expired (valid_until {expectation['valid_until']} < as_of {as_of})"
+    if expectation.get("manual_review") is True:
+        return "manual_review: observed value shown, not scored"
+    return None
+
+
 def _is_number(value: Any) -> bool:
     try:
         float(str(value))
@@ -700,14 +710,15 @@ def _series_checks(
 
     if matching and operation is Operation.SERIES_MEMBERS:
         for index, wanted in enumerate(expect.get("members") or []):
-            if _expired(wanted, as_of):
+            reason = _review_reason(wanted, as_of)
+            if reason:
                 checks.append(
                     check(
                         f"series.member[{index}]",
                         Outcome.NEEDS_REVIEW,
                         wanted.get("title"),
                         [member.title for record in matching for member in record.members],
-                        evidence=f"reference expired (valid_until {wanted['valid_until']} < as_of {as_of})",
+                        evidence=reason,
                         dimension="freshness",
                     )
                 )
@@ -812,14 +823,15 @@ def _author_checks(
 
     titles = [work for record in matching for work in record.works]
     for index, title in enumerate(expect.get("titles") or []):
-        if _expired(expect, as_of):
+        reason = _review_reason(expect, as_of)
+        if reason:
             checks.append(
                 check(
                     f"author.titles[{index}]",
                     Outcome.NEEDS_REVIEW,
                     str(title),
                     titles,
-                    evidence="reference expired",
+                    evidence=reason,
                     dimension="freshness",
                 )
             )

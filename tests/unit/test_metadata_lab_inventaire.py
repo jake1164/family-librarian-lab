@@ -50,7 +50,8 @@ class InventaireTransport:
             return TransportResponse(200, {}, sample("author_works__rebecca-yarros.json"))
         if "/entities/by-uris" in url:
             uris = params.get("uris")
-            uris = uris if isinstance(uris, list) else [uris]
+            assert isinstance(uris, str), "uris must be one pipe-joined string"
+            uris = uris.split("|")
             wanted = {str(uri) for uri in uris if uri}
             attributes = str(params.get("attributes") or "")
             if any(uri.startswith("isbn:") for uri in wanted):
@@ -166,3 +167,29 @@ def test_check_connection_reports_a_count():
 def test_no_operation_is_declared_unsupported():
     assert ADAPTER.unsupported == {}
     assert ADAPTER.implements(Operation.AUTHOR_SERIES) is True
+
+
+def test_many_uris_are_sent_pipe_joined_not_as_a_repeated_parameter():
+    from metadata_lab.providers.inventaire import _pipe
+
+    uris = [f"wd:Q{n}" for n in range(1, 41)]
+    assert _pipe(uris) == "|".join(uris)
+    assert _pipe(["wd:Q1"]) == "wd:Q1"
+
+
+def test_label_prefers_english_then_latin_script_over_an_arbitrary_language():
+    from metadata_lab.providers.inventaire import _label
+
+    assert _label({"labels": {"am": "ሃሪ ፖተር", "fr": "Harry Potter", "en": "HP"}}) == "HP"
+    assert _label({"labels": {"am": "ሃሪ ፖተር", "fr": "Harry Potter"}}) == "Harry Potter"
+    assert (
+        _label({"labels": {"am": "ሃሪ ፖተር", "tr": "Harry Potter serisi", "mul": "Harry Potter"}})
+        == "Harry Potter"
+    )
+    assert _label({"labels": {"am": "ሃሪ ፖተር"}}) == "ሃሪ ፖተር"
+
+
+def test_series_members_labels_every_kept_part_not_just_three():
+    from metadata_lab.providers.inventaire import MAX_MEMBER_TITLE_LOOKUPS
+
+    assert MAX_MEMBER_TITLE_LOOKUPS >= 29  # Jack Ryan has 29 parts and must not be truncated

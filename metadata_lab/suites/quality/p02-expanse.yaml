@@ -1,0 +1,91 @@
+suite: quality-p02-expanse
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p02-expanse
+    tier: easy
+    tags: [count, position, work_type]
+    description: "The Expanse: nine main novels by James S. A. Corey, Leviathan Wakes first and Leviathan Falls ninth."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q19610143 (P527 ordinals 1-9; Memory's Legion carries no ordinal) and https://en.wikipedia.org/wiki/The_Expanse_(novel_series) (\"a series of science fiction novels\" by James S. A. Corey)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Expanse"
+      title: "Leviathan Wakes"
+      author: "James S. A. Corey"
+    operations: [series_members]
+    expect:
+      series_members:
+        series: "The Expanse"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q19610143"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        main_count: 9
+        members:
+          - title: "Leviathan Wakes"
+            position: "1"
+            work_type: novel
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q6535598 (P179 The Expanse, P1545=1)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Caliban's War"
+            position: "2"
+            work_type: novel
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q19610143 (Caliban's War, P1545=2)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Abaddon's Gate"
+            position: "3"
+            work_type: novel
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q19610143 (Abaddon's Gate, P1545=3)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Cibola Burn"
+            position: "4"
+            work_type: novel
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q19610143 (Cibola Burn, P1545=4)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Nemesis Games"
+            position: "5"
+            work_type: novel
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q19610143 (Nemesis Games, P1545=5)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Babylon's Ashes"
+            position: "6"
+            work_type: novel
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q19610143 (Babylon's Ashes, P1545=6)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Persepolis Rising"
+            position: "7"
+            work_type: novel
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q19610143 (Persepolis Rising, P1545=7)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Tiamat's Wrath"
+            position: "8"
+            work_type: novel
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q19610143 (Tiamat's Wrath, P1545=8)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Leviathan Falls"
+            position: "9"
+            work_type: novel
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q19610143 (Leviathan Falls, P1545=9)"
+            verified_on: "2026-11-14"
+            confidence: medium

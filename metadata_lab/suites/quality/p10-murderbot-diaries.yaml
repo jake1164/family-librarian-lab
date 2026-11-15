@@ -1,0 +1,73 @@
+suite: quality-p10-murderbot-diaries
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p10-murderbot-diaries
+    tier: medium
+    tags: [work_type, count, position]
+    description: "The Murderbot Diaries: Rogue Protocol is the third main entry, and the series mixes novellas with the novel Network Effect."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q63171261 (P527 ordinals 1-8 including the 0, 4.5, 7.5 and 8 side entries) and https://www.wikidata.org/wiki/Q63177761 (\"science fiction novella by Martha Wells\", P1545=3) and https://www.wikidata.org/wiki/Q100540380 (\"2020 novel by Martha Wells\", P1545=5)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Murderbot Diaries"
+      title: "All Systems Red"
+      author: "Martha Wells"
+    operations: [series_members]
+    notes:
+      - "Side entries in the same series (The Future of Work: Compulsory at 0, Home: Habitat, Range, Niche, Territory at 4.5, Rapport: Friendship, Solidarity, Communion, Empathy at 7.5 and Platform Decay at 8) are not asserted; they are not expected to be omitted."
+    expect:
+      series_members:
+        series: "The Murderbot Diaries"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q63171261"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "All Systems Red"
+            position: "1"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q63171261 (All Systems Red, P1545=1)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Artificial Condition"
+            position: "2"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q63171261 (Artificial Condition, P1545=2)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Rogue Protocol"
+            position: "3"
+            work_type: novella
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q63177761 (\"science fiction novella by Martha Wells\", P179 The Murderbot Diaries, P1545=3)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Exit Strategy"
+            position: "4"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q63171261 (Exit Strategy, P1545=4)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Network Effect"
+            position: "5"
+            work_type: novel
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q100540380 (\"2020 novel by Martha Wells\", P1545=5)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Fugitive Telemetry"
+            position: "6"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q63171261 (Fugitive Telemetry, P1545=6)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "System Collapse"
+            position: "7"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q63171261 (System Collapse, P1545=7)"
+            verified_on: "2026-11-14"
+            confidence: medium

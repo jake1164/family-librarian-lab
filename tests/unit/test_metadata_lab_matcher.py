@@ -595,3 +595,14 @@ def test_existing_suite_still_validates_without_as_of(tmp_path: Path):
     assert suite.as_of is None
     assert suite.cases[0].tags == ()
     assert suite.cases[0].tier is None
+
+
+def test_unquoted_yaml_date_in_expect_stays_json_serialisable(tmp_path: Path):
+    import json
+
+    assert "valid_until: 2026-12-31" in QUALITY_SUITE  # unquoted: YAML parses it as a date
+    suite = load_suite_file(_write(tmp_path, QUALITY_SUITE))
+    member = suite.cases[0].expect["series_members"]["members"][0]
+
+    assert member["valid_until"] == "2026-12-31"
+    json.dumps(suite.cases[0].expect)

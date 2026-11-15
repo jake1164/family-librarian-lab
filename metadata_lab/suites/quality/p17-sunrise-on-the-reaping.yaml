@@ -1,0 +1,39 @@
+suite: quality-p17-sunrise-on-the-reaping
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p17-sunrise-on-the-reaping
+    tier: hard
+    tags: [position_scheme, work_type, date, prequel]
+    description: "Sunrise on the Reaping is the fifth published Hunger Games entry (2025-03-18) but a prequel, not the fourth main-story novel."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q126390804 (instance of literary work; P179 The Hunger Games, P1545=5; P577 2025-03-18) and https://en.wikipedia.org/wiki/Sunrise_on_the_Reaping (\"a 2025 dystopian novel ... the second prequel novel ... It was released on March 18, 2025\")"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Hunger Games"
+      title: "The Hunger Games"
+      author: "Suzanne Collins"
+    operations: [series_members]
+    notes:
+      - "The fixture records the publication order (5) and the prequel status in prose; the schema has no prequel flag, so the prequel distinction is not machine-checked."
+      - "The main-story position of this entry depends on how prequels are counted, which is why it is marked definition_dependent."
+    expect:
+      series_members:
+        series: "The Hunger Games"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q126390804"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Sunrise on the Reaping"
+            position: "5"
+            position_scheme: publication
+            work_type: novel
+            published: "2025-03-18"
+            fact_type: definition_dependent
+            source: "https://www.wikidata.org/wiki/Q126390804 (P1545=5, P577 2025-03-18) and https://en.wikipedia.org/wiki/Sunrise_on_the_Reaping"
+            verified_on: "2026-11-14"
+            confidence: medium

@@ -1,0 +1,34 @@
+suite: quality-p07-yarros-other-series
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p07-yarros-other-series
+    tier: medium
+    tags: [first-six, traversal, author_series, authors]
+    description: "From Fourth Wing, traverse to Rebecca Yarros and her other series: Flight & Glory, Renegades, Legacy and In Luv Duet."
+    reference:
+      source: "https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year (returns 'Full Measures - Flight & Glory #1' ... 'Reality of Everything - Flight & Glory #5', 'Wilder - The Renegades #1', 'Point of Origin - Legacy #0.5', 'Girl in Luv - In Luv Duet #1', 'Boy in Luv - In Luv Duet #2') and https://en.wikipedia.org/wiki/Rebecca_Yarros"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      title: "Fourth Wing"
+      author: "Rebecca Yarros"
+    operations: [author_resolve, author_series]
+    traversal: true
+    notes:
+      - "The plan also asks that the In Luv Duet coauthor be preserved; the Open Library records reached here name Rebecca Yarros only, so no coauthor expectation is asserted."
+    expect:
+      author_resolve:
+        name: "Rebecca Yarros"
+        aliases: []
+        fact_type: fixed
+        source: "https://en.wikipedia.org/wiki/Rebecca_Yarros"
+        verified_on: "2026-11-14"
+        confidence: medium
+      author_series:
+        series: ["Flight & Glory", "Renegades", "Legacy", "In Luv Duet"]
+        fact_type: coverage
+        source: "https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year"
+        verified_on: "2026-11-14"
+        confidence: medium

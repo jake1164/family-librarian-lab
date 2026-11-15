@@ -1,0 +1,287 @@
+suite: quality-first-six
+version: 1
+providers: all
+as_of: 2026-11-14
+# The first six quality cases, copied verbatim from metadata_lab/suites/quality/.
+# tests/unit/test_metadata_lab_quality_fixtures.py fails if a copy drifts from its
+# source file. Every case here carries the `first-six` tag.
+cases:
+  - id: p01-harry-potter
+    tier: easy
+    tags: [first-six, count, position]
+    description: "Harry Potter: seven original novels by J. K. Rowling, with the third entry at position 3."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q8337 (P527 lists the seven novels plus the prequel short story) and https://en.wikipedia.org/wiki/Harry_Potter (\"a series of seven children's fantasy novels\"); ordinals confirmed per book on Wikipedia, e.g. https://en.wikipedia.org/wiki/Harry_Potter_and_the_Prisoner_of_Azkaban (\"The third novel in the Harry Potter series\")"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "Harry Potter"
+      title: "Harry Potter and the Philosopher's Stone"
+      author: "J. K. Rowling"
+    operations: [series_members]
+    expect:
+      series_members:
+        series: "Harry Potter"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q8337"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        main_count: 7
+        members:
+          - title: "Harry Potter and the Philosopher's Stone"
+            position: "1"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Philosopher%27s_Stone (\"the first novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Chamber of Secrets"
+            position: "2"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Chamber_of_Secrets (\"The second novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Prisoner of Azkaban"
+            position: "3"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Prisoner_of_Azkaban (\"The third novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Goblet of Fire"
+            position: "4"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Goblet_of_Fire (\"the fourth novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Order of the Phoenix"
+            position: "5"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Order_of_the_Phoenix (\"the fifth and longest novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Half-Blood Prince"
+            position: "6"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Half-Blood_Prince (\"the sixth and penultimate novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Harry Potter and the Deathly Hallows"
+            position: "7"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Deathly_Hallows (\"the seventh and final novel in the Harry Potter series\")"
+            verified_on: "2026-11-14"
+            confidence: medium
+  - id: p07-yarros-other-series
+    tier: medium
+    tags: [first-six, traversal, author_series, authors]
+    description: "From Fourth Wing, traverse to Rebecca Yarros and her other series: Flight & Glory, Renegades, Legacy and In Luv Duet."
+    reference:
+      source: "https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year (returns 'Full Measures - Flight & Glory #1' ... 'Reality of Everything - Flight & Glory #5', 'Wilder - The Renegades #1', 'Point of Origin - Legacy #0.5', 'Girl in Luv - In Luv Duet #1', 'Boy in Luv - In Luv Duet #2') and https://en.wikipedia.org/wiki/Rebecca_Yarros"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      title: "Fourth Wing"
+      author: "Rebecca Yarros"
+    operations: [author_resolve, author_series]
+    traversal: true
+    notes:
+      - "The plan also asks that the In Luv Duet coauthor be preserved; the Open Library records reached here name Rebecca Yarros only, so no coauthor expectation is asserted."
+    expect:
+      author_resolve:
+        name: "Rebecca Yarros"
+        aliases: []
+        fact_type: fixed
+        source: "https://en.wikipedia.org/wiki/Rebecca_Yarros"
+        verified_on: "2026-11-14"
+        confidence: medium
+      author_series:
+        series: ["Flight & Glory", "Renegades", "Legacy", "In Luv Duet"]
+        fact_type: coverage
+        source: "https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year"
+        verified_on: "2026-11-14"
+        confidence: medium
+  - id: p08-threshing-day
+    tier: medium
+    tags: [first-six, fractional_position, work_type, forbid, freshness]
+    description: "The Empyrean carries a 2026 entry at position 3.5 that is not main novel number 4."
+    reference:
+      source: "https://en.wikipedia.org/wiki/Rebecca_Yarros (\"On September 29, 2026, Threshing Day was released as a companion volume to the series featuring 13 stories told from the perspectives of 13 different characters\"; bibliography entry \"Threshing Day (short story collection). Red Tower Books. 2026\") and https://openlibrary.org/works/OL45870364W/editions.json (an edition of 'Threshing Day', series 'The Empyrean Series, Book 3.5')"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Empyrean"
+      title: "Fourth Wing"
+      author: "Rebecca Yarros"
+    operations: [series_members]
+    notes:
+      - "Position 3.5 comes from the Open Library edition record (series 'The Empyrean Series, Book 3.5'); the 2026-09-29 date and the short-story-collection type come from the Wikipedia Rebecca Yarros article."
+      - "The edition title 'Threshing Day (Wing and Claw Collection)' is not used as evidence of the work type: the same 'Wing and Claw Collection' wording appears on special editions of Fourth Wing and Iron Flame."
+    expect:
+      series_members:
+        series: "The Empyrean"
+        fact_type: time_sensitive
+        source: "https://openlibrary.org/works/OL45870364W/editions.json"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Threshing Day"
+            position: "3.5"
+            accepted_positions: ["3.5"]
+            position_scheme: publication
+            work_type: collection
+            published: "2026-09-29"
+            fact_type: time_sensitive
+            valid_until: "2026-12-31"
+            source: "https://openlibrary.org/works/OL45870364W/editions.json (position 3.5) and https://en.wikipedia.org/wiki/Rebecca_Yarros (released 2026-09-29; short story collection)"
+            verified_on: "2026-11-14"
+            confidence: medium
+        forbid:
+          - {title: "Threshing Day", work_type: novel}
+          - {title: "Threshing Day", position: "4"}
+  - id: p11-memorys-legion
+    tier: medium
+    tags: [first-six, work_type, forbid, collection]
+    description: "Memory's Legion is a collection of Expanse short fiction, not main novel number 10."
+    reference:
+      source: "https://en.wikipedia.org/wiki/Memory%27s_Legion (\"a collection of science fiction short stories and novellas ... Published by Orbit Books on March 15, 2022\") and https://www.wikidata.org/wiki/Q107316456 (\"2022 short story collection by James S. A. Corey\", P179 The Expanse with no series ordinal)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Expanse"
+      title: "Memory's Legion"
+      author: "James S. A. Corey"
+    operations: [series_members]
+    notes:
+      - "Wikidata records no P1545 ordinal for Memory's Legion while every main novel carries one (1-9), which is the evidence that it is not main novel 10."
+    expect:
+      series_members:
+        series: "The Expanse"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q107316456"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Memory's Legion"
+            work_type: collection
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q107316456 and https://en.wikipedia.org/wiki/Memory%27s_Legion"
+            verified_on: "2026-11-14"
+            confidence: medium
+        forbid:
+          - {title: "Memory's Legion", position: "10"}
+  - id: p14-dark-tower
+    tier: hard
+    tags: [first-six, accepted_alternatives, position_scheme, position]
+    description: "The Dark Tower: The Wind Through the Keyhole is the eighth novel published but sits between volumes four and five in story order."
+    reference:
+      source: "https://www.wikidata.org/wiki/Q280898 (seven parts numbered 1-7; The Wind Through the Keyhole listed without a P1545 ordinal) and https://en.wikipedia.org/wiki/The_Dark_Tower:_The_Wind_Through_the_Keyhole (\"it is the eighth novel, but it is set chronologically between volumes four and five\")"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Dark Tower"
+      title: "The Dark Tower: The Gunslinger"
+      author: "Stephen King"
+    operations: [series_members]
+    notes:
+      - "The 4.5 value is the story-order reading of 'set between volumes four and five'; 8 is the publication order. Both are accepted so the matched scheme can be recorded."
+    expect:
+      series_members:
+        series: "The Dark Tower"
+        fact_type: coverage
+        source: "https://www.wikidata.org/wiki/Q280898"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "The Dark Tower: The Gunslinger"
+            position: "1"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=1)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower II: The Drawing of the Three"
+            position: "2"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=2)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower III: The Waste Lands"
+            position: "3"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=3)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower IV: Wizard and Glass"
+            position: "4"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=4)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower V: Wolves of the Calla"
+            position: "5"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=5)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower VI: Song of Susannah"
+            position: "6"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=6)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower VII: The Dark Tower"
+            position: "7"
+            fact_type: fixed
+            source: "https://www.wikidata.org/wiki/Q280898 (P1545=7)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Dark Tower: The Wind Through the Keyhole"
+            position: "4.5"
+            accepted_positions: ["4.5", "8"]
+            position_scheme: story
+            fact_type: definition_dependent
+            source: "https://en.wikipedia.org/wiki/The_Dark_Tower:_The_Wind_Through_the_Keyhole (eighth novel, set between volumes four and five)"
+            verified_on: "2026-11-14"
+            confidence: medium
+  - id: p15-jack-ryan-latest
+    tier: hard
+    tags: [first-six, as_of, valid_until, authors, date]
+    description: "Jack Ryan as of 2026-11-14: Rules of Engagement released 2026-05-19 and The Coldest War scheduled for 2026-11-24."
+    reference:
+      source: "https://openlibrary.org/search.json?q=series%3A%22Jack+Ryan%22&fields=title,author_name,first_publish_year (returns 'Tom Clancy Rules of Engagement' by Ward Larsen and 'Tom Clancy The Coldest War') and https://openlibrary.org/books/OL62376271M.json (The Coldest War, publish_date 2026-11-24, publisher Penguin) and https://openlibrary.org/search.json?title=Rules+of+Engagement&author=Larsen (first_publish_year 2026, publish_date 2026-05-19)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "Jack Ryan"
+      title: "Rules of Engagement"
+      author: "Ward Larsen"
+    operations: [series_members]
+    notes:
+      - "The Coldest War edition record names no author, and the Wikipedia Jack Ryan (character) article lists M. P. Woodward's Jack Ryan novels as Shadow State (2024), Line of Demarcation (2025) and Terminal Velocity (2025) without this title. The plan's attribution to M. P. Woodward is therefore not confirmed here, so no member author expectation is made for that title; the title and the 2026-11-24 date are confirmed by the edition record."
+      - "valid_until on both members keeps the evaluation date explicit; after 2026-12-31 the release status must be re-checked."
+    expect:
+      series_members:
+        series: "Jack Ryan"
+        fact_type: time_sensitive
+        source: "https://openlibrary.org/search.json?q=series%3A%22Jack+Ryan%22&fields=title,author_name,first_publish_year"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Rules of Engagement"
+            published: "2026-05-19"
+            authors: ["Ward Larsen"]
+            fact_type: time_sensitive
+            valid_until: "2026-12-31"
+            source: "https://openlibrary.org/search.json?title=Rules+of+Engagement&author=Larsen"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "The Coldest War"
+            published: "2026-11-24"
+            fact_type: time_sensitive
+            valid_until: "2026-12-31"
+            source: "https://openlibrary.org/books/OL62376271M.json (title, publish_date 2026-11-24, publisher Penguin)"
+            verified_on: "2026-11-14"
+            confidence: medium

@@ -28,7 +28,10 @@ BASE_URL = "https://inventaire.io/api"
 ENTITY_URL = "https://inventaire.io/entity"
 SEARCH_LIMIT = 5
 MAX_MEMBER_URIS = 40
-MAX_MEMBER_TITLE_LOOKUPS = 3
+#: One batched label call covers every part we keep (verified live with 39 uris).
+MAX_MEMBER_TITLE_LOOKUPS = MAX_MEMBER_URIS
+#: Label languages tried after English: a Latin-script label beats an arbitrary first language.
+LABEL_LANGUAGE_FALLBACK = ("en", "mul", "fromclaims", "fr", "de", "es", "it", "pt", "nl")
 #: Work-claim lookups per call, so the whole op stays inside the 10-call budget.
 MAX_WORK_CLAIM_LOOKUPS = 3
 
@@ -43,6 +46,16 @@ P_SERIES = "wdt:P179"
 P_AUTHOR = "wdt:P50"
 #: Series ordinal inside the work's series statement.
 P_SERIES_ORDINAL = "wdt:P1545"
+
+
+def _pipe(uris: Iterable[str]) -> str:
+    """Join URIs the documented way (``uris=a|b|c``).
+
+    A repeated ``uris=`` parameter works for a handful of values, but the server
+    turns an array of more than 20 into an object and answers 400 "invalid uris".
+    """
+
+    return "|".join(uris)
 
 
 def _first(values: Any) -> str | None:
@@ -61,7 +74,7 @@ def _first(values: Any) -> str | None:
 def _label(entity: Mapping[str, Any]) -> str | None:
     labels = entity.get("labels")
     if isinstance(labels, Mapping):
-        for key in ("en", "fromclaims"):
+        for key in LABEL_LANGUAGE_FALLBACK:
             value = labels.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
@@ -322,7 +335,7 @@ class InventaireAdapter(ProviderAdapter):
             return {}
         payload = ctx.get_json(
             f"{BASE_URL}/entities/by-uris",
-            params={"uris": wanted, "attributes": "info|labels|claims"},
+            params={"uris": _pipe(wanted), "attributes": "info|labels|claims"},
         )
         entities = payload.get("entities") if isinstance(payload, Mapping) else None
         if not isinstance(entities, Mapping):
@@ -395,7 +408,7 @@ class InventaireAdapter(ProviderAdapter):
         if not wanted:
             return {}
         payload = ctx.get_json(
-            f"{BASE_URL}/entities/by-uris", params={"uris": wanted, "attributes": "info|labels"}
+            f"{BASE_URL}/entities/by-uris", params={"uris": _pipe(wanted), "attributes": "info|labels"}
         )
         entities = payload.get("entities") if isinstance(payload, Mapping) else None
         labels: dict[str, str] = {}

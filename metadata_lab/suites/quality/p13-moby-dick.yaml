@@ -1,0 +1,29 @@
+suite: quality-p13-moby-dick
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p13-moby-dick
+    tier: medium
+    tags: [alternate_title, record_level, first_published]
+    description: "Moby-Dick; or, The Whale: alternate title forms and the 1851 original work behind modern editions."
+    reference:
+      source: "https://en.wikipedia.org/wiki/Moby-Dick (\"Moby-Dick; or, The Whale is an 1851 epic novel by American writer Herman Melville\") and https://www.wikidata.org/wiki/Q174596 (P577 1851-10-18 London / 1851-11-14 New York; P1476 'Moby Dick' and 'Moby-Dick')"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      title: "Moby-Dick"
+      author: "Herman Melville"
+    operations: [book_by_title]
+    notes:
+      - "Providers may return an edition record (record_level edition) or a work record (record_level work); both are acceptable here, so record_level is observed rather than asserted. Alternate forms seen in the sources: 'Moby-Dick', 'Moby Dick' and 'Moby-Dick; or, The Whale'."
+      - "The earliest printing date differs by city (1851-10-18 London, 1851-11-14 New York), so only the year 1851 is asserted."
+    expect:
+      book_by_title:
+        title: "Moby-Dick"
+        authors: ["Herman Melville"]
+        first_published: "1851"
+        fact_type: fixed
+        source: "https://www.wikidata.org/wiki/Q174596"
+        verified_on: "2026-11-14"
+        confidence: medium

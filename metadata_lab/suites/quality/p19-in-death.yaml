@@ -1,0 +1,49 @@
+suite: quality-p19-in-death
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p19-in-death
+    tier: hard
+    tags: [pagination, aliases, authors, completeness]
+    description: "J. D. Robb's In Death series: an alias author (Nora Roberts) and a long series where returning every page is not proof of a complete bibliography."
+    reference:
+      source: "https://en.wikipedia.org/wiki/In_Death (\"The ...in Death series of novels and novellas is written by Nora Roberts under her pseudonym J. D. Robb\") and https://en.wikipedia.org/wiki/Naked_in_Death (\"the first book of the In Death series\") and https://en.wikipedia.org/wiki/Glory_in_Death (\"the second book of the In Death series\")"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "In Death"
+      title: "Naked in Death"
+      author: "J. D. Robb"
+    operations: [author_resolve, series_members]
+    notes:
+      - "The pagination and completeness checks live in the run (pagination block, truncated flags), not in the fixture. Only the first two titles are asserted, so a long provider list is extra coverage, never an error."
+      - "Title/author homonyms cannot be asserted in the fixture either; they are visible in the run's records."
+    expect:
+      author_resolve:
+        name: "J. D. Robb"
+        aliases: ["Nora Roberts"]
+        fact_type: fixed
+        source: "https://en.wikipedia.org/wiki/In_Death"
+        verified_on: "2026-11-14"
+        confidence: medium
+      series_members:
+        series: "In Death"
+        fact_type: coverage
+        source: "https://en.wikipedia.org/wiki/Naked_in_Death and https://en.wikipedia.org/wiki/Glory_in_Death"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Naked in Death"
+            position: "1"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Naked_in_Death"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Glory in Death"
+            position: "2"
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Glory_in_Death"
+            verified_on: "2026-11-14"
+            confidence: medium

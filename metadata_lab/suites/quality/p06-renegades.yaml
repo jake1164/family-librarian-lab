@@ -1,0 +1,46 @@
+suite: quality-p06-renegades
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p06-renegades
+    tier: easy
+    tags: [position]
+    description: "Rebecca Yarros's Renegades series: Wilder, Nova and Rebel in positions 1 to 3."
+    reference:
+      source: "https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year and the edition titles it returns: 'Wilder - The Renegades #1', 'Nova - The Renegades #2', 'Rebel - The Renegades #3'"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "The Renegades"
+      title: "Wilder"
+      author: "Rebecca Yarros"
+    operations: [series_members]
+    expect:
+      series_members:
+        series: "The Renegades"
+        series_aliases: ["Renegades"]
+        fact_type: coverage
+        source: "https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Wilder"
+            position: "1"
+            fact_type: fixed
+            source: "Open Library edition title 'Wilder - The Renegades #1' (2016), https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Nova"
+            position: "2"
+            fact_type: fixed
+            source: "Open Library edition title 'Nova - The Renegades #2' (2017), https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Rebel"
+            position: "3"
+            fact_type: fixed
+            source: "Open Library edition title 'Rebel - The Renegades #3' (2017), https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year"
+            verified_on: "2026-11-14"
+            confidence: medium

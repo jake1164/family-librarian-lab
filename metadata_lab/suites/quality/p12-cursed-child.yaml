@@ -1,0 +1,43 @@
+suite: quality-p12-cursed-child
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p12-cursed-child
+    tier: medium
+    tags: [work_type, forbid]
+    description: "Harry Potter and the Cursed Child is a play, not the eighth Harry Potter novel."
+    reference:
+      source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Cursed_Child (\"is a play written by Jack Thorne from an original story by Thorne, J. K. Rowling, and John Tiffany\") and https://www.wikidata.org/wiki/Q8337 (P527 lists seven novels plus a prequel short story, not Cursed Child)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "Harry Potter"
+      title: "Harry Potter and the Cursed Child"
+      author: "J. K. Rowling"
+    operations: [series_members, book_by_title]
+    expect:
+      series_members:
+        series: "Harry Potter"
+        fact_type: coverage
+        source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Cursed_Child"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Harry Potter and the Cursed Child"
+            work_type: play
+            fact_type: fixed
+            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Cursed_Child"
+            verified_on: "2026-11-14"
+            confidence: medium
+        forbid:
+          - {title: "Harry Potter and the Cursed Child", position: "8"}
+          - {title: "Harry Potter and the Cursed Child", work_type: novel}
+      book_by_title:
+        title: "Harry Potter and the Cursed Child"
+        work_type: play
+        fact_type: fixed
+        source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Cursed_Child"
+        verified_on: "2026-11-14"
+        confidence: medium

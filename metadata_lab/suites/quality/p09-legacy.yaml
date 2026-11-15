@@ -1,0 +1,47 @@
+suite: quality-p09-legacy
+version: 1
+providers: all
+as_of: 2026-11-14
+cases:
+  - id: p09-legacy
+    tier: medium
+    tags: [fractional_position, position]
+    description: "Rebecca Yarros's Legacy series uses decimal positions: 0.5, 0.7 and 1."
+    reference:
+      source: "https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year returns 'Point of Origin - Legacy #0.5' (2016), 'Ignite - Legacy #0.7' (2016) and 'Reason to Believe - Legacy #1' (2018)"
+      verified_on: "2026-11-14"
+      confidence: medium
+    input:
+      series: "Legacy"
+      title: "Point of Origin"
+      author: "Rebecca Yarros"
+    operations: [series_members]
+    notes:
+      - "CONFLICT: the plan gives Ignite position 0.75; the Open Library edition title says 'Legacy #0.7'. The source value 0.7 is kept (see .ai_docs/metadata-lab-fixture-conflicts.md)."
+    expect:
+      series_members:
+        series: "Legacy"
+        fact_type: coverage
+        source: "https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year"
+        verified_on: "2026-11-14"
+        confidence: medium
+        exhaustive: false
+        members:
+          - title: "Point of Origin"
+            position: "0.5"
+            fact_type: fixed
+            source: "Open Library edition title 'Point of Origin - Legacy #0.5' (2016)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Ignite"
+            position: "0.7"
+            fact_type: fixed
+            source: "Open Library edition title 'Ignite - Legacy #0.7' (2016); the plan says 0.75 (conflict)"
+            verified_on: "2026-11-14"
+            confidence: medium
+          - title: "Reason to Believe"
+            position: "1"
+            fact_type: fixed
+            source: "Open Library edition title 'Reason to Believe - Legacy #1' (2018)"
+            verified_on: "2026-11-14"
+            confidence: medium
