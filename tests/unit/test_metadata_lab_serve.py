@@ -11,6 +11,7 @@ import http.client
 import json
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -383,8 +384,83 @@ def test_a_one_off_needs_the_field_its_type_uses(lab):
     assert "isbn" in reply.json()["error"]
 
 
-# --- one run at a time ------------------------------------------------------------
+# --- cool-down state --------------------------------------------------------------
 
+
+def _cool_down(lab, provider_id: str, *, minutes: int = 30) -> None:
+    """Write a cool-down entry, exactly the shape a tripped run would leave."""
+
+    until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    observed = datetime.now(timezone.utc)
+    payload = {
+        "schema": "metadata-lab.cooldowns/1",
+        "providers": {
+            provider_id: {
+                "provider": provider_id,
+                "until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "reason": "rate_limited",
+                "observed_at": observed.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        },
+    }
+    (lab.results_root / "cooldowns.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_a_cooling_provider_is_listed_with_the_time_left(lab):
+    _cool_down(lab, "fake-keyless", minutes=30)
+
+    reply = lab.get("/api/providers")
+
+    assert reply.status == 200
+    entries = {entry["id"]: entry for entry in reply.json()["providers"]}
+    cooling = entries["fake-keyless"]["cooldown"]
+    assert cooling["reason"] == "rate_limited"
+    assert cooling["until"].endswith("Z")
+    assert 28 <= cooling["minutes_remaining"] <= 30
+    assert entries["fake-empty"]["cooldown"] is None
+
+
+def test_the_provider_list_carries_the_pacing_interval(lab):
+    entries = {entry["id"]: entry for entry in lab.get("/api/providers").json()["providers"]}
+
+    assert entries["fake-keyless"]["pacing"]["max_interval_s"] == 0.0
+    assert "min_interval_s" in entries["fake-keyless"]["pacing"]
+
+
+def test_a_run_on_a_cooling_provider_is_refused_without_override(lab):
+    _cool_down(lab, "fake-keyless")
+
+    refused = lab.post("/api/run", _oneoff(["fake-keyless"]))
+
+    assert refused.status == 409
+    message = refused.json()["error"]
+    assert "cooling down" in message and "min remaining" in message
+    assert "override" in message
+
+
+def test_the_override_lets_the_run_start(lab):
+    _cool_down(lab, "fake-keyless")
+
+    body = {**_oneoff(["fake-keyless"]), "ignore_cooldown": True}
+    started = lab.post("/api/run", body)
+
+    assert started.status == 202
+    job = lab.wait(started.json()["job"]["id"])
+    assert job["status"] == "complete"
+    document = json.loads(
+        (lab.results_root / job["run_dir"] / "result.json").read_text(encoding="utf-8")
+    )
+    assert document["cases"][0]["results"][0]["outcome"] == "ok"
+
+
+def test_a_corrupt_cooldown_file_does_not_break_the_ui(lab):
+    (lab.results_root / "cooldowns.json").write_text("{oops", encoding="utf-8")
+
+    assert lab.get("/api/providers").status == 200
+    assert lab.post("/api/run", _oneoff(["fake-keyless"])).status == 202
+
+
+# --- one run at a time ------------------------------------------------------------
 
 def test_a_second_run_while_one_is_running_is_conflict(lab):
     first = lab.post("/api/run", _oneoff(["fake-blocking"]))
@@ -532,13 +608,13 @@ def test_harness_status_is_reported(lab):
     assert payload["ran_at"] is None
 
 
-def test_selftest_reports_twenty_six_results(lab):
+def test_selftest_reports_twenty_eight_results(lab):
     reply = lab.post("/api/selftest", {})
 
     assert reply.status == 200
     payload = reply.json()
-    assert len(payload["results"]) == 26
-    assert payload["passed"] == 26, payload["results"]
+    assert len(payload["results"]) == 28
+    assert payload["passed"] == 28, payload["results"]
     assert payload["harness"]["status"] == "validated"
     assert all(set(item) >= {"id", "ok", "title", "detail"} for item in payload["results"])
 

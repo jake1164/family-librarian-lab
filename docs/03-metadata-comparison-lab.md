@@ -110,19 +110,76 @@ timings that moved by more than half. Timings alone never make a run "semantical
 
 `results/metadata-compare/<UTC timestamp>-<suite>/` containing `result.json`, `ai.json` and
 `report.html`, plus `results/metadata-compare/selftest/<version>-<digest>.json` for each passing
-self-test. That directory is gitignored; nothing in it is committed. The page can only serve those three
-file names from that directory, and only run ids matching `[0-9A-Za-z._-]+`, so no path outside it is
-reachable.
+self-test and `results/metadata-compare/cooldowns.json` for the provider cool-down record (see
+"Rate limits and pacing"). That directory is gitignored; nothing in it is committed. The page can only
+serve those three file names from that directory, and only run ids matching `[0-9A-Za-z._-]+`, so no path
+outside it is reachable.
+
+## Rate limits and pacing
+
+**None of the intervals below is a provider-granted quota.** They are engineering choices derived from
+published limits plus a safety margin, or lab judgement where no numeric limit is published. The evidence
+each one rests on is in `.ai_docs/metadata/metadata-research.md` ("API rate limits and usage terms"), and
+every value is declared next to its adapter (`min_interval_s`, `request_intervals_s`,
+`cooldown_default_s`).
+
+| Provider | Base interval | Request-class override | Default cool-down |
+|---|---|---|---|
+| Open Library | 2.0 s | — | 15 min |
+| Inventaire | 3.0 s (lookups: `by-uris`, `serie-parts`, `author-works`) | 10.0 s for `/search` | 60 min |
+| BookBrainz | 3.5 s | — | 15 min |
+| Hardcover | 2.0 s | — | 15 min |
+| Google Books | 3.0 s | — | 15 min |
+
+- **Published limits** (with the margin this lab adds on top): Open Library publishes 1 req/s
+  unidentified and 3 req/s with an identifying User-Agent, so 2 s sits between them; Hardcover documents
+  1 GraphQL cost unit/second refill with burst 10 on the free tier, so 2 s is half the refill.
+- **Source-code evidence, not a deployed guarantee:** BookBrainz's own API code slows down after 100
+  search *and* 100 lookup requests per 5 minutes; 3.5 s is a margin derived from that, not a published quota.
+- **Lab judgement:** Inventaire publishes no numeric limit (a lab `/search` block lasted over 21 minutes,
+  hence the 10 s search pace and the hour-long cool-down), and the Google Books quota is per Cloud project,
+  so 3.0 s is a guess with no evidence either way.
+- **Hardcover cost:** each query in the adapter selects one top-level GraphQL field, and Hardcover charges
+  per top-level field with a minimum of one unit per request, so one request is about one cost unit. A test
+  fails if any query gains a second top-level field.
+- Spacing applies **per provider across the whole run**, not per operation: one provider-wide queue, so a
+  `series_members` call waits for the previous `book_by_title` call.
+
+### Circuit breaker and cool-downs
+
+- The first HTTP 429 whose `Retry-After` exceeds the 20 s retry cap, and the second consecutive 429, both
+  stop that provider for the rest of the run. Retrying into a block only makes it worse.
+- The row that received the 429 stays `error` / `rate_limited` (it really was attempted). Every remaining
+  row for that provider becomes `not_run` with reason `cooling_down`. Other providers carry on.
+- A single 429 with a short `Retry-After` is still retried (bounded at 3 attempts, never sleeping longer
+  than 20 s).
+- The cool-down is written to `results/metadata-compare/cooldowns.json` as
+  `{provider, until, reason, observed_at}` per provider. `until` uses `Retry-After` when the provider sent
+  it, otherwise the adapter's default cool-down (Inventaire 60 min, everything else 15 min). That file is
+  inside the gitignored `results/` tree: it is host-local state, not a repository artefact.
+- A provider still cooling at run start is skipped (`not_run` / `cooling_down`) with the remaining time in
+  the row's notes. An expired entry is cleared at the next run start. A missing or corrupt file reads as
+  "nothing is cooling" and never crashes a run.
+- `.venv\Scripts\python.exe -m metadata_lab run <suite> --ignore-cooldown` (and the same flag on `query`)
+  runs anyway. The UI shows the state in its provider list and refuses to start a run on a cooling provider
+  unless **Call cooling providers anyway** is ticked; the server refuses too (HTTP 409).
+- `metadata_lab providers` prints each adapter's pace and any recorded cool-down with the minutes left.
+  `run` prints an estimated wall time per provider (planned calls × the slowest declared interval) before
+  it starts. That estimate is a floor, not a promise: retries, pagination and multi-call operations add more.
 
 ## Rate limits — read this before a big run
 
-Inventaire blocks bursts with HTTP 429 and stays blocked for a long time. Practical rules:
+Inventaire blocks bursts with HTTP 429 and stays blocked for a long time. The pacing and cool-down rules
+above are the tool's answer; the practical rules stay:
 
 - Space runs out: tens of minutes between Inventaire runs, and leave it completely quiet rather than
-  retrying — retrying while blocked keeps it blocked.
+  retrying — retrying while blocked keeps it blocked. The next run now skips it automatically instead of
+  probing it.
 - Try anything new on one provider at a time, then widen.
-- A throttled run is recorded honestly (`throttled` counts, `error` rows with kind `rate_limited`); it is
-  not a provider verdict. Re-run it later instead of reading a conclusion into it.
+- A throttled run is recorded honestly (`throttled` counts, `error` rows with kind `rate_limited`, later
+  rows `not_run` / `cooling_down`); it is not a provider verdict. Re-run it later instead of reading a
+  conclusion into it.
+- `--ignore-cooldown` is for a deliberate experiment. It does not make the provider less blocked.
 
 ## Command line equivalents
 
@@ -131,5 +188,6 @@ Inventaire blocks bursts with HTTP 429 and stays blocked for a long time. Practi
 .venv\Scripts\python.exe -m metadata_lab providers
 .venv\Scripts\python.exe -m metadata_lab query --type series --series "The Empyrean" --providers openlibrary
 .venv\Scripts\python.exe -m metadata_lab run quality-first-six --providers openlibrary --tags first-six
+.venv\Scripts\python.exe -m metadata_lab run quality-first-six --ignore-cooldown   # override a cool-down
 .venv\Scripts\python.exe -m metadata_lab compare <a>/result.json <b>/result.json
 ```

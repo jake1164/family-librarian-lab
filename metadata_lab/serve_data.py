@@ -54,6 +54,7 @@ RUN_BODY_KEYS = {
     "as_of",
     "traversal",
     "confirmed",
+    "ignore_cooldown",
 }
 CASE_BODY_KEYS = {"kind", "fields"}
 CHECK_BODY_KEYS = {"providers"}
@@ -75,6 +76,7 @@ class RunRequest:
     providers: tuple[str, ...]
     traversal: bool | None = None
     as_of: str | None = None
+    ignore_cooldown: bool = False
 
 
 # --- suites -----------------------------------------------------------------------
@@ -191,6 +193,14 @@ def _as_of(value: Any) -> str | None:
     return value
 
 
+def _flag(value: Any, what: str) -> bool:
+    if value in (None, False):
+        return False
+    if value is True:
+        return True
+    raise RequestError(f"{what} must be a boolean")
+
+
 def parse_run(
     body: Mapping[str, Any], *, adapters: Mapping[str, type], catalogue: Mapping[str, Suite]
 ) -> RunRequest:
@@ -198,6 +208,7 @@ def parse_run(
 
     _reject_unknown(body, RUN_BODY_KEYS)
     providers = _id_list(body.get("providers"), "provider", sorted(adapters))
+    ignore_cooldown = _flag(body.get("ignore_cooldown"), "ignore_cooldown")
     mode = body.get("mode")
     if mode == "oneoff":
         kind = body.get("kind")
@@ -207,7 +218,12 @@ def parse_run(
             suite = build_oneoff_suite(kind, _fields(body.get("fields"), kind))
         except ValueError as exc:
             raise RequestError(str(exc)) from None
-        return RunRequest(suite=suite, providers=providers, as_of=_as_of(body.get("as_of")))
+        return RunRequest(
+            suite=suite,
+            providers=providers,
+            as_of=_as_of(body.get("as_of")),
+            ignore_cooldown=ignore_cooldown,
+        )
     if mode != "suite":
         raise RequestError("mode must be 'oneoff' or 'suite'")
 
@@ -235,6 +251,7 @@ def parse_run(
         providers=providers,
         traversal=traversal,
         as_of=_as_of(body.get("as_of")),
+        ignore_cooldown=ignore_cooldown,
     )
 
 

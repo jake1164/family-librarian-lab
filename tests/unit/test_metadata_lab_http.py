@@ -7,6 +7,7 @@ import json
 import pytest
 
 from metadata_lab.http import (
+    RETRY_AFTER_CAP_S,
     BudgetExceeded,
     HttpClient,
     TransportResponse,
@@ -77,9 +78,33 @@ def test_rate_limited_after_retries():
         ctx.get_json(URL)
 
     assert info.value.kind is ErrorKind.RATE_LIMITED
+    # Two consecutive 429s trip the breaker: the third attempt is never sent.
+    assert len(transport.requests) == 2
 
 
-def test_retry_after_is_honoured_but_capped():
+def test_retry_after_is_honoured_for_a_short_wait():
+    delays: list[float] = []
+    transport = FakeTransport(
+        [
+            TransportResponse(429, {"Retry-After": "7"}, "{}"),
+            TransportResponse(200, {}, "{}"),
+        ]
+    )
+    http = HttpClient(
+        provider_id="fake",
+        transport=transport,
+        min_interval_s=0.0,
+        sleep=delays.append,
+    )
+
+    http.context().get_json(URL)
+
+    assert delays == [7.0]
+    assert max(delays) <= RETRY_AFTER_CAP_S
+    assert http.blocked is False
+
+
+def test_a_retry_after_beyond_the_cap_is_not_slept_through():
     delays: list[float] = []
     transport = FakeTransport(
         [
@@ -94,9 +119,14 @@ def test_retry_after_is_honoured_but_capped():
         sleep=delays.append,
     )
 
-    http.context().get_json(URL)
+    with pytest.raises(ProviderError) as info:
+        http.context().get_json(URL)
 
-    assert delays == [20.0]
+    assert info.value.kind is ErrorKind.RATE_LIMITED
+    assert delays == []
+    assert len(transport.requests) == 1
+    assert http.blocked is True
+    assert http.blocked_retry_after_s == 999.0
 
 
 def test_auth_error_is_not_retried():

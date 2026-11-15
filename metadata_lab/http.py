@@ -32,6 +32,12 @@ DEFAULT_MAX_PAGES = 3
 DEFAULT_MIN_INTERVAL_S = 1.0
 REDACTED = "***"
 
+#: Request classes an adapter may pace separately. ``default`` uses the adapter's
+#: base interval; the others only apply where an adapter declares an override.
+REQUEST_CLASS_DEFAULT = "default"
+REQUEST_CLASS_SEARCH = "search"
+REQUEST_CLASS_LOOKUP = "lookup"
+
 _TIMEOUT_EXCEPTIONS = (TimeoutError, requests.exceptions.Timeout)
 _CONNECTION_EXCEPTIONS = (ConnectionError, requests.exceptions.ConnectionError)
 
@@ -156,7 +162,15 @@ def _bump(stats: dict[str, int] | None, key: str) -> None:
         stats[key] = stats.get(key, 0) + 1
 
 
-def _retry_after_seconds(headers: Mapping[str, str]) -> float | None:
+def _retry_after_seconds(
+    headers: Mapping[str, str], *, cap: float | None = RETRY_AFTER_CAP_S
+) -> float | None:
+    """``Retry-After`` in seconds, clamped to ``cap`` unless ``cap`` is ``None``.
+
+    The unclamped value matters for the breaker and the cool-down record: a
+    provider that asks for 30 minutes is not asked again in this run.
+    """
+
     raw = None
     for key, value in headers.items():
         if key.lower() == "retry-after":
@@ -165,9 +179,22 @@ def _retry_after_seconds(headers: Mapping[str, str]) -> float | None:
     if raw is None:
         return None
     try:
-        return min(max(float(raw), 0.0), RETRY_AFTER_CAP_S)
+        seconds = max(float(raw), 0.0)
     except ValueError:
         return None
+    return seconds if cap is None else min(seconds, cap)
+
+
+def _breaker_trips(consecutive_429: int, retry_after_s: float | None) -> bool:
+    """Should this provider be left alone for the rest of the run?
+
+    Two signals, both about stopping before a block gets worse: the provider asked
+    for a wait longer than the retry cap, or it said 429 twice in a row.
+    """
+
+    if retry_after_s is not None and retry_after_s > RETRY_AFTER_CAP_S:
+        return True
+    return consecutive_429 >= 2
 
 
 def body_digest(body: str | None) -> str:
@@ -190,7 +217,17 @@ def exchange_key(
 
 
 class HttpClient:
-    """Shared request pipeline for one provider (sequential, never threaded)."""
+    """Shared request pipeline for one provider (sequential, never threaded).
+
+    Pacing is per provider, not per operation: one client keeps the timestamp of
+    the last call whatever operation made it. A request class (``search``,
+    ``lookup``, ...) may pace a single call differently, which is how one adapter
+    can slow searches down without slowing every lookup.
+
+    The client is also where the circuit breaker lives: once a provider has asked
+    for a wait longer than ``RETRY_AFTER_CAP_S``, or answered 429 twice in a row,
+    ``blocked`` is set and every later call raises instead of sending.
+    """
 
     def __init__(
         self,
@@ -198,6 +235,7 @@ class HttpClient:
         provider_id: str,
         transport: Transport | None = None,
         min_interval_s: float = DEFAULT_MIN_INTERVAL_S,
+        request_intervals_s: Mapping[str, float] | None = None,
         agent: str | None = None,
         max_retries: int = MAX_RETRIES,
         sleep: Callable[[float], None] = time.sleep,
@@ -206,12 +244,62 @@ class HttpClient:
         self.provider_id = provider_id
         self._transport = transport or RequestsTransport()
         self._min_interval_s = max(0.0, min_interval_s)
+        self._request_intervals_s = {
+            str(name): max(0.0, float(value))
+            for name, value in (request_intervals_s or {}).items()
+        }
         self._agent = agent or user_agent()
         self._max_retries = max(0, max_retries)
         self._sleep = sleep
         self._clock = clock
         self._last_call_at: float | None = None
+        self._consecutive_429 = 0
+        self._blocked_note: str | None = None
+        self._blocked_retry_after_s: float | None = None
         self.secrets_seen: set[str] = set()
+
+    # -- pacing ----------------------------------------------------------------
+
+    def interval_for(self, request_class: str = REQUEST_CLASS_DEFAULT) -> float:
+        """Seconds to leave before a call of this class (base interval by default)."""
+
+        return self._request_intervals_s.get(str(request_class), self._min_interval_s)
+
+    def max_interval_s(self) -> float:
+        """The slowest interval this client can pace a call at."""
+
+        return max([self._min_interval_s, *self._request_intervals_s.values()])
+
+    # -- circuit breaker -------------------------------------------------------
+
+    @property
+    def blocked(self) -> bool:
+        return self._blocked_note is not None
+
+    @property
+    def blocked_note(self) -> str | None:
+        return self._blocked_note
+
+    @property
+    def blocked_retry_after_s(self) -> float | None:
+        """The last unclamped ``Retry-After``, for the cool-down record."""
+
+        return self._blocked_retry_after_s
+
+    def block(self, note: str, *, retry_after_s: float | None = None) -> None:
+        """Stop calling this provider for the rest of this client's life."""
+
+        if self._blocked_note is None:
+            self._blocked_note = str(note)
+        if retry_after_s is not None:
+            self._blocked_retry_after_s = retry_after_s
+
+    def _refuse_when_blocked(self) -> None:
+        if self._blocked_note is None:
+            return
+        raise ProviderError(
+            ErrorKind.RATE_LIMITED, f"provider cooling down: {self._blocked_note}"
+        )
 
     def context(
         self,
@@ -229,10 +317,11 @@ class HttpClient:
             max_pages=max_pages,
         )
 
-    def _throttle(self) -> None:
+    def _throttle(self, interval_s: float | None = None) -> None:
         if self._last_call_at is None:
             return
-        remaining = self._min_interval_s - (self._clock() - self._last_call_at)
+        interval = self._min_interval_s if interval_s is None else max(0.0, interval_s)
+        remaining = interval - (self._clock() - self._last_call_at)
         if remaining > 0:
             self._sleep(remaining)
 
@@ -246,13 +335,15 @@ class HttpClient:
         body: str | None,
         secrets: set[str],
         stats: dict[str, int] | None = None,
+        interval_s: float | None = None,
     ) -> TransportResponse:
         """Send with retries. Raises an already-redacted ``ProviderError``."""
 
+        self._refuse_when_blocked()
         request_headers = {"User-Agent": self._agent, **(headers or {})}
         attempt = 0
         while True:
-            self._throttle()
+            self._throttle(interval_s)
             self._last_call_at = self._clock()
             try:
                 response = self._transport.send(
@@ -275,16 +366,35 @@ class HttpClient:
                 ) from None
 
             status = response.status_code
+            retry_after = _retry_after_seconds(response.headers, cap=None)
             if status in (401, 403):
+                self._consecutive_429 = 0
                 raise ProviderError(ErrorKind.AUTH, _scrub_text(f"HTTP {status} from {url}", secrets))
+            if status == 429:
+                _bump(stats, "throttled")
+                self._consecutive_429 += 1
+                if _breaker_trips(self._consecutive_429, retry_after):
+                    # Do not retry into a block: stop this provider for the run.
+                    reason = (
+                        f"HTTP 429 from {url}"
+                        if retry_after is None
+                        else f"HTTP 429 from {url} (Retry-After {retry_after:.0f} s)"
+                    )
+                    self.block(
+                        _scrub_text(f"{reason}; leaving this provider alone", secrets),
+                        retry_after_s=retry_after,
+                    )
+                    raise ProviderError(ErrorKind.RATE_LIMITED, _scrub_text(reason, secrets))
+            else:
+                self._consecutive_429 = 0
             if status == 429 or 500 <= status < 600:
-                if status == 429:
-                    _bump(stats, "throttled")
                 if attempt < self._max_retries:
                     _bump(stats, "retries")
-                    delay = _retry_after_seconds(response.headers)
+                    backoff = BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)]
                     self._sleep(
-                        delay if delay is not None else BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)]
+                        backoff
+                        if retry_after is None
+                        else min(retry_after, RETRY_AFTER_CAP_S)
                     )
                     attempt += 1
                     continue
@@ -399,6 +509,7 @@ class OpContext:
         headers: Mapping[str, str] | None = None,
         secret_params: Mapping[str, Any] | None = None,
         secret_headers: Mapping[str, str] | None = None,
+        request_class: str = REQUEST_CLASS_DEFAULT,
     ) -> Any:
         return self._request(
             "GET",
@@ -408,6 +519,7 @@ class OpContext:
             body=None,
             secret_params=secret_params,
             secret_headers=secret_headers,
+            request_class=request_class,
         )
 
     def post_json(
@@ -416,6 +528,7 @@ class OpContext:
         json_body: Any,
         headers: Mapping[str, str] | None = None,
         secret_headers: Mapping[str, str] | None = None,
+        request_class: str = REQUEST_CLASS_DEFAULT,
     ) -> Any:
         return self._request(
             "POST",
@@ -425,6 +538,7 @@ class OpContext:
             body=json.dumps(json_body),
             secret_params=None,
             secret_headers=secret_headers,
+            request_class=request_class,
         )
 
     def _request(
@@ -437,6 +551,7 @@ class OpContext:
         body: str | None,
         secret_params: Mapping[str, str] | None,
         secret_headers: Mapping[str, str] | None,
+        request_class: str = REQUEST_CLASS_DEFAULT,
     ) -> Any:
         public_params = {str(k): v for k, v in (params or {}).items()}
         secret_param_values = {str(k): str(v) for k, v in (secret_params or {}).items()}
@@ -470,6 +585,7 @@ class OpContext:
                 body=body,
                 secrets=secrets_for_sender,
                 stats=self._call_stats,
+                interval_s=self._sender.interval_for(request_class),
             )
         except ProviderError as exc:
             self.exchanges.append(
@@ -525,6 +641,10 @@ __all__ = [
     "HttpClient",
     "OpContext",
     "ProviderHttp",
+    "REQUEST_CLASS_DEFAULT",
+    "REQUEST_CLASS_LOOKUP",
+    "REQUEST_CLASS_SEARCH",
+    "RETRY_AFTER_CAP_S",
     "RequestsTransport",
     "Transport",
     "TransportResponse",

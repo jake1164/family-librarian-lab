@@ -21,12 +21,12 @@ def summary() -> dict:
     return run_all()
 
 
-def test_all_twenty_six_scenarios_pass(summary: dict):
+def test_all_twenty_eight_scenarios_pass(summary: dict):
     ids = [item["id"] for item in summary["results"]]
 
-    assert ids == [f"H{index:02d}" for index in range(1, 27)]
+    assert ids == [f"H{index:02d}" for index in range(1, 29)]
     assert summary["failed"] == 0, summary["failures"]
-    assert summary["passed"] == 26
+    assert summary["passed"] == 28
 
 
 def test_selftest_is_fast_enough(summary: dict):
@@ -122,6 +122,32 @@ def test_h10_detects_disabled_duplicate_detection(monkeypatch: pytest.MonkeyPatc
     summary = run_all(only=["H10"])
 
     assert summary["failed"] == 1, "H10 passed even though duplicates were never detected"
+
+
+def test_h27_detects_a_disabled_breaker(monkeypatch: pytest.MonkeyPatch):
+    """Meta-test: with the breaker disabled, H27 must fail."""
+
+    monkeypatch.setattr(
+        "metadata_lab.http._breaker_trips",
+        lambda consecutive_429, retry_after_s: False,
+    )
+
+    summary = run_all(only=["H27"])
+
+    assert summary["failed"] == 1, "H27 passed even though the breaker never tripped"
+
+
+def test_h28_detects_an_ignored_cooldown_file(monkeypatch: pytest.MonkeyPatch):
+    """Meta-test: if the run ignores the cool-down record, H28 must fail."""
+
+    monkeypatch.setattr(
+        "metadata_lab.pacing.CooldownStore.note_for",
+        lambda self, provider_id: None,
+    )
+
+    summary = run_all(only=["H28"])
+
+    assert summary["failed"] == 1, "H28 passed even though the cool-down record was ignored"
 
 
 def test_offline_guard_blocks_non_loopback():

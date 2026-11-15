@@ -28,6 +28,7 @@ from . import artifacts, registry, serve_data
 from .config import is_configured
 from .http import HttpClient
 from .model import Operation
+from .pacing import CooldownStore
 from .providers.base import ProviderAdapter
 from .serve_data import RequestError
 from .serve_jobs import Busy, JobManager, harness_payload
@@ -59,6 +60,7 @@ class ServerConfig:
     adapters: Mapping[str, type[ProviderAdapter]] | None = None
     http_factory: Callable[[str], HttpClient] | None = None
     quiet: bool = False
+    cooldowns: CooldownStore | None = None
     jobs: JobManager | None = field(default=None, repr=False)
 
 
@@ -166,9 +168,16 @@ class LabHandler(BaseHTTPRequestHandler):
 
     def _providers(self) -> dict[str, Any]:
         config = self.server.config
+        store = config.cooldowns
         entries = []
         for provider_id, adapter_cls in config.adapters.items():
             adapter = adapter_cls()
+            cooldown = None
+            if store is not None:
+                entry = store.active(provider_id)
+                if entry is not None:
+                    cooldown = dict(entry.to_dict())
+                    cooldown["minutes_remaining"] = entry.minutes_remaining(store.now())
             entries.append(
                 {
                     "id": provider_id,
@@ -188,6 +197,16 @@ class LabHandler(BaseHTTPRequestHandler):
                         }
                         for operation, item in adapter.unsupported.items()
                     },
+                    # Pacing values are lab engineering margins, not quotas.
+                    "pacing": {
+                        "min_interval_s": float(adapter.min_interval_s),
+                        "request_intervals_s": {
+                            name: float(value)
+                            for name, value in adapter.request_intervals_s.items()
+                        },
+                        "max_interval_s": float(adapter.max_interval_s()),
+                    },
+                    "cooldown": cooldown,
                 }
             )
         return {"providers": entries}
@@ -237,6 +256,7 @@ class LabHandler(BaseHTTPRequestHandler):
             request = serve_data.parse_run(
                 body, adapters=config.adapters, catalogue=catalogue
             )
+            self._refuse_cooling(request)
             job = config.jobs.submit(request) if config.jobs else None
             if job is None:  # pragma: no cover - create_server always sets it
                 raise HttpError(500, "no job manager")
@@ -248,7 +268,7 @@ class LabHandler(BaseHTTPRequestHandler):
             return self._json(200, {"results": results})
         if parts == ["api", "selftest"]:
             # Runs on this request's worker thread (about 3 s) and holds the gate, so it
-            # can never overlap a run; the reply carries the 26 lines and the stamp.
+            # can never overlap a run; the reply carries the 28 lines and the stamp.
             self._read_json()
             payload = config.jobs.selftest() if config.jobs else {}
             return self._json(200, payload)
@@ -270,6 +290,28 @@ class LabHandler(BaseHTTPRequestHandler):
             job.request_cancel()
             return self._json(200, {"job": job.to_dict()})
         raise HttpError(404, "not found")
+
+    def _refuse_cooling(self, request: serve_data.RunRequest) -> None:
+        """Refuse a run on a provider that is still cooling, unless overridden.
+
+        The page also asks, but the server enforces it: a browser that reloaded an
+        old tab must not be able to spend calls into a known block.
+        """
+
+        store = self.server.config.cooldowns
+        if store is None or request.ignore_cooldown:
+            return
+        cooling = [
+            note
+            for note in (store.note_for(provider_id) for provider_id in request.providers)
+            if note is not None
+        ]
+        if cooling:
+            raise HttpError(
+                409,
+                "; ".join(cooling)
+                + " - tick the cool-down override to run anyway",
+            )
 
     def _read_json(self) -> dict[str, Any]:
         content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -331,17 +373,20 @@ class LabHandler(BaseHTTPRequestHandler):
 
 
 def create_server(config: ServerConfig) -> LabServer:
-    """Fill in the defaults (adapters, HTTP clients, job manager) and bind."""
+    """Fill in the defaults (adapters, HTTP clients, cooldown store, jobs) and bind."""
 
     adapters = dict(config.adapters) if config.adapters is not None else registry.discover()
     config.adapters = adapters
     config.http_factory = config.http_factory or registry.http_factory(adapters)
+    if config.cooldowns is None:
+        config.cooldowns = CooldownStore.under(Path(config.results_root))
     if config.jobs is None:
         config.jobs = JobManager(
             adapters=adapters,
             http_factory=config.http_factory,
             results_root=Path(config.results_root),
             stamp_root=config.stamp_root,
+            cooldowns=config.cooldowns,
         )
     return LabServer(config)
 

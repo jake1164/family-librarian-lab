@@ -107,7 +107,12 @@ class GoogleBooksAdapter(ProviderAdapter):
     credential_env: ClassVar[str | None] = "FAMILY_LIBRARIAN_LAB_GOOGLEBOOKS_KEY"
     credential_env_aliases: ClassVar[tuple[str, ...]] = ("FAMILY_LIBRARIAN_GOOGLE_BOOKS_API_KEY",)
     VERIFIED_LIVE: ClassVar[bool] = True
-    min_interval_s: ClassVar[float] = 1.0
+    #: No published Books-specific quota: the effective limit is the Cloud project's
+    #: (https://developers.google.com/books/docs/v1/using,
+    #: https://docs.cloud.google.com/apis/docs/capping-api-usage), and the lab has
+    #: seen only an unkeyed "quota_limit_value: 0" 429. 3 s is lab judgement, not a
+    #: Google-published allowance.
+    min_interval_s: ClassVar[float] = 3.0
     unsupported: ClassVar[dict[Operation, Unsupported]] = _UNSUPPORTED
 
     def check_connection(self, ctx: OpContext) -> str:

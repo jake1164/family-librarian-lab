@@ -10,11 +10,13 @@ a captured provider response, and the adapter stays ``VERIFIED_LIVE = False``.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
 from metadata_lab.http import HttpClient, TransportResponse
 from metadata_lab.model import ErrorKind, Operation, ProviderError, Query
+from metadata_lab.providers import hardcover
 from metadata_lab.providers.hardcover import HardcoverAdapter
 
 SECRET = "SECRET-12345"
@@ -303,3 +305,79 @@ def test_credential_env_and_alias_are_declared():
     # True since the first live run on 2026-11-15 (see the provider notes).
     assert ADAPTER.VERIFIED_LIVE is True
     assert ADAPTER.implements(Operation.AUTHOR_WORKS) is True
+
+
+# --- the one-cost-unit-per-request assumption ---------------------------------------
+#
+# Hardcover charges per expanded *top-level* GraphQL field, minimum one unit per
+# request (https://github.com/hardcoverapp/hardcover-sdk/blob/main/spec/01-api-surface.md).
+# The adapter paces on "one request is about one cost unit", so a query that grew a
+# second top-level field would silently double a request's cost.
+
+_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[{}()\[\]:,=!$]|\S")
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _top_level_fields(document: str) -> list[str]:
+    """Field names selected directly inside the operation's selection set."""
+
+    tokens = _TOKEN.findall(document)
+    index = 0
+    parens = 0
+    while index < len(tokens):  # skip the operation header to its opening brace
+        token = tokens[index]
+        if token == "(":
+            parens += 1
+        elif token == ")":
+            parens -= 1
+        elif token == "{" and parens == 0:
+            break
+        index += 1
+    index += 1
+    depth = 1
+    parens = 0
+    expect_field = True
+    fields: list[str] = []
+    while index < len(tokens) and depth > 0:
+        token = tokens[index]
+        if token == "(":
+            parens += 1
+        elif token == ")":
+            parens -= 1
+        elif parens == 0 and token == "{":
+            depth += 1
+            expect_field = False
+        elif parens == 0 and token == "}":
+            depth -= 1
+            expect_field = depth == 1
+        elif parens == 0 and depth == 1 and expect_field and _IDENTIFIER.match(token):
+            fields.append(token)
+            expect_field = False
+        index += 1
+    return fields
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SEARCH_QUERY",
+        "EDITION_BY_ISBN_QUERY",
+        "BOOK_SERIES_QUERY",
+        "SERIES_MEMBERS_QUERY",
+        "AUTHOR_WORKS_QUERY",
+        "AUTHOR_SERIES_QUERY",
+        "ME_QUERY",
+    ],
+)
+def test_every_query_selects_exactly_one_top_level_field(name: str):
+    fields = _top_level_fields(getattr(hardcover, name))
+
+    assert len(fields) == 1, f"{name} selects {fields}: one request would cost more than 1 unit"
+
+
+def test_the_field_parser_reports_a_second_top_level_field():
+    """Meta-check: the parser above really does see a second top-level field."""
+
+    doubled = "query X { books(where: {title: {_eq: $t}}) { id } series(limit: 1) { id } }"
+
+    assert _top_level_fields(doubled) == ["books", "series"]

@@ -8,9 +8,10 @@ JSON.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Mapping
 
 from ..model import AuthorRecord, BookRecord, Operation, Query, SeriesRecord
+from ..pacing import DEFAULT_COOLDOWN_S
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..http import OpContext
@@ -38,8 +39,30 @@ class ProviderAdapter:
     VERIFIED_LIVE: ClassVar[bool] = False
     #: Operations the *provider* cannot do at all. Documented, with a source URL.
     unsupported: ClassVar[dict[Operation, Unsupported]] = {}
-    #: Minimum seconds between two calls to this provider.
+    #: Minimum seconds between two calls to this provider (the base pace).
+    #:
+    #: Every value in this lab is a research-based engineering choice, **not a
+    #: provider-granted quota**: a published limit plus a safety margin, or lab
+    #: judgement where no numeric limit is published. See
+    #: ``.ai_docs/metadata/metadata-research.md`` and the docs section "Rate limits
+    #: and pacing".
     min_interval_s: ClassVar[float] = 1.0
+    #: Optional per-request-class overrides, e.g. ``{"search": 10.0}`` while the
+    #: base interval covers lookups. Same status: engineering choices, not quotas.
+    request_intervals_s: ClassVar[Mapping[str, float]] = {}
+    #: Cool-down used when the provider trips the breaker without a Retry-After.
+    cooldown_default_s: ClassVar[float] = DEFAULT_COOLDOWN_S
+
+    def interval_for(self, request_class: str = "default") -> float:
+        """Seconds between calls of one request class (base interval by default)."""
+
+        override = self.request_intervals_s.get(str(request_class))
+        return float(self.min_interval_s if override is None else override)
+
+    def max_interval_s(self) -> float:
+        """The slowest pace this adapter can request, for wall-time estimates."""
+
+        return max([float(self.min_interval_s), *map(float, self.request_intervals_s.values())])
 
     def check_connection(self, ctx: "OpContext") -> str:
         """Make one cheap call and describe the result. Raises ``ProviderError``."""

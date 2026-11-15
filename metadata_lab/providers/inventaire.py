@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Iterable, Mapping
 
-from ..http import OpContext
+from ..http import REQUEST_CLASS_SEARCH, OpContext
 from ..model import (
     AuthorRecord,
     BookRecord,
@@ -119,15 +119,25 @@ class InventaireAdapter(ProviderAdapter):
     credential_env: ClassVar[str | None] = None  # keyless
     #: Verified by the live Fourth Wing run on 2026-11-14.
     VERIFIED_LIVE: ClassVar[bool] = True
-    #: The spec publishes no numeric limit; stay at one request per second.
-    min_interval_s: ClassVar[float] = 1.0
+    #: No numeric limit published (https://api.inventaire.io/). 3 s for lookups is
+    #: the research doc's engineering margin; a /search block lasted over 21 min
+    #: in lab use, so searches get the much slower 10 s class below. Neither is an
+    #: Inventaire quota.
+    min_interval_s: ClassVar[float] = 3.0
+    #: Search requests are the ones that get blocked, so they are paced on their own.
+    request_intervals_s: ClassVar[Mapping[str, float]] = {REQUEST_CLASS_SEARCH: 10.0}
+    #: Observed block: over 21 minutes. Forgetting a block and retrying keeps it
+    #: alive, so the default cool-down here is an hour.
+    cooldown_default_s: ClassVar[float] = 60 * 60.0
     #: Nothing declared UNSUPPORTED: every gap is our adapter's (author_series is
     #: derived from the same endpoint that answers author_works).
     unsupported: ClassVar[dict[Operation, Any]] = {}
 
     def check_connection(self, ctx: OpContext) -> str:
         payload = ctx.get_json(
-            f"{BASE_URL}/search", params={"search": "The Empyrean", "types": "series", "limit": 1}
+            f"{BASE_URL}/search",
+            params={"search": "The Empyrean", "types": "series", "limit": 1},
+            request_class=REQUEST_CLASS_SEARCH,
         )
         results = payload.get("results") if isinstance(payload, Mapping) else None
         return f"{self.display_name} search responded ({len(results or [])} result(s))"
@@ -138,6 +148,7 @@ class InventaireAdapter(ProviderAdapter):
         payload = ctx.get_json(
             f"{BASE_URL}/search",
             params={"search": q.title, "types": "works", "limit": SEARCH_LIMIT},
+            request_class=REQUEST_CLASS_SEARCH,
         )
         results = payload.get("results") if isinstance(payload, Mapping) else None
         if results is None:
@@ -260,7 +271,9 @@ class InventaireAdapter(ProviderAdapter):
         if not q.author:
             return []
         payload = ctx.get_json(
-            f"{BASE_URL}/search", params={"search": q.author, "types": "humans", "limit": SEARCH_LIMIT}
+            f"{BASE_URL}/search",
+            params={"search": q.author, "types": "humans", "limit": SEARCH_LIMIT},
+            request_class=REQUEST_CLASS_SEARCH,
         )
         results = payload.get("results") if isinstance(payload, Mapping) else None
         if results is None:
@@ -439,7 +452,9 @@ class InventaireAdapter(ProviderAdapter):
         if not q.title:
             return None
         payload = ctx.get_json(
-            f"{BASE_URL}/search", params={"search": q.title, "types": "works", "limit": 1}
+            f"{BASE_URL}/search",
+            params={"search": q.title, "types": "works", "limit": 1},
+            request_class=REQUEST_CLASS_SEARCH,
         )
         results = payload.get("results") if isinstance(payload, Mapping) else None
         if isinstance(results, list) and results and isinstance(results[0], Mapping):
@@ -450,7 +465,9 @@ class InventaireAdapter(ProviderAdapter):
         if not name:
             return None
         payload = ctx.get_json(
-            f"{BASE_URL}/search", params={"search": name, "types": "series", "limit": 1}
+            f"{BASE_URL}/search",
+            params={"search": name, "types": "series", "limit": 1},
+            request_class=REQUEST_CLASS_SEARCH,
         )
         results = payload.get("results") if isinstance(payload, Mapping) else None
         if isinstance(results, list) and results and isinstance(results[0], Mapping):

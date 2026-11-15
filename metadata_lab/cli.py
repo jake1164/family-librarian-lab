@@ -17,8 +17,9 @@ from typing import Any, Sequence
 from . import artifacts, config, registry
 from .cases import CaseValidationError, Suite, load_suite_file, suite_from_result
 from .compare import compare
-from .engine import build_oneoff_suite, run_oneoff, run_suite
+from .engine import build_oneoff_suite, estimate_plan, run_oneoff, run_suite
 from .model import Mode, Operation, ProviderError, RunMode
+from .pacing import CooldownStore
 from .providers.base import ProviderAdapter
 from .replay import ReplayHttp
 from .selftest.stamp import harness_status
@@ -33,6 +34,57 @@ def _adapters() -> dict[str, type[ProviderAdapter]]:
 
 def _http_factory(adapters: dict[str, type[ProviderAdapter]]):
     return registry.http_factory(adapters)
+
+
+def _cooldowns(out: str | None) -> CooldownStore:
+    """The cool-down record that belongs to this results root (gitignored)."""
+
+    return CooldownStore.under(Path(out) if out else DEFAULT_OUT_ROOT)
+
+
+def _cooldown_payload(store: CooldownStore, provider_id: str) -> dict[str, Any] | None:
+    entry = store.active(provider_id)
+    if entry is None:
+        return None
+    payload: dict[str, Any] = dict(entry.to_dict())
+    payload["minutes_remaining"] = entry.minutes_remaining(store.now())
+    return payload
+
+
+def _duration(seconds: float) -> str:
+    total = int(round(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, remainder = divmod(total, 60)
+    return f"{minutes}m {remainder:02d}s"
+
+
+def _print_estimate(
+    suite: Suite,
+    providers: list[str],
+    adapters: dict[str, type[ProviderAdapter]],
+    *,
+    traversal: bool | None,
+    exclude: list[str],
+) -> None:
+    """Estimated wall time per provider: planned calls x the slowest interval."""
+
+    estimate = estimate_plan(
+        suite, providers, adapters=adapters, traversal=traversal, exclude=exclude
+    )
+    if not estimate:
+        return
+    print(
+        "pacing estimate (planned calls x slowest declared interval; these are "
+        "engineering margins, never provider-granted quotas):",
+        flush=True,
+    )
+    for provider_id, item in estimate.items():
+        print(
+            f"  {provider_id:<14} {_duration(item['seconds']):>9}  "
+            f"({int(item['calls'])} planned calls x {item['interval_s']:.1f} s)",
+            flush=True,
+        )
 
 
 def _split_providers(value: str | None) -> list[str] | None:
@@ -89,6 +141,9 @@ def _print_summary(document: dict[str, Any]) -> None:
                 flags.append("truncated")
             if row["error"]:
                 flags.append(f"error={row['error']['kind']}")
+            if row["outcome"] == "not_run" and row.get("reason"):
+                # excluded / cancelled / chain_broken / cooling_down: say which.
+                flags.append(row["reason"])
             suffix = f"  [{', '.join(flags)}]" if flags else ""
             print(
                 f"  {row['provider']:<14} {row['operation']:<16} {row['mode']:<12} "
@@ -147,6 +202,7 @@ def _print_matrix(document: dict[str, Any]) -> None:
 
 def _cmd_providers(args: argparse.Namespace) -> int:
     adapters = _adapters()
+    store = _cooldowns(args.out)
     payload: list[dict[str, Any]] = []
     for provider_id, adapter_cls in adapters.items():
         adapter = adapter_cls()
@@ -158,6 +214,15 @@ def _cmd_providers(args: argparse.Namespace) -> int:
             "verified_live": bool(adapter.VERIFIED_LIVE),
             "credential_env": adapter.credential_env,
             "declared": {op.value: adapter.declared_support(op) for op in Operation},
+            "pacing": {
+                "min_interval_s": float(adapter.min_interval_s),
+                "request_intervals_s": {
+                    name: float(value) for name, value in adapter.request_intervals_s.items()
+                },
+                "max_interval_s": float(adapter.max_interval_s()),
+                "cooldown_default_s": float(adapter.cooldown_default_s),
+            },
+            "cooldown": _cooldown_payload(store, provider_id),
         }
         payload.append(entry)
     if args.json:
@@ -169,7 +234,16 @@ def _cmd_providers(args: argparse.Namespace) -> int:
     for entry in payload:
         state = "configured" if entry["configured"] else "not configured"
         live = "verified live" if entry["verified_live"] else "not verified live"
-        print(f"{entry['id']:<14} {entry['display_name']:<22} {state:<15} {live}")
+        print(
+            f"{entry['id']:<14} {entry['display_name']:<22} {state:<15} {live:<20} "
+            f"pace {entry['pacing']['max_interval_s']:.1f} s/call"
+        )
+        if entry["cooldown"]:
+            cooling = entry["cooldown"]
+            print(
+                f"    COOLING DOWN until {cooling['until']} "
+                f"({cooling['reason']}), about {cooling['minutes_remaining']} min remaining"
+            )
         for operation, support in entry["declared"].items():
             print(f"    {operation:<16} {support}")
     return 0
@@ -218,6 +292,8 @@ def _cmd_query(args: argparse.Namespace) -> int:
             adapters=adapters,
             as_of=args.as_of,
             harness=harness_status(),
+            cooldowns=_cooldowns(args.out),
+            ignore_cooldown=args.ignore_cooldown,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
@@ -249,6 +325,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
             except json.JSONDecodeError as exc:
                 print(f"{args.resume}: not valid JSON ({exc})", file=sys.stderr)
                 return EXIT_USAGE
+        selected = _split_providers(args.providers) or list(suite.providers or adapters)
+        _print_estimate(
+            suite,
+            [provider for provider in selected if provider in adapters],
+            adapters,
+            traversal=args.traversal,
+            exclude=_split_providers(args.exclude) or [],
+        )
         document = run_suite(
             suite,
             _split_providers(args.providers),
@@ -260,6 +344,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             as_of=args.as_of,
             harness=harness_status(),
             resume=resume,
+            cooldowns=_cooldowns(args.out),
+            ignore_cooldown=args.ignore_cooldown,
         )
     except (CaseValidationError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
@@ -426,6 +512,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     providers = subparsers.add_parser("providers", help="list adapters and declared support")
     providers.add_argument("--json", action="store_true", help="machine-readable output")
+    providers.add_argument(
+        "--out", help=f"results root holding cooldowns.json (default {DEFAULT_OUT_ROOT})"
+    )
     providers.set_defaults(func=_cmd_providers)
 
     check = subparsers.add_parser("check", help="connection test per provider")
@@ -441,6 +530,11 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("--providers", help="comma-separated provider ids")
     query.add_argument("--as-of", dest="as_of", help="evaluation date (YYYY-MM-DD)")
     query.add_argument("--out", help=f"output root (default {DEFAULT_OUT_ROOT})")
+    query.add_argument(
+        "--ignore-cooldown",
+        action="store_true",
+        help="call a provider even if cooldowns.json still records a cool-down for it",
+    )
     query.set_defaults(func=_cmd_query)
 
     run = subparsers.add_parser("run", help="run a suite file or a named suite")
@@ -458,6 +552,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run the traversal measurement for every case",
     )
     run.add_argument("--out", help=f"output root (default {DEFAULT_OUT_ROOT})")
+    run.add_argument(
+        "--ignore-cooldown",
+        action="store_true",
+        help="call a provider even if cooldowns.json still records a cool-down for it",
+    )
     run.set_defaults(func=_cmd_run)
 
     replay = subparsers.add_parser("replay", help="re-run a saved result from its raw captures")
@@ -470,7 +569,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("second")
     compare.set_defaults(func=_cmd_compare)
 
-    selftest = subparsers.add_parser("selftest", help="harness validation suite (H01-H24)")
+    selftest = subparsers.add_parser("selftest", help="harness validation suite (H01-H28)")
     selftest.add_argument("--only", help="comma-separated scenario ids")
     selftest.add_argument("--json", action="store_true", help="machine-readable summary")
     selftest.set_defaults(func=_cmd_selftest)

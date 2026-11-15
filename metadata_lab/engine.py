@@ -36,12 +36,23 @@ from .model import (
     RunMode,
     SeriesRecord,
 )
+from .pacing import DEFAULT_COOLDOWN_S, CooldownStore
 from .providers.base import ProviderAdapter
 from .semantic import semantic_digest
 
 SCHEMA = "metadata-lab.result/1"
 DEFAULT_MAX_CALLS = 10
 UNFINISHED_OUTCOMES = frozenset({Outcome.NOT_RUN.value})
+#: The five operations a traversal row set covers.
+TRAVERSAL_OPERATIONS = (
+    Operation.BOOK_BY_TITLE,
+    Operation.SERIES_FOR_BOOK,
+    Operation.SERIES_MEMBERS,
+    Operation.AUTHOR_WORKS,
+    Operation.AUTHOR_SERIES,
+)
+#: ``not_run`` reason for a provider inside a rate-limit cool-down.
+COOLING_DOWN_REASON = "cooling_down"
 
 HttpFactory = Callable[[str], Any]
 AdapterMap = Mapping[str, type[ProviderAdapter]]
@@ -197,6 +208,12 @@ def _run_operation(
     if not adapter.implements(operation):
         notes.append("adapter does not implement this operation yet (a gap in this tool)")
         return row(Outcome.NOT_IMPLEMENTED), []
+
+    cooling = getattr(http, "blocked_note", None)
+    if cooling:
+        # The provider is inside a cool-down: do not spend a call, and say why.
+        notes.append(f"not run: {cooling}")
+        return row(Outcome.NOT_RUN, reason=COOLING_DOWN_REASON), []
 
     credential = config.resolve_credential(adapter)
     max_pages = int(case.options.get("max_pages", DEFAULT_MAX_PAGES))
@@ -520,6 +537,55 @@ def _skipped_row(
     }
 
 
+def estimate_plan(
+    suite: Suite,
+    providers: Sequence[str],
+    *,
+    adapters: AdapterMap,
+    traversal: bool | None = None,
+    exclude: Iterable[str] = (),
+) -> dict[str, dict[str, float]]:
+    """Planned rows and paced wall time per provider *before* a run starts.
+
+    One planned row is assumed to spend one call (every operation makes at least
+    one) and the pace is the adapter's slowest declared interval, so this is a
+    floor at the slow end: retries, pagination and multi-call operations all add
+    more. It answers "roughly how long will a polite run take", nothing more.
+    """
+
+    excluded = set(exclude)
+    rows: dict[str, int] = {}
+    for case in suite.cases:
+        wants_traversal = case.traversal if traversal is None else traversal
+        keys = {(operation.value, Mode.INDEPENDENT.value) for operation in case.operations}
+        if wants_traversal:
+            keys |= {(operation.value, Mode.TRAVERSAL.value) for operation in TRAVERSAL_OPERATIONS}
+        for provider_id in providers:
+            if provider_id in excluded:
+                continue
+            rows[provider_id] = rows.get(provider_id, 0) + len(keys)
+
+    estimate: dict[str, dict[str, float]] = {}
+    for provider_id in providers:
+        # Read the declared class vars rather than building an adapter: an adapter
+        # constructor may do work (the selftest doubles can sleep) and an estimate
+        # must never cost anything.
+        adapter_cls = adapters.get(provider_id)
+        base = 0.0
+        overrides: Mapping[str, float] = {}
+        if adapter_cls is not None:
+            base = float(getattr(adapter_cls, "min_interval_s", 0.0) or 0.0)
+            overrides = getattr(adapter_cls, "request_intervals_s", {}) or {}
+        interval = max([base, *(float(value) for value in overrides.values())])
+        calls = rows.get(provider_id, 0)
+        estimate[provider_id] = {
+            "calls": calls,
+            "interval_s": interval,
+            "seconds": calls * interval,
+        }
+    return estimate
+
+
 def run_suite(
     suite: Suite,
     providers: Sequence[str] | None = None,
@@ -537,6 +603,8 @@ def run_suite(
     resume: Mapping[str, Any] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     progress: ProgressCallback | None = None,
+    cooldowns: CooldownStore | None = None,
+    ignore_cooldown: bool = False,
 ) -> dict[str, Any]:
     """Run a suite and return the result document. The only way to run a suite.
 
@@ -544,6 +612,10 @@ def run_suite(
     first is checked before each planned row and stops the run through the same
     path as ``KeyboardInterrupt``, the second receives a small dict per row so a
     UI can show where the run is without parsing the result document.
+
+    ``cooldowns`` is the persisted cool-down record. A provider still cooling is
+    skipped (``not_run`` / ``cooling_down``) unless ``ignore_cooldown`` is set, and
+    the provider that trips the breaker during the run is recorded there.
     """
 
     started_at = _utc_now()
@@ -551,6 +623,16 @@ def run_suite(
     is_configured = resolve_configured or config.is_configured
     excluded = [provider for provider in dict.fromkeys(exclude) if provider in selected]
     active = [provider for provider in selected if provider not in excluded]
+
+    cooling_notes: dict[str, str] = {}
+    if cooldowns is not None:
+        if not ignore_cooldown:
+            for provider_id in active:
+                note = cooldowns.note_for(provider_id)
+                if note is not None:
+                    cooling_notes[provider_id] = note
+        # An entry that has run out is not a block any more: clear it now.
+        cooldowns.clear_expired()
 
     cases = list(suite.cases)
     if case_ids:
@@ -604,24 +686,44 @@ def run_suite(
             for operation in case.operations:
                 plan.append((case, provider_id, operation, Mode.INDEPENDENT))
             if wants_traversal:
-                for operation in (
-                    Operation.BOOK_BY_TITLE,
-                    Operation.SERIES_FOR_BOOK,
-                    Operation.SERIES_MEMBERS,
-                    Operation.AUTHOR_WORKS,
-                    Operation.AUTHOR_SERIES,
-                ):
+                for operation in TRAVERSAL_OPERATIONS:
                     plan.append((case, provider_id, operation, Mode.TRAVERSAL))
 
     done: set[tuple[str, str, str, str]] = set()
     http_by_provider: dict[str, Any] = {}
+    blocked_recorded: set[str] = set()
+    pre_blocked: set[str] = set()
     total_rows = len({(case.id, pid, op.value, mode.value) for case, pid, op, mode in plan})
     calls_used = 0
+
+    def record_block(provider_id: str) -> None:
+        """Persist the cool-down as soon as that provider trips the breaker.
+
+        A provider that was *already* cooling is left alone: re-recording it would
+        restart its countdown from the default and keep pushing the block out.
+        """
+
+        if cooldowns is None or provider_id in blocked_recorded or provider_id in pre_blocked:
+            return
+        blocked_http = http_by_provider.get(provider_id)
+        if not getattr(blocked_http, "blocked", False):
+            return
+        blocked_recorded.add(provider_id)
+        adapter_cls = adapters.get(provider_id)
+        default_s = float(
+            getattr(adapter_cls, "cooldown_default_s", DEFAULT_COOLDOWN_S) or DEFAULT_COOLDOWN_S
+        )
+        cooldowns.record(
+            provider_id,
+            retry_after_s=getattr(blocked_http, "blocked_retry_after_s", None),
+            default_s=default_s,
+        )
 
     def append_row(case_id: str, row: Mapping[str, Any]) -> None:
         nonlocal calls_used
         by_case[case_id]["results"].append(row)
         calls_used += int((row.get("stats") or {}).get("calls") or 0)
+        record_block(str(row.get("provider") or ""))
 
     def report(
         case: Case | None, provider_id: str | None, operation: Operation | None, mode: Mode | None
@@ -672,6 +774,10 @@ def run_suite(
 
             adapter = adapters[provider_id]()
             http = http_by_provider.setdefault(provider_id, http_factory(provider_id))
+            if provider_id in cooling_notes and hasattr(http, "block"):
+                # Cooling at run start: every row for this provider is not_run.
+                http.block(cooling_notes[provider_id])
+                pre_blocked.add(provider_id)
             if mode is Mode.TRAVERSAL:
                 chain = _run_traversal(
                     case=case,
@@ -806,6 +912,8 @@ def run_oneoff(
     max_pages: int | None = None,
     as_of: str | None = None,
     harness: Mapping[str, Any] | None = None,
+    cooldowns: CooldownStore | None = None,
+    ignore_cooldown: bool = False,
 ) -> dict[str, Any]:
     """Run one ad-hoc query through the same engine as a suite."""
 
@@ -821,14 +929,19 @@ def run_oneoff(
         adapters=adapters,
         as_of=as_of,
         harness=harness,
+        cooldowns=cooldowns,
+        ignore_cooldown=ignore_cooldown,
     )
 
 
 __all__ = [
+    "COOLING_DOWN_REASON",
     "SCHEMA",
+    "TRAVERSAL_OPERATIONS",
     "ProgressCallback",
     "RunCancelled",
     "build_oneoff_suite",
+    "estimate_plan",
     "git_revision",
     "run_oneoff",
     "run_suite",

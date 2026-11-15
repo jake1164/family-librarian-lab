@@ -95,7 +95,11 @@ class BookBrainzAdapter(ProviderAdapter):
     credential_env: ClassVar[str | None] = None  # keyless
     #: Verified by the live Fourth Wing run on 2026-11-14.
     VERIFIED_LIVE: ClassVar[bool] = True
-    min_interval_s: ClassVar[float] = 1.0
+    #: Source-code evidence: 100 search *and* 100 lookup requests per 5 minutes
+    #: before a 500 ms-per-request slowdown
+    #: (https://github.com/metabrainz/bookbrainz-site/blob/master/src/api/helpers/rateLimiter.js).
+    #: No published quota: 3.5 s is a lab safety margin, not a BookBrainz limit.
+    min_interval_s: ClassVar[float] = 3.5
 
     unsupported: ClassVar[dict[Operation, Unsupported]] = {
         Operation.BOOK_BY_ISBN: Unsupported(

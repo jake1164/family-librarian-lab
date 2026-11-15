@@ -17,6 +17,7 @@ from . import artifacts, config
 from .engine import run_suite
 from .http import HttpClient, scrub
 from .model import ProviderError
+from .pacing import CooldownStore
 from .providers.base import ProviderAdapter
 from .selftest.runner import run_all
 from .selftest.stamp import harness_status, latest_stamp, write_stamp
@@ -106,11 +107,13 @@ class JobManager:
         http_factory: Callable[[str], HttpClient],
         results_root: Path,
         stamp_root: Path | None = None,
+        cooldowns: CooldownStore | None = None,
     ) -> None:
         self.adapters = dict(adapters)
         self.http_factory = http_factory
         self.results_root = Path(results_root)
         self.stamp_root = stamp_root
+        self.cooldowns = cooldowns
         self._gate = threading.Lock()
         self._jobs: dict[str, Job] = {}
 
@@ -153,6 +156,8 @@ class JobManager:
                 harness=harness_status(self.stamp_root),
                 should_cancel=job.cancelled,
                 progress=job.on_progress,
+                cooldowns=self.cooldowns,
+                ignore_cooldown=request.ignore_cooldown,
             )
             directory = artifacts.run_directory(self.results_root, request.suite.name)
             paths = artifacts.write_outputs(document, directory, self.adapters)

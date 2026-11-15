@@ -97,10 +97,12 @@ class Harness:
         def factory(provider_id: str) -> HttpClient:
             adapter_cls = adapters.get(provider_id)
             interval = float(getattr(adapter_cls, "min_interval_s", 0.0) or 0.0)
+            intervals = getattr(adapter_cls, "request_intervals_s", {}) or {}
             return HttpClient(
                 provider_id=provider_id,
                 transport=self.transports.get(provider_id),
                 min_interval_s=interval,
+                request_intervals_s=dict(intervals),
                 sleep=self.clock.sleep,
                 clock=self.clock.clock,
             )

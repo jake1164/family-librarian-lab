@@ -134,6 +134,16 @@ query MetadataLabAuthorSeries($slug: String!) {
 }
 """
 
+#: The connection check. One top-level field, like every query above.
+ME_QUERY = """
+query MetadataLabMe {
+  me {
+    id
+    username
+  }
+}
+"""
+
 #: Hardcover's own edition_format vocabulary -> our controlled `format` values.
 _FORMAT_MAP = {
     "hardcover": "hardcover",
@@ -217,16 +227,19 @@ class HardcoverAdapter(ProviderAdapter):
     credential_env: ClassVar[str | None] = "FAMILY_LIBRARIAN_LAB_HARDCOVER_TOKEN"
     credential_env_aliases: ClassVar[tuple[str, ...]] = ()
     VERIFIED_LIVE: ClassVar[bool] = True
-    #: Free plan allows 60 requests/minute; one per second stays well inside it.
-    min_interval_s: ClassVar[float] = 1.0
+    #: Documented free tier: 1 cost unit/sec refill, burst 10, 5,000 units/day
+    #: (https://github.com/hardcoverapp/hardcover-sdk/blob/main/spec/01-api-surface.md).
+    #: Cost is per *top-level GraphQL field*, minimum one unit per request, and
+    #: every query in this adapter selects exactly one top-level field, so one
+    #: request is about one cost unit. 2 s is half the documented refill rate - a
+    #: safety margin, not a granted quota. ``tests/unit/test_metadata_lab_hardcover``
+    #: fails if a query gains a second top-level field, because that would make one
+    #: request cost more than one unit.
+    min_interval_s: ClassVar[float] = 2.0
     unsupported: ClassVar[dict[Operation, Any]] = {}
 
     def check_connection(self, ctx: OpContext) -> str:
-        payload = self._post(
-            ctx,
-            "query MetadataLabMe { me { id username } }",
-            {},
-        )
+        payload = self._post(ctx, ME_QUERY, {})
         data = _payload_data(payload)
         me = data.get("me")
         return f"{self.display_name} answered an authenticated query ({'yes' if me else 'no'} profile)"

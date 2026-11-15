@@ -54,7 +54,14 @@ def test_controlled_vocabularies():
     assert "novel" in WORK_TYPES and "unknown" in WORK_TYPES
     assert "audiobook" in FORMATS
     assert RECORD_LEVELS == {"work", "edition", "unknown"}
-    assert NOT_RUN_REASONS == {"excluded", "cancelled", "chain_broken", "not_requested"}
+    # cooling_down: the provider is in a rate-limit cool-down, so nothing was attempted.
+    assert NOT_RUN_REASONS == {
+        "excluded",
+        "cancelled",
+        "chain_broken",
+        "not_requested",
+        "cooling_down",
+    }
 
 
 def test_new_record_fields_default_to_unknown_not_a_guess():

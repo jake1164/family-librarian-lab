@@ -255,8 +255,10 @@ class OpenLibraryAdapter(ProviderAdapter):
     credential_env: ClassVar[str | None] = None  # keyless
     #: Verified by the live Fourth Wing run on 2026-11-14 (six operations answered).
     VERIFIED_LIVE: ClassVar[bool] = True
-    #: Documented limit for unidentified requests is 1 request/second.
-    min_interval_s: ClassVar[float] = 1.0
+    #: Published limit: 1 req/s unidentified, 3 req/s with an identifying
+    #: User-Agent (https://openlibrary.org/developers/api). 2 s is the research
+    #: doc's engineering margin between the two, not an Open Library quota.
+    min_interval_s: ClassVar[float] = 2.0
 
     #: No operation is declared UNSUPPORTED: every gap below is our adapter's,
     #: not the provider's (author_series can be derived from per-work editions).

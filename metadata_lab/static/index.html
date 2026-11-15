@@ -57,6 +57,16 @@ engine as the command line. There is no overall score, no ranking and no recomme
 <p class="note">Keys are read by the server from its own environment; this page only ever learns
 &quot;configured&quot; or &quot;not configured&quot;.</p>
 <div id="providers" class="panel"></div>
+<p class="note">Pacing values are engineering margins chosen from published research, not provider-granted
+quotas. A provider that answered HTTP&nbsp;429 is left alone until its cool-down ends
+(<code>cooldowns.json</code> in the results directory); a run is refused while one is cooling.</p>
+<div class="row">
+  <label style="display:flex;gap:.4rem;align-items:center;font-weight:600">
+    <input type="checkbox" id="cooldown-override">
+    Call cooling providers anyway (override cooldowns.json)
+  </label>
+</div>
+<p class="note" id="cooldown-note"></p>
 <p class="note" id="provider-hint"></p>
 
 <h2>2. Run</h2>
@@ -111,8 +121,9 @@ engine as the command line. There is no overall score, no ranking and no recomme
 
   <p class="note" style="border-left:3px solid #a15c00; padding-left:.5rem;">
     <strong>Rate limits:</strong> Inventaire blocks bursts with HTTP 429 and stays blocked for a while.
-    Space runs out (tens of minutes), try a new thing on one provider at a time, and never retry a
-    throttled run in a loop.
+    The lab now paces each provider, stops calling a provider once it trips a 429 breaker, and records a
+    cool-down in <code>cooldowns.json</code> so the next run skips it. Leave a blocked provider alone for
+    its full cool-down; the override above is for a deliberate experiment, not for retrying in a loop.
   </p>
 </div>
 
@@ -270,6 +281,37 @@ function selectedProviders() {
   return state.providers.filter((provider) => provider.selected).map((provider) => provider.id);
 }
 
+function coolingProviders() {
+  return state.providers.filter((provider) => provider.selected && provider.cooldown);
+}
+
+function overrideCooling() {
+  return el("cooldown-override").checked;
+}
+
+function cooldownMessage() {
+  return coolingProviders()
+    .map((provider) => provider.cooldown.until
+      ? provider.id + " is cooling down until " + provider.cooldown.until +
+        " (about " + provider.cooldown.minutes_remaining + " min remaining)"
+      : provider.id + " is cooling down")
+    .join("; ");
+}
+
+function blockedByCooldown() {
+  return coolingProviders().length > 0 && !overrideCooling();
+}
+
+function renderCooldownNote() {
+  const cooling = state.providers.filter((provider) => provider.cooldown);
+  text(el("cooldown-note"),
+    cooling.length === 0
+      ? "No provider is cooling down."
+      : "Cooling down: " + cooling.map((provider) =>
+          provider.id + " (" + provider.cooldown.minutes_remaining + " min)").join(", ") +
+        ". Select one and a run is refused unless the override above is ticked.");
+}
+
 function renderProviders() {
   const box = el("providers");
   box.replaceChildren();
@@ -292,6 +334,14 @@ function renderProviders() {
       provider.configured ? "configured" : "not configured"));
     line.append(make("span", "badge " + (provider.verified_live ? "ok" : "muted"),
       provider.verified_live ? "verified live" : "not verified live"));
+    if (provider.cooldown) {
+      line.append(make("span", "badge bad",
+        "cooling: " + provider.cooldown.minutes_remaining + " min left"));
+    }
+    const pace = (provider.pacing || {}).max_interval_s;
+    if (typeof pace === "number") {
+      line.append(make("span", "badge muted", "pace " + pace.toFixed(1) + " s/call"));
+    }
     const ops = make("ul", "ops");
     for (const [name, support] of Object.entries(provider.declared || {})) {
       const item = make("li", support === "supported" ? "" : "muted", name + ": " + support);
@@ -300,8 +350,14 @@ function renderProviders() {
       ops.append(item);
     }
     wrapper.append(line, ops);
+    if (provider.cooldown) {
+      wrapper.append(make("p", "note",
+        "Not called until " + provider.cooldown.until + " (" + provider.cooldown.reason +
+        ", observed " + provider.cooldown.observed_at + ")."));
+    }
     box.append(wrapper);
   }
+  renderCooldownNote();
   updateProviderHint();
   updateEstimate();
 }
@@ -342,14 +398,42 @@ function chosenCases(suite) {
 function estimateFor(suite, cases) {
   const providers = Math.max(selectedProviders().length, 1);
   const traversalOps = el("suite-traversal").checked ? 5 : 0;
+  let operationsTotal = 0;
   let estimated = 0;
   let bound = 0;
   for (const item of cases) {
     const operations = item.operations.length + traversalOps;
+    operationsTotal += operations;
     estimated += operations * 4;                  // what an operation costs in practice
     bound += operations * (item.max_calls || 10); // the per-case budget ceiling
   }
-  return { providers, estimated: estimated * providers, bound: bound * providers };
+  // Wall time is per provider: its planned calls x its slowest declared interval.
+  const perProvider = selectedProviders();
+  const wall = perProvider.map((id) => {
+    const provider = state.providers.find((entry) => entry.id === id) || {};
+    const interval = ((provider.pacing || {}).max_interval_s) || 0;
+    const calls = operationsTotal * 4;
+    return { id, interval, calls, seconds: calls * interval };
+  });
+  return {
+    providers,
+    estimated: estimated * providers,
+    bound: bound * providers,
+    wall,
+  };
+}
+
+function wallText(wall) {
+  return wall.filter((item) => item.interval > 0)
+    .map((item) => item.id + " ~" + durationText(item.seconds) +
+      " (" + item.calls + " calls x " + item.interval.toFixed(1) + " s)")
+    .join(", ");
+}
+
+function durationText(seconds) {
+  const total = Math.round(seconds);
+  if (total < 60) return total + "s";
+  return Math.floor(total / 60) + "m " + String(total % 60).padStart(2, "0") + "s";
 }
 
 function updateEstimate() {
@@ -358,9 +442,11 @@ function updateEstimate() {
   const cases = chosenCases(suite);
   if (!cases.length) { text(el("suite-estimate"), "The current filter matches no case."); return; }
   const estimate = estimateFor(suite, cases);
+  const wall = wallText(estimate.wall);
   text(el("suite-estimate"),
     cases.length + " case(s) x " + estimate.providers + " provider(s): about " + estimate.estimated +
-    " calls, hard ceiling " + estimate.bound + ". Traversal adds five operations per case.");
+    " calls, hard ceiling " + estimate.bound + ". Traversal adds five operations per case." +
+    (wall ? " Paced wall time (planned calls x slowest interval): " + wall + "." : ""));
 }
 
 function renderSuiteCases() {
@@ -421,6 +507,7 @@ el("suite-cases").addEventListener("change", () => { updateEstimate(); resetSuit
 el("suite-tags").addEventListener("input", () => { updateEstimate(); resetSuiteConfirm(); });
 el("suite-asof").addEventListener("change", resetSuiteConfirm);
 el("suite-traversal").addEventListener("change", () => { updateEstimate(); resetSuiteConfirm(); });
+el("cooldown-override").addEventListener("change", () => { updateEstimate(); resetSuiteConfirm(); });
 el("oneoff-kind").addEventListener("change", updateOneoffHint);
 
 /* --- running ------------------------------------------------------------- */
@@ -440,11 +527,22 @@ function fieldsFromForm() {
 }
 
 el("oneoff-run").addEventListener("click", async () => {
+  if (blockedByCooldown()) {
+    showProgressError("Refusing to run: " + cooldownMessage() +
+      '. Tick "Call cooling providers anyway" to override.');
+    return;
+  }
   const { kind, fields } = fieldsFromForm();
   try {
     const payload = await api("/api/run", {
       method: "POST",
-      body: { mode: "oneoff", kind, fields, providers: selectedProviders() },
+      body: {
+        mode: "oneoff",
+        kind,
+        fields,
+        providers: selectedProviders(),
+        ignore_cooldown: overrideCooling(),
+      },
     });
     watchJob(payload.job.id);
   } catch (error) {
@@ -457,13 +555,23 @@ el("suite-run").addEventListener("click", async () => {
   if (!suite) return;
   const cases = chosenCases(suite);
   if (!cases.length) { showProgressError("The current filter matches no case."); return; }
+  if (blockedByCooldown()) {
+    // A cooling provider is a refusal, not a warning: say how long is left.
+    resetSuiteConfirm();
+    el("suite-confirm").hidden = false;
+    text(el("suite-confirm"), "Refusing to run: " + cooldownMessage() +
+      ". Wait, deselect it, or tick the cool-down override.");
+    return;
+  }
   if (!state.suiteConfirm) {
     const estimate = estimateFor(suite, cases);
+    const wall = wallText(estimate.wall);
     state.suiteConfirm = true;
     el("suite-run").textContent = "Click again to spend about " + estimate.estimated + " calls";
     el("suite-confirm").hidden = false;
     text(el("suite-confirm"), "A suite spends real quota (hard ceiling " + estimate.bound +
-      " calls). Review the estimate, then click again.");
+      " calls). Review the estimate, then click again." +
+      (wall ? " Paced wall time: " + wall + "." : ""));
     return;
   }
   const caseIds = Array.from(el("suite-cases").selectedOptions).map((option) => option.value);
@@ -479,6 +587,7 @@ el("suite-run").addEventListener("click", async () => {
         tags,
         as_of: el("suite-asof").value || null,
         traversal: el("suite-traversal").checked,
+        ignore_cooldown: overrideCooling(),
         confirmed: true,
       },
     });

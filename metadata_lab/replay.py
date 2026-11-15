@@ -85,6 +85,11 @@ class _ReplayClient:
             max_pages=max_pages,
         )
 
+    def interval_for(self, request_class: str = "default") -> float:
+        """Replay never sleeps: there is no network to be polite to."""
+
+        return 0.0
+
     def send(
         self,
         method: str,
@@ -95,6 +100,7 @@ class _ReplayClient:
         body: str | None,
         secrets: set[str],
         stats: dict[str, int] | None = None,
+        interval_s: float | None = None,
     ) -> TransportResponse:
         key = exchange_key(self.provider_id, method, url, params, body)
         exchange = self._exchanges.get(key)

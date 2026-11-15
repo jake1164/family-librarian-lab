@@ -55,12 +55,19 @@ def sorted_operations() -> list[Operation]:
 
 
 def http_factory(adapters: Mapping[str, type[ProviderAdapter]]) -> Callable[[str], HttpClient]:
-    """One ``HttpClient`` per provider, paced at that adapter's minimum interval."""
+    """One ``HttpClient`` per provider, paced at that adapter's declared intervals."""
 
     def factory(provider_id: str) -> HttpClient:
         adapter_cls = adapters.get(provider_id)
         interval = float(getattr(adapter_cls, "min_interval_s", 1.0)) if adapter_cls else 1.0
-        return HttpClient(provider_id=provider_id, min_interval_s=interval)
+        intervals = (
+            dict(getattr(adapter_cls, "request_intervals_s", {}) or {}) if adapter_cls else {}
+        )
+        return HttpClient(
+            provider_id=provider_id,
+            min_interval_s=interval,
+            request_intervals_s=intervals,
+        )
 
     return factory
 

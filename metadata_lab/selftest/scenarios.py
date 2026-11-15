@@ -1,4 +1,4 @@
-"""H01-H24: does the harness record exactly what happened?
+"""H01-H28: does the harness record exactly what happened?
 
 Every scenario drives the real engine, HTTP helper, exports and report against a
 loopback scripted server. A scenario returns ``Evidence(True, detail)`` or raises
@@ -18,8 +18,9 @@ from .. import registry
 from ..cases import Case, CaseValidationError, Reference, load_suite_file
 from ..engine import run_oneoff, run_suite
 from ..export import ai_export, full_export
-from ..http import HttpClient, Transport, TransportResponse
+from ..http import RETRY_AFTER_CAP_S, HttpClient, Transport, TransportResponse
 from ..model import ErrorKind, Operation, Outcome, ProviderError
+from ..pacing import CooldownStore
 from ..providers.base import ProviderAdapter, Unsupported
 from ..replay import ReplayHttp
 from ..report import render_report
@@ -315,8 +316,9 @@ def h09(harness: Harness) -> Evidence:
     document = harness.run(adapters)
     row = _row(document)
     _require(row["error"]["kind"] == "rate_limited", f"expected rate_limited, got {row['error']}")
-    _require(len(harness.server.calls("/series")) == 3, "retry bound should be 3 attempts")
-    _require(row["stats"]["retries"] == 2 and row["stats"]["throttled"] == 3, "stats should count retries/429s")
+    # Two consecutive 429s trip the breaker: the third call is never sent.
+    _require(len(harness.server.calls("/series")) == 2, "two consecutive 429s must stop the retries")
+    _require(row["stats"]["retries"] == 1 and row["stats"]["throttled"] == 2, "stats should count retries/429s")
 
     class TimeoutTransport:
         def send(self, method, url, *, params, headers, body, timeout):
@@ -343,7 +345,11 @@ def h09(harness: Harness) -> Evidence:
     outcomes = {row["provider"]: row["outcome"] for row in isolated["cases"][0]["results"]}
     _require("error" in outcomes.values(), "one provider should have failed")
     _require("ok" in outcomes.values(), "the other provider should still have run")
-    return Evidence(True, "rate_limited/timeout/http classified; 3 attempts each; others continue")
+    return Evidence(
+        True,
+        "rate_limited/timeout/http classified; two consecutive 429s stop the retries; "
+        "5xx still bounded at 3 attempts; others continue",
+    )
 
 
 # --- H10-H13: pagination, agreement, replay, canaries -----------------------------
@@ -796,7 +802,6 @@ def h18(harness: Harness) -> Evidence:
 
 # --- H19-H24: cancel, politeness, report, extensibility, offline, expiry ----------
 
-
 @scenario("H19", "hard", "cancel writes a partial result and resume finishes only the rest")
 def h19(harness: Harness) -> Evidence:
     _seed(harness)
@@ -829,7 +834,7 @@ def h19(harness: Harness) -> Evidence:
     return Evidence(True, "cancelled partial written; resume reused the finished row and ran the rest")
 
 
-@scenario("H20", "hard", "politeness: interval, budget, Retry-After cap and retry bound")
+@scenario("H20", "hard", "politeness: interval, Retry-After handling, budget and retry bound")
 def h20(harness: Harness) -> Evidence:
     _seed(harness)
     client = HttpClient(
@@ -844,11 +849,45 @@ def h20(harness: Harness) -> Evidence:
     ctx.get_json(f"{harness.server.base_url}/series")
     _require(any(round(delay, 1) >= 1.0 for delay in harness.clock.slept), "min interval not honoured")
 
+    # A short Retry-After is waited out exactly, and the call is retried.
     harness.clock.slept.clear()
     harness.server.reset()
-    harness.server.queue("/series", scripted(429, {}, headers={"Retry-After": "999"}), scripted(200, SERIES_OK))
+    harness.server.queue(
+        "/series", scripted(429, {}, headers={"Retry-After": "7"}), scripted(200, SERIES_OK)
+    )
     ctx.get_json(f"{harness.server.base_url}/series")
-    _require(max(harness.clock.slept) == 20.0, f"Retry-After should cap at 20, got {harness.clock.slept}")
+    _require(7.0 in [round(delay, 1) for delay in harness.clock.slept],
+             f"a 7 s Retry-After should be waited out, got {harness.clock.slept}")
+    _require(
+        max(harness.clock.slept) <= RETRY_AFTER_CAP_S,
+        f"no single wait may exceed {RETRY_AFTER_CAP_S} s, got {harness.clock.slept}",
+    )
+
+    # A Retry-After longer than the cap is not slept through at all: the provider
+    # is left alone instead of being retried into the block.
+    harness.clock.slept.clear()
+    harness.server.reset()
+    harness.server.queue(
+        "/series", scripted(429, {}, headers={"Retry-After": "999"}), scripted(200, SERIES_OK)
+    )
+    blocked = HttpClient(
+        provider_id="alpha",
+        transport=harness.transports.get("alpha"),
+        min_interval_s=0.0,
+        sleep=harness.clock.sleep,
+        clock=harness.clock.clock,
+    )
+    try:
+        blocked.context().get_json(f"{harness.server.base_url}/series")
+    except ProviderError as exc:
+        _require(exc.kind is ErrorKind.RATE_LIMITED, f"expected rate_limited, got {exc.kind}")
+    else:
+        raise AssertionError("a Retry-After beyond the cap must not be retried into")
+    _require(blocked.blocked, "a Retry-After beyond the cap must trip the breaker")
+    _require(
+        not [delay for delay in harness.clock.slept if delay >= RETRY_AFTER_CAP_S],
+        f"a blocked provider must not be slept through: {harness.clock.slept}",
+    )
 
     budget_ctx = client.context(max_calls=1)
     budget_ctx.get_json(f"{harness.server.base_url}/series")
@@ -864,7 +903,11 @@ def h20(harness: Harness) -> Evidence:
     document = harness.run({"alpha": _adapter(harness)})
     _require(len(harness.server.calls("/series")) == 3, "retry bound exceeded")
     _require(_row(document)["outcome"] == "error", "the row should report the failure")
-    return Evidence(True, "interval honoured, Retry-After capped at 20, budget and retry bound enforced")
+    return Evidence(
+        True,
+        "interval honoured, a short Retry-After waited out and never exceeding 20 s, "
+        "a longer one trips the breaker instead, budget and retry bound enforced",
+    )
 
 
 @scenario("H21", "medium", "report escapes text, shows labels and ranks nothing")
@@ -1123,6 +1166,92 @@ def h26(harness: Harness) -> Evidence:
     _require(followed["outcome"] == "ok", f"followed references should be ok, got {followed['outcome']}")
     _require(rows["unfollowed"]["outcome"] == "incomplete", "the op should be incomplete, not not_found")
     return Evidence(True, "unfollowed -> incomplete ('adapter did not resolve'); followed -> ok")
+
+
+@scenario("H27", "hard", "a provider that trips the 429 breaker stops; the others carry on")
+def h27(harness: Harness) -> Evidence:
+    store = CooldownStore(harness.root / "h27" / "cooldowns.json")
+    harness.server.queue(
+        "/series", scripted(429, {}, headers={"Retry-After": "999"}), scripted(200, SERIES_OK)
+    )
+    harness.server.queue("/books", scripted(200, BOOKS))
+    document = harness.run(
+        {"alpha": _adapter(harness, "alpha"), "beta": _adapter(harness, "beta")},
+        operations=(Operation.SERIES_MEMBERS, Operation.BOOK_BY_TITLE),
+        cooldowns=store,
+    )
+    rows = {
+        (row["provider"], row["operation"]): row for row in document["cases"][0]["results"]
+    }
+
+    blocked_row = rows[("alpha", "series_members")]
+    _require(blocked_row["error"] is not None, "the 429 row must be an error")
+    _require(
+        blocked_row["error"]["kind"] == "rate_limited",
+        f"the row that got the 429 stays rate_limited, got {blocked_row['error']}",
+    )
+    later = rows[("alpha", "book_by_title")]
+    _require(later["outcome"] == "not_run", f"the next alpha row must be not_run, got {later['outcome']}")
+    _require(later["reason"] == "cooling_down", f"reason must be cooling_down, got {later['reason']}")
+    _require(
+        rows[("beta", "series_members")]["outcome"] == "ok"
+        and rows[("beta", "book_by_title")]["outcome"] == "ok",
+        "the other provider must keep running",
+    )
+    # The blocked provider really stopped calling: only beta asked for a book.
+    _require(
+        len(harness.server.calls("/books")) == 1,
+        f"the blocked provider called on: {len(harness.server.calls('/books'))} /books request(s)",
+    )
+    _require("alpha" in store.cooling(), "the cool-down must be recorded for the next run")
+    return Evidence(
+        True,
+        "alpha: 429 then not_run/cooling_down with no further calls; beta unaffected; cool-down recorded",
+    )
+
+
+@scenario("H28", "hard", "a recorded cool-down skips that provider on the next run")
+def h28(harness: Harness) -> Evidence:
+    store = CooldownStore(harness.root / "h28" / "cooldowns.json")
+    providers = {"alpha": _adapter(harness, "alpha"), "beta": _adapter(harness, "beta")}
+    operations = (Operation.SERIES_MEMBERS, Operation.BOOK_BY_TITLE)
+
+    harness.server.queue(
+        "/series", scripted(429, {}, headers={"Retry-After": "1800"}), scripted(200, SERIES_OK)
+    )
+    harness.server.queue("/books", scripted(200, BOOKS))
+    harness.run(providers, operations=operations, cooldowns=store)
+    _require("alpha" in store.cooling(), "the first run must record the cool-down")
+
+    # A second run with fresh clients: alpha must not be called at all.
+    harness.server.reset()
+    harness.server.queue("/series", scripted(200, SERIES_OK))
+    harness.server.queue("/books", scripted(200, BOOKS))
+    document = harness.run(providers, operations=operations, cooldowns=store)
+    rows = {
+        (row["provider"], row["operation"]): row for row in document["cases"][0]["results"]
+    }
+    for operation in operations:
+        row = rows[("alpha", operation.value)]
+        _require(row["outcome"] == "not_run", f"alpha/{operation.value} must be not_run")
+        _require(row["reason"] == "cooling_down", f"alpha/{operation.value} reason must be cooling_down")
+        _require(
+            any("cooling down" in note for note in row["notes"]),
+            f"the note must say the provider is cooling: {row['notes']}",
+        )
+        _require(
+            any("min remaining" in note for note in row["notes"]),
+            f"the note must carry the remaining time: {row['notes']}",
+        )
+    _require(rows[("beta", "series_members")]["outcome"] == "ok", "beta must still run")
+    _require(
+        len(harness.server.calls("/series")) == 1,
+        f"only beta should have called /series, saw {len(harness.server.calls('/series'))}",
+    )
+    return Evidence(
+        True,
+        "run 2 skipped alpha as not_run/cooling_down with the time left in the note; beta ran",
+    )
 
 
 __all__ = ["BOOKS", "MEMBER_EXPECT", "SERIES_OK", "TITLE"]
