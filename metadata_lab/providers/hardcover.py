@@ -1,9 +1,9 @@
 """Hardcover adapter. Keyed (Personal Access Token), GraphQL.
 
 Built from the documentation recorded in the provider notes. Queries are fixed
-templates with variables — user input never becomes part of the query text. No
-credential is configured in this environment, so the adapter is
-``VERIFIED_LIVE = False`` and its rows report ``not_configured``.
+templates with variables — user input never becomes part of the query text.
+First answered live on 2026-11-15 (see the provider notes); without a token
+its rows report ``not_configured``.
 """
 
 from __future__ import annotations
@@ -65,7 +65,11 @@ query MetadataLabEditionByIsbn($isbn: String!) {
 
 BOOK_SERIES_QUERY = """
 query MetadataLabBookSeries($title: String!) {
-  books(where: {title: {_eq: $title}}, limit: 5) {
+  books(
+    where: {title: {_eq: $title}, canonical_id: {_is_null: true}}
+    order_by: {users_count: desc}
+    limit: 5
+  ) {
     id
     title
     book_series(where: {book: {canonical_id: {_is_null: true}}}) {
@@ -164,9 +168,42 @@ def _search_results(payload: Any) -> list[Mapping[str, Any]]:
             results = json.loads(results)
         except json.JSONDecodeError:
             raise ProviderError(ErrorKind.PARSE, "search results were not valid JSON") from None
+    if isinstance(results, Mapping):
+        # Observed live (2026-11-15): `results` is a Typesense response object,
+        # `{"found": N, "hits": [{"document": {...}}, ...]}`, not a bare list.
+        hits = results.get("hits")
+        results = [
+            hit.get("document") if isinstance(hit, Mapping) and "document" in hit else hit
+            for hit in (hits if isinstance(hits, list) else [])
+        ]
     if not isinstance(results, list):
         return []
     return [item for item in results if isinstance(item, Mapping)]
+
+
+def _author_slugs(item: Mapping[str, Any]) -> list[str]:
+    """Author slugs from a search hit's `contributions`; `author_works` takes a slug.
+
+    Only the "Author" contribution counts (narrators, illustrators etc. are skipped).
+    """
+    slugs: list[str] = []
+    for entry in item.get("contributions") or []:
+        author = entry.get("author") if isinstance(entry, Mapping) else None
+        if not isinstance(author, Mapping) or not author.get("slug"):
+            continue
+        if str(entry.get("contribution") or "Author").strip().lower() != "author":
+            continue
+        slug = str(author["slug"])
+        if slug not in slugs:
+            slugs.append(slug)
+    return slugs
+
+
+def _position_text(value: Any) -> str:
+    """Search hits carry a float position (1.0, 3.5); keep 3.5, drop a bare ".0"."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def _format(value: Any) -> str:
@@ -179,7 +216,7 @@ class HardcoverAdapter(ProviderAdapter):
     adapter_version: ClassVar[str] = "1"
     credential_env: ClassVar[str | None] = "FAMILY_LIBRARIAN_LAB_HARDCOVER_TOKEN"
     credential_env_aliases: ClassVar[tuple[str, ...]] = ()
-    VERIFIED_LIVE: ClassVar[bool] = False
+    VERIFIED_LIVE: ClassVar[bool] = True
     #: Free plan allows 60 requests/minute; one per second stays well inside it.
     min_interval_s: ClassVar[float] = 1.0
     unsupported: ClassVar[dict[Operation, Any]] = {}
@@ -214,7 +251,7 @@ class HardcoverAdapter(ProviderAdapter):
                 series_refs.append(
                     SeriesRef(
                         name=series_name,
-                        position=str(position)
+                        position=_position_text(position)
                         if index == 0 and position is not None
                         else None,
                     )
@@ -231,6 +268,7 @@ class HardcoverAdapter(ProviderAdapter):
                     published=str(item["release_year"]) if item.get("release_year") else None,
                     description=str(item["description"]) if item.get("description") else None,
                     series=series_refs,
+                    author_ids=_author_slugs(item),
                     record_level="work",
                     # Hardcover types nothing about work type in the search hit.
                     work_type="unknown",

@@ -476,6 +476,29 @@ def test_bad_max_pages_is_rejected(tmp_path: Path):
         load_suite_file(path)
 
 
+@pytest.mark.parametrize("value", ["0", "31", "true", "'ten'", "2.5"])
+def test_bad_max_calls_is_rejected(tmp_path: Path, value: str):
+    path = _write(tmp_path, VALID + "    options: {max_calls: " + value + "}\n")
+
+    with pytest.raises(CaseValidationError, match="max_calls"):
+        load_suite_file(path)
+
+
+def test_max_calls_option_is_loaded(tmp_path: Path):
+    suite = load_suite_file(_write(tmp_path, VALID + "    options: {max_calls: 20}\n"))
+
+    assert suite.cases[0].options == {"max_calls": 20}
+
+
+def test_sha256_is_the_same_for_crlf_and_lf_copies(tmp_path: Path):
+    lf = tmp_path / "lf.yaml"
+    crlf = tmp_path / "crlf.yaml"
+    lf.write_bytes(VALID.replace("\r\n", "\n").encode("utf-8"))
+    crlf.write_bytes(VALID.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))
+
+    assert load_suite_file(lf).sha256 == load_suite_file(crlf).sha256
+
+
 def test_sha256_tracks_file_content(tmp_path: Path):
     first = load_suite_file(_write(tmp_path, VALID, "a.yaml"))
     second = load_suite_file(_write(tmp_path, VALID.replace("demo-suite", "other"), "b.yaml"))

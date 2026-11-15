@@ -16,6 +16,7 @@ cases:
       title: "The Dark Tower: The Gunslinger"
       author: "Stephen King"
     operations: [series_members]
+    options: {max_calls: 20}
     notes:
       - "The 4.5 value is the story-order reading of 'set between volumes four and five'; 8 is the publication order. Both are accepted so the matched scheme can be recorded."
     expect:

@@ -190,10 +190,11 @@ def _run_operation(
 
     credential = config.resolve_credential(adapter)
     max_pages = int(case.options.get("max_pages", DEFAULT_MAX_PAGES))
+    max_calls = int(case.options.get("max_calls", DEFAULT_MAX_CALLS))
     ctx: OpContext = http.context(
         operation=operation,
         credential=credential,
-        max_calls=DEFAULT_MAX_CALLS,
+        max_calls=max_calls,
         max_pages=max_pages,
     )
     method = getattr(adapter, operation.value)

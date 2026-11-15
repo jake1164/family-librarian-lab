@@ -16,6 +16,7 @@ cases:
       title: "Memory's Legion"
       author: "James S. A. Corey"
     operations: [series_members]
+    options: {max_calls: 20}
     notes:
       - "Wikidata records no P1545 ordinal for Memory's Legion while every main novel carries one (1-9), which is the evidence that it is not main novel 10."
     expect:

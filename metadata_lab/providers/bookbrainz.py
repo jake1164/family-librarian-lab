@@ -29,7 +29,10 @@ SEARCH_SIZE = 5
 DETAIL_LOOKUPS = 3
 #: Author resolution is limited to two hits so the op stays well inside 10 calls.
 AUTHOR_LOOKUP_HITS = 2
-TITLE_LOOKUP_LIMIT = 8
+#: Work-title lookups per series. `series_members` also spends 3 calls (search, series, relationships), so 17
+#: fits a case that sets `options: {max_calls: 20}`; with the default 10-call budget the operation still
+#: stops early and reports `truncated` (budget reached) instead of pretending to be complete.
+TITLE_LOOKUP_LIMIT = 17
 #: Author lookups per work: one keeps the whole book_by_title inside the budget.
 AUTHORS_PER_WORK = 1
 

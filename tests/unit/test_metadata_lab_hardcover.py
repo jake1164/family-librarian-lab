@@ -23,20 +23,36 @@ SEARCH_BOOK = {
     "data": {
         "search": {
             "ids": [1],
-            "results": [
-                {
-                    "id": 1,
-                    "slug": "fourth-wing",
-                    "title": "Fourth Wing",
-                    "subtitle": None,
-                    "author_names": ["Rebecca Yarros"],
-                    "isbns": ["9781649374042", "1649374046"],
-                    "pages": 517,
-                    "release_year": 2023,
-                    "series_names": ["The Empyrean"],
-                    "featured_series_position": 1,
-                }
-            ],
+            # Real shape observed live: a Typesense object with `hits[].document`.
+            "results": {
+                "found": 1,
+                "hits": [
+                    {
+                        "document": {
+                            "id": 1,
+                            "slug": "fourth-wing",
+                            "title": "Fourth Wing",
+                            "subtitle": None,
+                            "author_names": ["Rebecca Yarros"],
+                            "isbns": ["9781649374042", "1649374046"],
+                            "pages": 517,
+                            "release_year": 2023,
+                            "series_names": ["The Empyrean"],
+                            "featured_series_position": 1.0,
+                            "contributions": [
+                                {
+                                    "author": {"id": 9, "name": "Rebecca Yarros", "slug": "rebecca-yarros"},
+                                    "contribution": "Author",
+                                },
+                                {
+                                    "author": {"id": 10, "name": "A Narrator", "slug": "a-narrator"},
+                                    "contribution": "Narrator",
+                                },
+                            ],
+                        }
+                    }
+                ],
+            },
         }
     }
 }
@@ -45,14 +61,19 @@ SEARCH_AUTHOR = {
     "data": {
         "search": {
             "ids": [9],
-            "results": [
-                {
-                    "id": 9,
-                    "slug": "rebecca-yarros",
-                    "name": "Rebecca Yarros",
-                    "alternate_names": ["Yarros, Rebecca"],
-                }
-            ],
+            "results": {
+                "found": 1,
+                "hits": [
+                    {
+                        "document": {
+                            "id": 9,
+                            "slug": "rebecca-yarros",
+                            "name": "Rebecca Yarros",
+                            "alternate_names": ["Yarros, Rebecca"],
+                        }
+                    }
+                ],
+            },
         }
     }
 }
@@ -188,6 +209,8 @@ def test_book_by_title_maps_the_search_hit():
     assert records[0].isbn10 == ["1649374046"]
     assert records[0].pages == 517
     assert records[0].published == "2023"
+    # Only "Author" contributions give an id the traversal can hand to author_works.
+    assert records[0].author_ids == ["rebecca-yarros"]
     assert [(ref.name, ref.position) for ref in records[0].series] == [("The Empyrean", "1")]
 
 
@@ -277,5 +300,6 @@ def test_graphql_errors_are_reported():
 
 def test_credential_env_and_alias_are_declared():
     assert ADAPTER.credential_env == "FAMILY_LIBRARIAN_LAB_HARDCOVER_TOKEN"
-    assert ADAPTER.VERIFIED_LIVE is False
+    # True since the first live run on 2026-11-15 (see the provider notes).
+    assert ADAPTER.VERIFIED_LIVE is True
     assert ADAPTER.implements(Operation.AUTHOR_WORKS) is True

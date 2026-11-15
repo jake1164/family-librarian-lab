@@ -70,8 +70,10 @@ class FakeHttp:
     def __init__(self, *, truncated: bool = False) -> None:
         self.truncated = truncated
         self.contexts: list[FakeCtx] = []
+        self.context_kwargs: list[dict[str, Any]] = []
 
-    def context(self, **_kwargs: Any) -> FakeCtx:
+    def context(self, **kwargs: Any) -> FakeCtx:
+        self.context_kwargs.append(kwargs)
         ctx = FakeCtx(truncated=self.truncated)
         self.contexts.append(ctx)
         return ctx
@@ -181,6 +183,22 @@ def test_declared_unsupported_is_reported_with_citation():
     assert "no series endpoint" in row["notes"][0]
     assert "https://example.org/api" in row["notes"][0]
     assert row["records"] == []
+
+
+def test_case_max_calls_option_raises_the_operation_budget():
+    class Quiet(ProviderAdapter):
+        id = "quiet"
+        display_name = "Quiet"
+
+        def book_by_title(self, ctx, q):
+            return [BOOK]
+
+    default_http, raised_http = FakeHttp(), FakeHttp()
+    run(make_suite(make_case()), {"quiet": Quiet}, http=default_http)
+    run(make_suite(make_case(options={"max_calls": 20})), {"quiet": Quiet}, http=raised_http)
+
+    assert default_http.context_kwargs[0]["max_calls"] == 10
+    assert raised_http.context_kwargs[0]["max_calls"] == 20
 
 
 def test_missing_method_is_not_implemented():

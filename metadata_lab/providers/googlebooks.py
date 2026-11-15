@@ -1,8 +1,8 @@
 """Google Books adapter. Keyed (API key as a ``key=`` query parameter).
 
-Built from the documentation recorded in the provider notes. No credential is
-configured in this environment, so the adapter is ``VERIFIED_LIVE = False`` and
-its rows report ``not_configured``. The key travels as a **secret parameter**, so
+Built from the documentation recorded in the provider notes. First answered live
+on 2026-11-15 (``book_by_title`` only; see the provider notes); without a key its
+rows report ``not_configured``. The key travels as a **secret parameter**, so
 the HTTP helper never records it.
 """
 
@@ -106,7 +106,7 @@ class GoogleBooksAdapter(ProviderAdapter):
     adapter_version: ClassVar[str] = "1"
     credential_env: ClassVar[str | None] = "FAMILY_LIBRARIAN_LAB_GOOGLEBOOKS_KEY"
     credential_env_aliases: ClassVar[tuple[str, ...]] = ("FAMILY_LIBRARIAN_GOOGLE_BOOKS_API_KEY",)
-    VERIFIED_LIVE: ClassVar[bool] = False
+    VERIFIED_LIVE: ClassVar[bool] = True
     min_interval_s: ClassVar[float] = 1.0
     unsupported: ClassVar[dict[Operation, Unsupported]] = _UNSUPPORTED
 

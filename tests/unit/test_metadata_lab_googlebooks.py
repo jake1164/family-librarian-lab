@@ -158,4 +158,5 @@ def test_unclear_operations_stay_not_implemented():
 def test_credential_env_and_aliases_are_declared():
     assert ADAPTER.credential_env == "FAMILY_LIBRARIAN_LAB_GOOGLEBOOKS_KEY"
     assert "FAMILY_LIBRARIAN_GOOGLE_BOOKS_API_KEY" in ADAPTER.credential_env_aliases
-    assert ADAPTER.VERIFIED_LIVE is False
+    # True since the first live run on 2026-11-15 (book_by_title only; see the provider notes).
+    assert ADAPTER.VERIFIED_LIVE is True

@@ -33,7 +33,9 @@ CASE_KEYS = {
 }
 REFERENCE_KEYS = {"source", "verified_on", "confidence"}
 INPUT_KEYS = {"title", "author", "isbn", "series"}
-OPTION_KEYS = {"max_pages"}
+OPTION_KEYS = {"max_pages", "max_calls"}
+#: Hard ceiling for the per-case `max_calls` option (the default budget is 10).
+MAX_CALLS_CEILING = 30
 
 CONFIDENCES = frozenset({"high", "medium", "low"})
 TIERS = frozenset({"easy", "medium", "hard"})
@@ -219,8 +221,13 @@ class Suite:
         }
 
 
+CRLF = bytes([13, 10])
+LF = bytes([10])
+
+
 def file_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    # Hash the content, not the checkout: CRLF and LF copies of one suite must agree.
+    return hashlib.sha256(path.read_bytes().replace(CRLF, LF)).hexdigest()
 
 
 def _require_mapping(value: Any, where: str, what: str) -> dict[str, Any]:
@@ -322,6 +329,15 @@ def _parse_options(value: Any, where: str) -> dict[str, Any]:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
             _fail(f"{where}.max_pages", "must be a positive integer")
         options["max_pages"] = max_pages
+    if "max_calls" in mapping:
+        max_calls = mapping["max_calls"]
+        if (
+            isinstance(max_calls, bool)
+            or not isinstance(max_calls, int)
+            or not 1 <= max_calls <= MAX_CALLS_CEILING
+        ):
+            _fail(f"{where}.max_calls", f"must be an integer from 1 to {MAX_CALLS_CEILING}")
+        options["max_calls"] = max_calls
     return options
 
 
