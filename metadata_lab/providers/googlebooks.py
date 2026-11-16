@@ -25,20 +25,15 @@ BASE_URL = "https://www.googleapis.com/books/v1/volumes"
 MAX_RESULTS = 20
 
 _UNSUPPORTED = {
-    Operation.SERIES_MEMBERS: Unsupported(
-        reason=(
-            "volumes.list accepts only q, download, filter, langRestrict, libraryRestrict, "
-            "maxResults, orderBy, partner, printType, projection, showPreorders, source and "
-            "startIndex. There is no series parameter and the Books API has no series entity."
-        ),
-        source_url="https://developers.google.com/books/docs/v1/reference/volumes/list",
-    ),
     Operation.AUTHOR_SERIES: Unsupported(
         reason=(
-            "The Books API has no series concept: the Volume resource lists no series field and "
-            "no series endpoint exists."
+            "No documented author-to-series query. Books does have series data (volumeInfo.seriesInfo, "
+            "series.get and series.membership.get), but nothing takes an author: volumes.list has no "
+            "series or author-id parameter, so series for an author would need a per-volume lookup "
+            "that this lab does not perform. Whether volumes.list returns usable seriesInfo is "
+            "unverified."
         ),
-        source_url="https://developers.google.com/books/docs/v1/reference/volumes",
+        source_url="https://developers.google.com/books/docs/v1/reference/volumes/list",
     ),
     Operation.AUTHOR_RESOLVE: Unsupported(
         reason=(

@@ -239,6 +239,27 @@ def test_series_for_book_and_members_keep_positions_as_strings():
     assert members[0].ordering_scheme == "provider_default"
 
 
+def test_series_members_by_series_id_queries_that_id_not_a_name():
+    transport = GraphQLTransport()
+
+    records = ADAPTER.series_members(make_ctx(transport), Query(provider_id="7"))
+
+    sent = transport.requests[-1]["body"]
+    assert "MetadataLabSeriesMembersById" in sent["query"]
+    assert sent["variables"] == {"id": 7}
+    assert [member.position for member in records[0].members] == ["1", "3.5"]
+
+
+def test_series_members_by_name_still_uses_the_name_query():
+    transport = GraphQLTransport()
+
+    ADAPTER.series_members(make_ctx(transport), Query(series="The Empyrean", provider_id="x"))
+
+    sent = transport.requests[-1]["body"]
+    assert "MetadataLabSeriesMembers(" in sent["query"]
+    assert sent["variables"] == {"name": "The Empyrean"}
+
+
 def test_author_operations():
     transport = GraphQLTransport()
     ctx = make_ctx(transport)
@@ -364,6 +385,7 @@ def _top_level_fields(document: str) -> list[str]:
         "EDITION_BY_ISBN_QUERY",
         "BOOK_SERIES_QUERY",
         "SERIES_MEMBERS_QUERY",
+        "SERIES_MEMBERS_BY_ID_QUERY",
         "AUTHOR_WORKS_QUERY",
         "AUTHOR_SERIES_QUERY",
         "ME_QUERY",

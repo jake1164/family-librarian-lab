@@ -143,7 +143,6 @@ def test_missing_key_is_an_auth_error():
 
 def test_unsupported_operations_are_declared_with_citations():
     for operation in (
-        Operation.SERIES_MEMBERS,
         Operation.AUTHOR_SERIES,
         Operation.AUTHOR_RESOLVE,
     ):
@@ -154,6 +153,10 @@ def test_unsupported_operations_are_declared_with_citations():
 
 
 def test_unclear_operations_stay_not_implemented():
+    # series_members: the generated Books schema documents series.membership.get (access with
+    # an API key is unverified), so it is our gap, not a verdict on the provider.
+    assert ADAPTER.declared_support(Operation.SERIES_MEMBERS) == "not_implemented"
+    assert Operation.SERIES_MEMBERS not in ADAPTER.unsupported
     # series_for_book is undocumented, not impossible: our adapter has not built it.
     assert ADAPTER.implements(Operation.SERIES_FOR_BOOK) is False
     assert ADAPTER.declared_support(Operation.SERIES_FOR_BOOK) == "not_implemented"

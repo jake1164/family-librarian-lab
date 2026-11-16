@@ -41,8 +41,13 @@ class SampleTransport:
         if "/search/authors.json" in url:
             return sample("author_resolve__rebecca-yarros.json")
         if "/search.json" in url:
-            if str(params.get("q", "")).startswith("series:"):
-                return sample("series_members__the-empyrean.json")
+            query = str(params.get("q", ""))
+            if query.startswith("series_key:"):
+                return sample("series_members__the-empyrean-keyed.json")
+            if query.startswith("series_name:"):
+                return sample("series_members__the-empyrean-keyed.json")
+            if "series_key" in str(params.get("fields", "")) and params.get("limit") == 1:
+                return sample("series_for_book__fourth-wing.json")
             return sample("book_by_title__fourth-wing.json")
         if "/authors/OL7825177A/works.json" in url:
             return sample("author_works__OL7825177A.json")
@@ -136,42 +141,88 @@ def test_series_for_book_reads_the_edition_series_field():
     assert records[0].members == []
 
 
-def test_series_for_book_uses_the_cases_isbn_first():
+def test_series_for_book_is_one_search_with_series_fields():
     transport = SampleTransport()
     ctx = make_ctx(transport)
 
-    records = ADAPTER.series_for_book(ctx, Query(title="Fourth Wing", isbn="9781649374042"))
+    records = ADAPTER.series_for_book(ctx, Query(title="Fourth Wing", author="Yarros"))
 
-    assert [record.name for record in records] == ["The Empyrean"]
-    # The ISBN edition answered directly: one call, no search needed.
+    assert [(r.provider_id, r.name) for r in records] == [("OL331363L", "The Empyrean")]
+    # One request: no edition probing.
     assert len(transport.requests) == 1
+    assert "series_key" in transport.requests[0][2]["fields"]
 
 
-def test_series_for_book_returns_nothing_when_no_edition_has_series():
-    edition = json.loads(sample("book_by_isbn__9781649374042.json"))
-    edition.pop("series")
-    transport = SampleTransport(
-        overrides={
-            "/isbn/": (404, '{"error": "notfound"}'),
-            "/books/": (200, json.dumps(edition)),
-        }
-    )
+def test_series_for_book_uses_the_isbn_in_the_same_single_search():
+    transport = SampleTransport()
     ctx = make_ctx(transport)
 
-    assert ADAPTER.series_for_book(ctx, Query(title="Fourth Wing", author="Yarros")) == []
-    assert any("series data" in note for note in ctx.notes)
+    ADAPTER.series_for_book(ctx, Query(title="Fourth Wing", isbn="978-1-64937-404-2"))
+
+    assert len(transport.requests) == 1
+    assert transport.requests[0][2]["q"] == "isbn:9781649374042"
 
 
-def test_series_members_lists_works_and_admits_no_positions():
-    ctx = make_ctx(SampleTransport())
+def test_series_for_book_returns_nothing_when_the_top_hit_has_no_series():
+    body = json.dumps({"docs": [{"key": "/works/OL1W", "title": "Fourth Wing (Collection)"}]})
+    ctx = make_ctx(SampleTransport(overrides={"/search.json": (200, body)}))
+
+    assert ADAPTER.series_for_book(ctx, Query(title="Fourth Wing")) == []
+    assert any("no series data" in note for note in ctx.notes)
+
+
+def test_series_members_by_key_carry_positions_in_order():
+    transport = SampleTransport()
+    ctx = make_ctx(transport)
+
+    records = ADAPTER.series_members(ctx, Query(provider_id="OL331363L"))
+
+    assert len(records) == 1 and records[0].provider_id == "OL331363L"
+    assert [(m.title, m.position) for m in records[0].members] == [
+        ("Fourth Wing", "1"),
+        ("Iron Flame", "2"),
+        ("Onyx Storm", "3"),
+    ]
+    assert transport.requests[0][2]["q"] == "series_key:OL331363L"
+    assert ctx.truncated is False
+
+
+def test_series_members_by_name_keep_exact_name_matches_only():
+    longer = json.dumps(
+        {
+            "numFound": 2,
+            "docs": [
+                {"key": "/works/OL1W", "title": "A", "series_key": ["OL1L"],
+                 "series_name": ["The Empyrean"], "series_position": ["1"]},
+                {"key": "/works/OL2W", "title": "B", "series_key": ["OL2L"],
+                 "series_name": ["The Empyrean Chronicles"], "series_position": ["1"]},
+            ],
+        }
+    )
+    ctx = make_ctx(SampleTransport(overrides={"/search.json": (200, longer)}))
 
     records = ADAPTER.series_members(ctx, Query(series="The Empyrean"))
 
-    assert len(records) == 1
-    members = records[0].members
-    assert "Fourth Wing" in [member.title for member in members]
-    assert all(member.position is None for member in members)
-    assert ctx.truncated is False
+    assert [(r.provider_id, [m.title for m in r.members]) for r in records] == [("OL1L", ["A"])]
+
+
+def test_series_members_same_name_in_two_series_stays_two_records():
+    body = json.dumps(
+        {
+            "numFound": 2,
+            "docs": [
+                {"key": "/works/OL1W", "title": "A", "series_key": ["OL1L"],
+                 "series_name": ["Shared"], "series_position": ["1"]},
+                {"key": "/works/OL2W", "title": "B", "series_key": ["OL2L"],
+                 "series_name": ["Shared"], "series_position": ["1"]},
+            ],
+        }
+    )
+    ctx = make_ctx(SampleTransport(overrides={"/search.json": (200, body)}))
+
+    records = ADAPTER.series_members(ctx, Query(series="Shared"))
+
+    assert sorted(r.provider_id for r in records) == ["OL1L", "OL2L"]
 
 
 def test_author_resolve_normalises_keys_and_aliases():
@@ -198,16 +249,10 @@ def test_author_works_returns_titles():
     assert len(records[0].works) == 10
 
 
-def test_author_series_is_declared_unsupported_with_a_citation():
-    assert ADAPTER.implements(Operation.AUTHOR_SERIES) is False
-    assert ADAPTER.declared_support(Operation.AUTHOR_SERIES) == "unsupported"
-
-    declaration = ADAPTER.unsupported[Operation.AUTHOR_SERIES]
-    assert declaration.reason.strip()
-    assert declaration.source_url.startswith("https://openlibrary.org/")
-
-    # Only author_series is a provider limitation; every other gap is ours.
-    assert set(ADAPTER.unsupported) == {Operation.AUTHOR_SERIES}
+def test_author_series_is_a_tool_gap_not_a_provider_limit():
+    # Author-filtered search returns series fields, so Open Library is not "unsupported".
+    assert ADAPTER.unsupported == {}
+    assert ADAPTER.declared_support(Operation.AUTHOR_SERIES) == "not_implemented"
     assert ADAPTER.declared_support(Operation.SERIES_MEMBERS) == "supported"
 
 

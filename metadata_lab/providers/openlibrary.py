@@ -2,8 +2,10 @@
 
 Written from the samples saved in Phase 0 (`metadata_lab/samples/openlibrary/`)
 and the documentation recorded in `.ai_docs/metadata-lab-provider-notes.md`.
-Open Library has no first-class series entity, so series data comes from the
-edition's ``series`` strings and from ``search.json?q=series:"…"``.
+Open Library indexes each work's series (``series_key`` / ``series_name`` /
+``series_position``, parallel lists) in ``search.json``, so series questions are
+answered by ONE search request instead of probing editions one by one. A
+``/books/<id>`` path given as an explicit id is still read directly (one request).
 """
 
 from __future__ import annotations
@@ -31,7 +33,9 @@ SEARCH_FIELDS = (
     "isbn,publisher,publish_date,number_of_pages_median,language,cover_i,edition_key"
 )
 WORK_FIELDS = "key,title,author_name,author_key,edition_key"
-SERIES_FIELDS = "key,title,author_name"
+SERIES_FIELDS = (
+    "key,title,author_name,author_key,series_key,series_name,series_position"
+)
 AUTHOR_FIELDS = "key,name,alternate_names"
 SEARCH_LIMIT = 5
 SERIES_PAGE_LIMIT = 100
@@ -40,6 +44,7 @@ WORKS_PAGE_LIMIT = 50
 #: `"The Empyrean (#1)"` / `"The Empyrean (#3.5)"` -> name + position.
 _SERIES_POSITION = re.compile(r"^(?P<name>.*?)\s*\(#?(?P<position>\d+(?:\.\d+)?)\)\s*$")
 _SERIES_POSITION_ONLY = re.compile(r"^#?(?P<position>\d+(?:\.\d+)?)$")
+_SERIES_OLID = re.compile(r"^OL\d+L$")
 
 
 #: Open Library types an edition's ``physical_format`` as free text; map the
@@ -130,6 +135,30 @@ def _series_refs(values: Any) -> list[SeriesRef]:
             continue
         refs.append(SeriesRef(name=text))
     return refs
+
+
+def _doc_series(doc: Mapping[str, Any]) -> list[tuple[str, str, str | None]]:
+    """``(key, name, position)`` per series of a search doc (the lists are parallel)."""
+
+    keys = doc.get("series_key") if isinstance(doc.get("series_key"), list) else []
+    names = doc.get("series_name") if isinstance(doc.get("series_name"), list) else []
+    positions = doc.get("series_position") if isinstance(doc.get("series_position"), list) else []
+    result: list[tuple[str, str, str | None]] = []
+    for index, raw_key in enumerate(keys):
+        key = _text(raw_key)
+        if not key:
+            continue
+        name = _text(names[index]) if index < len(names) else None
+        position = _text(positions[index]) if index < len(positions) else None
+        result.append((key, name or key, position))
+    return result
+
+
+def _position_sort(member: SeriesMember) -> tuple[int, float]:
+    try:
+        return (0, float(member.position or ""))
+    except ValueError:
+        return (1, 0.0)
 
 
 def _olid(value: Any) -> str:
@@ -251,7 +280,7 @@ def _normalise_edition(
 class OpenLibraryAdapter(ProviderAdapter):
     id: ClassVar[str] = "openlibrary"
     display_name: ClassVar[str] = "Open Library"
-    adapter_version: ClassVar[str] = "1"
+    adapter_version: ClassVar[str] = "2"
     credential_env: ClassVar[str | None] = None  # keyless
     #: Verified by the live Fourth Wing run on 2026-11-14 (six operations answered).
     VERIFIED_LIVE: ClassVar[bool] = True
@@ -260,21 +289,10 @@ class OpenLibraryAdapter(ProviderAdapter):
     #: doc's engineering margin between the two, not an Open Library quota.
     min_interval_s: ClassVar[float] = 2.0
 
-    #: Every other gap below is our adapter's, not the provider's. ``author_series``
-    #: is the exception: no author->series endpoint exists, and series data is only
-    #: free text on individual editions.
-    unsupported: ClassVar[dict[Operation, Unsupported]] = {
-        Operation.AUTHOR_SERIES: Unsupported(
-            reason=(
-                "The API index lists no author-to-series endpoint. Series data exists only as "
-                "free-text strings on individual editions (\"The Empyrean (#1)\"), and the Books "
-                "API does not document that field. Answering author_series would need an "
-                "undocumented fan-out over the author's works and each work's editions, and no "
-                "endpoint supplies series member positions."
-            ),
-            source_url="https://openlibrary.org/developers/api#api-index",
-        )
-    }
+    #: Nothing is declared unsupported. ``author_series`` has no dedicated endpoint, but an
+    #: author-filtered ``search.json`` returns each work's series fields in one paginated
+    #: sequence; this adapter just does not deduplicate them yet (a gap in this tool).
+    unsupported: ClassVar[dict[Operation, Unsupported]] = {}
 
     def check_connection(self, ctx: OpContext) -> str:
         payload = ctx.get_json(
@@ -312,73 +330,114 @@ class OpenLibraryAdapter(ProviderAdapter):
         return [_normalise_edition(raw, self._author_names(ctx, raw))]
 
     def series_for_book(self, ctx: OpContext, q: Query) -> list[SeriesRecord]:
-        raw = self._edition_for_book(ctx, q)
-        if raw is None:
+        if q.provider_id:
+            # An explicit id is one direct read of that edition's free-text ``series``.
+            path = str(q.provider_id)
+            if not path.startswith("/"):
+                path = f"/books/{path}" if path.startswith("OL") else path
+            raw = _payload_dict(ctx.get_json(f"{BASE_URL}{path}.json"), "edition")
+            refs = _series_refs(raw.get("series"))
+            authors = [
+                str(entry.get("key") or "")
+                for entry in raw.get("authors") or []
+                if isinstance(entry, Mapping)
+            ]
+            return [
+                SeriesRecord(provider_id=ref.name, name=ref.name, authors=authors, members=[])
+                for ref in refs
+            ]
+        params: dict[str, Any] = {"limit": 1, "fields": SERIES_FIELDS}
+        if q.isbn:
+            params["q"] = f"isbn:{_digits(q.isbn)}"
+        elif q.title:
+            params["title"] = q.title
+            if q.author:
+                params["author"] = q.author
+        else:
             return []
-        refs = _series_refs(raw.get("series"))
-        if not refs:
+        docs = _docs(ctx.get_json(f"{BASE_URL}/search.json", params=params), "series search")
+        if not docs:
             return []
-        authors = [
-            str(entry.get("key") or "") for entry in raw.get("authors") or [] if isinstance(entry, Mapping)
+        doc = docs[0]
+        authors = [f"/authors/{_digits_or_text(key)}" for key in doc.get("author_key") or []]
+        records = [
+            SeriesRecord(
+                provider_id=key,
+                name=name,
+                authors=authors,
+                members=[],
+                source_url=f"{BASE_URL}/series/{key}",
+            )
+            for key, name, _position in _doc_series(doc)
         ]
-        # Open Library has no series entity or id; the name is the only handle.
-        return [
-            SeriesRecord(provider_id=ref.name, name=ref.name, authors=authors, members=[])
-            for ref in refs
-        ]
+        if not records:
+            ctx.note("the top search hit carries no series data")
+        return records
 
     def series_members(self, ctx: OpContext, q: Query) -> list[SeriesRecord]:
-        name = q.series or q.provider_id
-        if not name:
+        handle = (q.provider_id or "").strip()
+        keyed = bool(_SERIES_OLID.match(handle))
+        name = q.series or (None if keyed else handle) or ""
+        if not keyed and not name:
             return []
-        members: list[SeriesMember] = []
+        query = f"series_key:{handle}" if keyed else f'series_name:"{name}"'
+        wanted = name.casefold()
+        groups: dict[str, tuple[str, list[SeriesMember]]] = {}
         complete = False
+        retrieved = 0
         for page in range(1, ctx.max_pages + 1):
             payload = ctx.get_json(
                 f"{BASE_URL}/search.json",
                 params={
-                    "q": f'series:"{name}"',
+                    "q": query,
                     "page": page,
                     "limit": SERIES_PAGE_LIMIT,
                     "fields": SERIES_FIELDS,
                 },
             )
             docs = _docs(payload, "series search")
-            members.extend(
-                SeriesMember(
-                    title=_text(doc.get("title")) or "",
-                    position=None,  # search.json does not return positions
-                    provider_id=str(doc.get("key") or ""),
-                    # No typed classification, member author or date in this response.
-                    work_type="unknown",
-                    source_url=f"{BASE_URL}{doc.get('key') or ''}" if doc.get("key") else None,
-                )
-                for doc in docs
-            )
+            retrieved += len(docs)
+            for doc in docs:
+                for key, series_name, position in _doc_series(doc):
+                    # The phrase query can match a longer series name; keep exact matches.
+                    if (keyed and key != handle) or (not keyed and series_name.casefold() != wanted):
+                        continue
+                    members = groups.setdefault(key, (series_name, []))[1]
+                    members.append(
+                        SeriesMember(
+                            title=_text(doc.get("title")) or "",
+                            position=position,
+                            provider_id=str(doc.get("key") or ""),
+                            authors=[
+                                n for n in (_text(a) for a in doc.get("author_name") or []) if n
+                            ],
+                            # No typed classification or date in this response.
+                            work_type="unknown",
+                            source_url=f"{BASE_URL}{doc.get('key')}" if doc.get("key") else None,
+                        )
+                    )
             num_found = payload.get("numFound") if isinstance(payload, Mapping) else None
             ctx.note_pagination(
                 page,
                 size=SERIES_PAGE_LIMIT,
                 total=num_found if isinstance(num_found, int) else None,
-                retrieved=len(members),
+                retrieved=retrieved,
             )
-            reached_end = len(docs) < SERIES_PAGE_LIMIT or (
+            if len(docs) < SERIES_PAGE_LIMIT or (
                 isinstance(num_found, int) and page * SERIES_PAGE_LIMIT >= num_found
-            )
-            if reached_end:
+            ):
                 complete = True
                 break
-        if not complete and members:
-            ctx.mark_truncated(f"stopped after {ctx.max_pages} page(s) of series {name!r}")
-        if not members:
-            return []
+        if not complete and groups:
+            ctx.mark_truncated(f"stopped after {ctx.max_pages} page(s) of series {handle or name!r}")
         return [
             SeriesRecord(
-                provider_id=name,
-                name=name,
-                members=members,
-                source_url=f'{BASE_URL}/search.json?q=series:"{name}"',
+                provider_id=key,
+                name=series_name,
+                members=sorted(members, key=_position_sort),
+                source_url=f"{BASE_URL}/series/{key}",
             )
+            for key, (series_name, members) in groups.items()
         ]
 
     def author_resolve(self, ctx: OpContext, q: Query) -> list[AuthorRecord]:
@@ -467,55 +526,6 @@ class OpenLibraryAdapter(ProviderAdapter):
         if text.startswith("OL"):
             return f"/authors/{text}"
         return text
-
-    def _edition_for_book(self, ctx: OpContext, q: Query) -> Mapping[str, Any] | None:
-        """Find an edition for a book, preferring one that carries series data.
-
-        Open Library stores ``series`` on *some* editions only, so an explicit id
-        wins, then the case's ISBN, then the first few search hits — stopping at
-        the first edition that actually has a series. Bounded by the call budget.
-        """
-
-        if q.provider_id:
-            path = str(q.provider_id)
-            if not path.startswith("/"):
-                path = f"/books/{path}" if path.startswith("OL") else path
-            payload = ctx.get_json(f"{BASE_URL}{path}.json")
-            return _payload_dict(payload, "edition")
-
-        fallback: Mapping[str, Any] | None = None
-        if q.isbn:
-            isbn = _digits(q.isbn)
-            try:
-                payload = ctx.get_json(f"{BASE_URL}/isbn/{isbn}.json")
-            except ProviderError as exc:
-                if not (exc.kind is ErrorKind.HTTP and "HTTP 404" in exc.message):
-                    raise
-                ctx.note(f"no edition for ISBN {isbn}")
-            else:
-                candidate = _payload_dict(payload, "edition")
-                if _series_refs(candidate.get("series")):
-                    return candidate
-                fallback = candidate
-
-        if not q.title:
-            return fallback
-        params: dict[str, Any] = {"title": q.title, "limit": 1, "fields": WORK_FIELDS}
-        if q.author:
-            params["author"] = q.author
-        docs = _docs(ctx.get_json(f"{BASE_URL}/search.json", params=params), "search")
-        if not docs:
-            return fallback
-        edition_keys = [key for key in docs[0].get("edition_key") or [] if key][:3]
-        for key in edition_keys:
-            payload = ctx.get_json(f"{BASE_URL}/books/{key}.json")
-            candidate = _payload_dict(payload, "edition")
-            if _series_refs(candidate.get("series")):
-                return candidate
-            if fallback is None:
-                fallback = candidate
-        ctx.note("no edition among the first search hits carried series data")
-        return fallback
 
     def _author_names(self, ctx: OpContext, edition: Mapping[str, Any]) -> dict[str, str]:
         """Edition documents carry author *keys* only; resolve up to three names."""

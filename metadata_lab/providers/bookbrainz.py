@@ -1,8 +1,11 @@
 """BookBrainz adapter. Keyless.
 
 Implemented from the samples saved in Phase 0/5 and the OpenAPI document served
-at `https://api.bookbrainz.org/1/docs/`. Every entity is a UUID ``bbid``; the
-facts we need (series membership, authorship) live in ``/relationships``.
+at `https://api.bookbrainz.org/1/docs/`. Every entity is a UUID ``bbid``. Series
+membership and authorship come from the direct browse routes
+(``/series?work=``, ``/work?series=``, ``/work?author=``), each of which returns
+the related entities with their names in ONE request, so no operation fans out
+over the related records.
 """
 
 from __future__ import annotations
@@ -26,15 +29,6 @@ from .base import ProviderAdapter, Unsupported
 BASE_URL = "https://api.bookbrainz.org/1"
 SITE_URL = "https://bookbrainz.org"
 SEARCH_SIZE = 5
-DETAIL_LOOKUPS = 3
-#: Author resolution is limited to two hits so the op stays well inside 10 calls.
-AUTHOR_LOOKUP_HITS = 2
-#: Work-title lookups per series. `series_members` also spends 3 calls (search, series, relationships), so 17
-#: fits a case that sets `options: {max_calls: 20}`; with the default 10-call budget the operation still
-#: stops early and reports `truncated` (budget reached) instead of pretending to be complete.
-TITLE_LOOKUP_LIMIT = 17
-#: Author lookups per work: one keeps the whole book_by_title inside the budget.
-AUTHORS_PER_WORK = 1
 
 #: Only "Novel" has been observed live; every other value maps only to the
 #: documented work-type vocabulary and anything unrecognised stays "unknown".
@@ -66,6 +60,11 @@ def _name(entity: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _ordering(entity: Mapping[str, Any]) -> str | None:
+    value = entity.get("seriesOrderingType")
+    return str(value).lower() if value else None
+
+
 def _results(payload: Any) -> list[Mapping[str, Any]]:
     if not isinstance(payload, Mapping):
         raise ProviderError(ErrorKind.PARSE, "search response was not an object")
@@ -77,21 +76,34 @@ def _results(payload: Any) -> list[Mapping[str, Any]]:
     return [item for item in results if isinstance(item, Mapping)]
 
 
-def _relationships(payload: Any) -> list[Mapping[str, Any]]:
+def _browsed(payload: Any, key: str) -> list[Mapping[str, Any]]:
+    """Entities from a browse response: ``{key: [{"entity": {...}, "relationship": [...]}]}``."""
+
     if not isinstance(payload, Mapping):
-        raise ProviderError(ErrorKind.PARSE, "relationships response was not an object")
-    relationships = payload.get("relationships")
-    if relationships is None:
+        raise ProviderError(ErrorKind.PARSE, "browse response was not an object")
+    items = payload.get(key)
+    if items is None:
         return []
-    if not isinstance(relationships, list):
-        raise ProviderError(ErrorKind.PARSE, "relationships response had non-list relationships")
-    return [item for item in relationships if isinstance(item, Mapping)]
+    if not isinstance(items, list):
+        raise ProviderError(ErrorKind.PARSE, f"browse response had non-list {key}")
+    entities: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        entity = item.get("entity") if isinstance(item, Mapping) else None
+        if not isinstance(entity, Mapping):
+            continue
+        bbid = str(entity.get("bbid") or "")
+        if not bbid or bbid in seen:
+            continue
+        seen.add(bbid)
+        entities.append(entity)
+    return entities
 
 
 class BookBrainzAdapter(ProviderAdapter):
     id: ClassVar[str] = "bookbrainz"
     display_name: ClassVar[str] = "BookBrainz"
-    adapter_version: ClassVar[str] = "1"
+    adapter_version: ClassVar[str] = "2"
     credential_env: ClassVar[str | None] = None  # keyless
     #: Verified by the live Fourth Wing run on 2026-11-14.
     VERIFIED_LIVE: ClassVar[bool] = True
@@ -113,13 +125,12 @@ class BookBrainzAdapter(ProviderAdapter):
         ),
         Operation.AUTHOR_SERIES: Unsupported(
             reason=(
-                "The web service exposes /search, /author/{bbid}, /edition/{bbid}, "
-                "/edition-group/{bbid}, /publisher/{bbid}, /series/{bbid} and /work/{bbid} plus "
-                "aliases/identifiers/relationships sub-paths. Authors carry no series "
-                "relationship and there is no author-to-series endpoint; the only route would be "
-                "an N-call fan-out over every work's relationships."
+                "GET /series?author={bbid} exists but returns the series the Author entity is itself "
+                "a member of (the 'Author Series' relationship, e.g. a series of authors), not the "
+                "book series of the works this author wrote. Those need an author-works browse "
+                "followed by one work-series browse per work, a fan-out this lab does not perform."
             ),
-            source_url="https://api.bookbrainz.org/1/docs/",
+            source_url="https://github.com/metabrainz/bookbrainz-site/blob/master/src/api/routes/series.js",
         ),
     }
 
@@ -139,104 +150,65 @@ class BookBrainzAdapter(ProviderAdapter):
         results = _results(payload)
         ctx.note_pagination(1, size=SEARCH_SIZE, retrieved=len(results))
         records: list[BookRecord] = []
-        for index, item in enumerate(results):
+        for item in results:
             bbid = str(item.get("bbid") or "")
             if not bbid:
                 continue
-            record = BookRecord(
-                provider_id=bbid,
-                title=_name(item) or "",
-                record_level="work",
-                source_url=f"{SITE_URL}/work/{bbid}",
+            records.append(
+                BookRecord(
+                    provider_id=bbid,
+                    title=_name(item) or "",
+                    record_level="work",
+                    source_url=f"{SITE_URL}/work/{bbid}",
+                )
             )
-            if index < DETAIL_LOOKUPS:
-                detail = self._entity(ctx, "work", bbid)
-                if detail is not None:
-                    record.work_type = _work_type(detail.get("workType"))
-                    languages = detail.get("languages") or []
-                    if isinstance(languages, list) and languages:
-                        record.language = str(languages[0])
-                if index < AUTHOR_LOOKUP_HITS:
-                    self._apply_work_authors(ctx, record, bbid)
-                elif index < DETAIL_LOOKUPS:
-                    # The hit's author reference exists in the API but the budget
-                    # does not allow following it.
-                    ctx.note_unresolved("authors", 1)
-            elif results:
-                # Beyond the classification bound: the author reference exists but
-                # was not followed.
-                ctx.note_unresolved("authors", 1)
-            records.append(record)
-        if len(results) > DETAIL_LOOKUPS:
-            ctx.mark_truncated(
-                f"classification looked up for {DETAIL_LOOKUPS} of {len(results)} search hits"
-            )
+        if records:
+            # A search hit carries no author, type or language. The references exist
+            # in the API, but following them is one request per hit, which this lab
+            # does not do; report them as not followed rather than as missing.
+            ctx.note_unresolved("authors", len(records))
         return records
 
     def series_for_book(self, ctx: OpContext, q: Query) -> list[SeriesRecord]:
         work_bbid = q.provider_id or self._find_bbid(ctx, "work", q.title)
         if not work_bbid:
             return []
-        relationships = _relationships(
-            ctx.get_json(f"{BASE_URL}/work/{work_bbid}/relationships")
-        )
-        series_ids = [
-            str(item.get("targetBbid"))
-            for item in relationships
-            if item.get("relationshipTypeName") == "Work Series"
-            and str(item.get("targetEntityType")).lower() == "series"
-            and item.get("targetBbid")
-        ]
-        records: list[SeriesRecord] = []
-        for series_id in dict.fromkeys(series_ids):
-            detail = self._entity(ctx, "series", series_id)
-            records.append(
-                SeriesRecord(
-                    provider_id=series_id,
-                    name=(_name(detail) if detail else None) or series_id,
-                    source_url=f"{SITE_URL}/series/{series_id}",
-                )
+        entities = _browsed(ctx.get_json(f"{BASE_URL}/series", params={"work": work_bbid}), "series")
+        ctx.note_pagination(1, retrieved=len(entities), total=len(entities))
+        return [
+            SeriesRecord(
+                provider_id=str(entity["bbid"]),
+                name=_name(entity) or str(entity["bbid"]),
+                ordering_scheme=_ordering(entity),
+                source_url=f"{SITE_URL}/series/{entity['bbid']}",
             )
-        return records
+            for entity in entities
+        ]
 
     def series_members(self, ctx: OpContext, q: Query) -> list[SeriesRecord]:
         series_id = q.provider_id or self._find_bbid(ctx, "series", q.series)
         if not series_id:
             return []
         detail = self._entity(ctx, "series", series_id)
-        relationships = _relationships(
-            ctx.get_json(f"{BASE_URL}/series/{series_id}/relationships")
-        )
-        work_ids = [
-            str(item.get("targetBbid"))
-            for item in relationships
-            if str(item.get("targetEntityType")).lower() == "work" and item.get("targetBbid")
+        entities = _browsed(ctx.get_json(f"{BASE_URL}/work", params={"series": series_id}), "works")
+        ctx.note_pagination(1, retrieved=len(entities), total=len(entities))
+        members = [
+            SeriesMember(
+                title=_name(work) or str(work["bbid"]),
+                # The browse response carries no ordinal: positions are not exposed.
+                position=None,
+                provider_id=str(work["bbid"]),
+                work_type=_work_type(work.get("workType")),
+                source_url=f"{SITE_URL}/work/{work['bbid']}",
+            )
+            for work in entities
         ]
-        work_ids = list(dict.fromkeys(work_ids))
-        ctx.note_pagination(1, retrieved=len(work_ids), total=len(work_ids))
-        if len(work_ids) > TITLE_LOOKUP_LIMIT:
-            ctx.mark_truncated(
-                f"member titles limited to {TITLE_LOOKUP_LIMIT} of {len(work_ids)} works"
-            )
-        members: list[SeriesMember] = []
-        for work_id in work_ids[:TITLE_LOOKUP_LIMIT]:
-            work = self._entity(ctx, "work", work_id)
-            members.append(
-                SeriesMember(
-                    title=(_name(work) if work else None) or work_id,
-                    # The API exposes no ordinal; the sample series is Automatic.
-                    position=None,
-                    provider_id=work_id,
-                    work_type=_work_type(work.get("workType")) if work else "unknown",
-                    source_url=f"{SITE_URL}/work/{work_id}",
-                )
-            )
         return [
             SeriesRecord(
                 provider_id=series_id,
                 name=(_name(detail) if detail else None) or (q.series or series_id),
                 members=members,
-                ordering_scheme=(str(detail.get("seriesOrderingType")).lower() if detail and detail.get("seriesOrderingType") else None),
+                ordering_scheme=_ordering(detail) if detail else None,
                 source_url=f"{SITE_URL}/series/{series_id}",
             )
         ]
@@ -263,61 +235,18 @@ class BookBrainzAdapter(ProviderAdapter):
         author_id = q.provider_id or self._find_bbid(ctx, "author", q.author)
         if not author_id:
             return []
-        relationships = _relationships(
-            ctx.get_json(f"{BASE_URL}/author/{author_id}/relationships")
-        )
-        work_ids = [
-            str(item.get("targetBbid"))
-            for item in relationships
-            if str(item.get("targetEntityType")).lower() == "work" and item.get("targetBbid")
-        ]
-        work_ids = list(dict.fromkeys(work_ids))
-        ctx.note_pagination(1, retrieved=len(work_ids), total=len(work_ids))
-        if len(work_ids) > TITLE_LOOKUP_LIMIT:
-            ctx.mark_truncated(
-                f"titles limited to {TITLE_LOOKUP_LIMIT} of {len(work_ids)} works"
-            )
-        titles: list[str] = []
-        for work_id in work_ids[:TITLE_LOOKUP_LIMIT]:
-            work = self._entity(ctx, "work", work_id)
-            titles.append((_name(work) if work else None) or work_id)
+        entities = _browsed(ctx.get_json(f"{BASE_URL}/work", params={"author": author_id}), "works")
+        ctx.note_pagination(1, retrieved=len(entities), total=len(entities))
         return [
             AuthorRecord(
                 provider_id=author_id,
                 name=q.author or "",
-                works=titles,
+                works=[_name(work) or str(work["bbid"]) for work in entities],
                 source_url=f"{SITE_URL}/author/{author_id}",
             )
         ]
 
     # -- helpers -----------------------------------------------------------------
-
-    def _apply_work_authors(
-        self, ctx: OpContext, record: BookRecord, work_bbid: str
-    ) -> None:
-        """Resolve up to ``AUTHORS_PER_WORK`` authors from the work's relationships."""
-
-        relationships = _relationships(
-            ctx.get_json(f"{BASE_URL}/work/{work_bbid}/relationships")
-        )
-        author_ids = [
-            str(item.get("targetBbid"))
-            for item in relationships
-            if str(item.get("targetEntityType")).lower() == "author" and item.get("targetBbid")
-        ]
-        author_ids = list(dict.fromkeys(author_ids))
-        if len(author_ids) > AUTHORS_PER_WORK:
-            ctx.note_unresolved("authors", len(author_ids) - AUTHORS_PER_WORK)
-        names: list[str] = []
-        for author_id in author_ids[:AUTHORS_PER_WORK]:
-            entity = self._entity(ctx, "author", author_id)
-            name = _name(entity) if entity else None
-            if name:
-                names.append(name)
-            else:
-                ctx.note_unresolved("authors", 1)
-        record.authors = names
-        record.author_ids = author_ids[:AUTHORS_PER_WORK]
 
     def _entity(self, ctx: OpContext, kind: str, bbid: str) -> Mapping[str, Any] | None:
         payload = ctx.get_json(f"{BASE_URL}/{kind}/{bbid}")

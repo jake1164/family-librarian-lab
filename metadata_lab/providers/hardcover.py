@@ -82,9 +82,7 @@ query MetadataLabBookSeries($title: String!) {
 }
 """
 
-SERIES_MEMBERS_QUERY = """
-query MetadataLabSeriesMembers($name: String!) {
-  series(where: {name: {_eq: $name}, books_count: {_gt: 0}}, limit: 5) {
+_SERIES_MEMBERS_FIELDS = """
     id
     name
     books_count
@@ -101,9 +99,30 @@ query MetadataLabSeriesMembers($name: String!) {
       compilation
       book { id title slug }
     }
-  }
+"""
+
+SERIES_MEMBERS_QUERY = (
+    """
+query MetadataLabSeriesMembers($name: String!) {
+  series(where: {name: {_eq: $name}, books_count: {_gt: 0}}, limit: 5) {"""
+    + _SERIES_MEMBERS_FIELDS
+    + """  }
 }
 """
+)
+
+#: Lookup by the provider's own series id (what ``series_for_book`` returns), so two series that
+#: share a name are never merged or confused. Written from the name-based query's shape; the
+#: ``id`` filter has not been checked against a live token.
+SERIES_MEMBERS_BY_ID_QUERY = (
+    """
+query MetadataLabSeriesMembersById($id: Int!) {
+  series(where: {id: {_eq: $id}}, limit: 1) {"""
+    + _SERIES_MEMBERS_FIELDS
+    + """  }
+}
+"""
+)
 
 AUTHOR_WORKS_QUERY = """
 query MetadataLabAuthorWorks($slug: String!) {
@@ -355,10 +374,17 @@ class HardcoverAdapter(ProviderAdapter):
         return records
 
     def series_members(self, ctx: OpContext, q: Query) -> list[SeriesRecord]:
-        name = q.series or q.provider_id
+        handle = str(q.provider_id or "").strip()
+        name = q.series or handle
         if not name:
             return []
-        data = _payload_data(self._post(ctx, SERIES_MEMBERS_QUERY, {"name": name}))
+        if handle.isdigit():
+            # A series id from series_for_book: look that exact series up.
+            data = _payload_data(
+                self._post(ctx, SERIES_MEMBERS_BY_ID_QUERY, {"id": int(handle)})
+            )
+        else:
+            data = _payload_data(self._post(ctx, SERIES_MEMBERS_QUERY, {"name": name}))
         series_list = data.get("series")
         records: list[SeriesRecord] = []
         for series in series_list if isinstance(series_list, list) else []:
