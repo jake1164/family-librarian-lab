@@ -13,6 +13,8 @@ from typing import Any, Mapping, Sequence
 
 from .export import EXCLUDED_FROM_CAPABILITY
 from .measurements import DIMENSIONS as MEASUREMENT_DIMENSIONS
+from .measurements import operation_fixture_counts
+from .model import Operation
 
 OUTCOME_CLASS = {
     "ok": "ok",
@@ -29,6 +31,15 @@ OUTCOME_CLASS = {
     "error": "error",
 }
 
+#: Badge classes for an adapter's *declaration* (a static provider capability,
+#: not the outcome of one run). ``not_implemented`` is kept visually distinct
+#: from ``unsupported``: one is a gap in this tool, the other a provider limit.
+DECLARED_CLASS = {
+    "supported": "ok",
+    "unsupported": "excluded",
+    "not_implemented": "toolgap",
+}
+
 _STYLE = """
 :root { color-scheme: light dark; }
 body { font-family: system-ui, sans-serif; margin: 1.5rem; line-height: 1.35; }
@@ -43,6 +54,7 @@ th { background: #8881; }
 .ok { background: #1b7f3b22; } .partial { background: #1565c022; } .differs { background: #a15c0022; }
 .ambiguous { background: #6a1b9a22; } .incomplete { background: #00796b22; } .notfound { background: #61616122; }
 .review { background: #4a148c22; } .excluded { background: #9e9e9e1a; color: #555; } .error { background: #b71c1c22; }
+.toolgap { background: #455a6422; }
 .banner { border-left: 4px solid #a15c00; background: #a15c0015; padding: .4rem .6rem; margin: .4rem 0; }
 .banner.info { border-color: #1565c0; background: #1565c015; }
 .banner.review { border-color: #4a148c; background: #4a148c15; }
@@ -60,6 +72,75 @@ def _e(value: Any) -> str:
 
 def _badge(outcome: str) -> str:
     return f'<span class="badge {OUTCOME_CLASS.get(outcome, "excluded")}">{_e(outcome)}</span>'
+
+
+def _declared_badge(declared: str) -> str:
+    return f'<span class="badge {DECLARED_CLASS.get(declared, "excluded")}">{_e(declared)}</span>'
+
+
+def _declarations(document: Mapping[str, Any]) -> str:
+    """Provider x operation capabilities, read from the adapters' declarations."""
+
+    providers = document.get("providers", []) or []
+    head = "".join(f"<th>{_e(entry.get('id'))}</th>" for entry in providers)
+    rows: list[str] = []
+    for operation in Operation:
+        cells: list[str] = []
+        for entry in providers:
+            declared = (entry.get("declared") or {}).get(operation.value)
+            if declared in DECLARED_CLASS:
+                cells.append(f"<td>{_declared_badge(declared)}</td>")
+            else:
+                cells.append('<td class="excluded">-</td>')
+        rows.append(f"<tr><th>{_e(operation.value)}</th>{''.join(cells)}</tr>")
+    citations: list[str] = []
+    for entry in providers:
+        for operation, declaration in sorted((entry.get("unsupported_reasons") or {}).items()):
+            citations.append(
+                f"<tr><th>{_e(entry.get('id'))}</th><td>{_e(operation)}</td>"
+                f"<td>{_e(declaration.get('reason'))}</td>"
+                f"<td>{_e(declaration.get('source_url'))}</td></tr>"
+            )
+    cited = (
+        "<details><summary>Cited unsupported declarations</summary>"
+        "<table><tr><th>provider</th><th>operation</th><th>reason</th><th>source</th></tr>"
+        f"{''.join(citations)}</table></details>"
+        if citations
+        else ""
+    )
+    return (
+        "<h2>Capability declarations</h2>"
+        '<p class="note">What each adapter says the <em>provider</em> can do, read from the '
+        "adapters' declarations rather than from this run's outcomes. "
+        "<code>not_implemented</code> is a gap in this tool; <code>unsupported</code> is a cited "
+        "provider limitation. A dash means the provider entry carries no declaration. This is "
+        "not a ranking.</p>"
+        f"<table><tr><th>operation</th>{head}</tr>{''.join(rows)}</table>"
+        f"{cited}"
+    )
+
+
+def _operation_fixtures(document: Mapping[str, Any]) -> str:
+    """How many fixtures in the loaded suite exercise each operation."""
+
+    counts = operation_fixture_counts(document.get("cases") or [])
+    suite = document.get("suite") or {}
+    label = (
+        f"{_e(suite.get('name'))} (v{_e(suite.get('version'))})"
+        if suite.get("name")
+        else "the loaded suite"
+    )
+    rows = "".join(
+        f"<tr><th>{_e(operation)}</th><td>{count}</td></tr>"
+        for operation, count in counts.items()
+    )
+    return (
+        "<h2>Fixture coverage</h2>"
+        f'<p class="note">Fixtures in {label} that exercise each operation: a declared '
+        "operation, or one a traversal step performed. Zero means the loaded fixtures say "
+        "nothing about that operation; it is not a provider judgement.</p>"
+        f"<table><tr><th>operation</th><th>fixtures</th></tr>{rows}</table>"
+    )
 
 
 def _banners(document: Mapping[str, Any]) -> str:
@@ -324,6 +405,7 @@ def render_report(document: Mapping[str, Any]) -> str:
         f"<title>{_e(title)}</title><style>{_STYLE}</style></head><body>"
         f"{header}{_banners(document)}"
         f"<h2>Providers</h2><ul>{providers}</ul>"
+        f"{_declarations(document)}{_operation_fixtures(document)}"
         f"{_matrix(document)}{_best_per_capability(document)}{_tallies(document)}"
         f"{_measurements(document)}"
         f"<h2>Cases</h2>{cases}"

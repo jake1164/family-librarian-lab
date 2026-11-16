@@ -83,8 +83,31 @@ def _document() -> dict[str, Any]:
         },
         "suite": {"name": "demo", "version": 1, "source": "memory", "sha256": "0" * 64},
         "providers": [
-            {"id": "alpha", "display_name": "Alpha", "verified_live": True, "configured": True},
-            {"id": "beta", "display_name": "Beta", "verified_live": False, "configured": True},
+            {
+                "id": "alpha",
+                "display_name": "Alpha",
+                "verified_live": True,
+                "configured": True,
+                "declared": {
+                    "book_by_title": "not_implemented",
+                    "series_members": "supported",
+                    "author_series": "unsupported",
+                },
+                "unsupported_reasons": {
+                    "author_series": {
+                        "reason": "No series concept in the <script>alert(2)</script> API.",
+                        "source_url": "https://example.org/volumes",
+                    }
+                },
+            },
+            {
+                "id": "beta",
+                "display_name": "Beta",
+                "verified_live": False,
+                "configured": True,
+                "declared": {"series_members": "supported"},
+                "unsupported_reasons": {},
+            },
         ],
         "cases": [
             {
@@ -95,9 +118,28 @@ def _document() -> dict[str, Any]:
                 "reference": {"source": "somewhere", "verified_on": None},
                 "verified": False,
                 "input": {"series": "The Empyrean"},
+                "operations": ["series_members"],
                 "expect": {"series_members": {"members": [{"title": "Fourth Wing"}]}},
                 "results": [row("alpha", "1"), row("beta", "3.5")],
-            }
+            },
+            {
+                "id": "c2",
+                "description": "traversal fixture",
+                "tier": "hard",
+                "tags": ["demo"],
+                "reference": {"source": "somewhere", "verified_on": None},
+                "verified": False,
+                "input": {"title": "Fourth Wing"},
+                "operations": ["book_by_title"],
+                "expect": {},
+                "results": [
+                    {
+                        **row("alpha", "1"),
+                        "operation": "author_works",
+                        "mode": "traversal",
+                    }
+                ],
+            },
         ],
         "matrix": {
             "alpha": {"series_members": {"ok": 1, "total": 1}},
@@ -156,6 +198,15 @@ def test_ai_export_has_capability_counts_without_a_score():
     assert "rank" not in payload.replace("ranking", "")
 
 
+def test_ai_export_counts_the_fixtures_that_exercise_each_operation():
+    exported = ai_export(_document())
+
+    assert set(exported["operation_fixtures"]) == {operation.value for operation in Operation}
+    assert exported["operation_fixtures"]["series_members"] == 1
+    assert exported["operation_fixtures"]["author_works"] == 1
+    assert exported["operation_fixtures"]["author_resolve"] == 0
+
+
 def test_full_export_refuses_a_document_containing_a_credential():
     document = _document()
     document["cases"][0]["description"] = "leaked SECRET-12345"
@@ -202,6 +253,49 @@ def test_report_is_self_contained():
     assert "<style>" in page
     assert "src=\"http" not in page
     assert "href=\"http" not in page
+
+
+def _section(page: str, heading: str, next_heading: str) -> str:
+    start = page.index(f"<h2>{heading}</h2>")
+    return page[start : page.index(f"<h2>{next_heading}</h2>", start)]
+
+
+def test_report_shows_declared_capability_per_provider_and_operation():
+    section = _section(render_report(_document()), "Capability declarations", "Fixture coverage")
+
+    # One row per operation, one column per provider, straight from the declarations.
+    for operation in Operation:
+        assert f"<tr><th>{operation.value}</th>" in section
+    beta_row = section[section.index("<tr><th>series_members</th>") :]
+    assert '>supported<' in beta_row[: beta_row.index("</tr>")]
+    title_row = section[section.index("<tr><th>book_by_title</th>") :]
+    assert '>not_implemented<' in title_row[: title_row.index("</tr>")]
+    alpha_row = section[section.index("<tr><th>author_series</th>") :]
+    assert '>unsupported<' in alpha_row[: alpha_row.index("</tr>")]
+    # beta declares nothing for author_series, so that cell stays unknown.
+    assert alpha_row[: alpha_row.index("</tr>")].count("<td") == 2
+    assert '<td class="excluded">-</td>' in alpha_row[: alpha_row.index("</tr>")]
+
+
+def test_report_lists_unsupported_citations_escaped():
+    page = render_report(_document())
+
+    assert "<script>alert(2)</script>" not in page
+    assert "&lt;script&gt;alert(2)&lt;/script&gt;" in page
+    assert "https://example.org/volumes" in page
+
+
+def test_report_counts_the_fixtures_that_exercise_each_operation():
+    section = _section(render_report(_document()), "Fixture coverage", "Capability matrix")
+
+    # c1 declares and ran series_members; c2 declares book_by_title and its
+    # traversal row exercised author_works. Every other operation has no fixture.
+    assert "<tr><th>book_by_title</th><td>1</td></tr>" in section
+    assert "<tr><th>series_members</th><td>1</td></tr>" in section
+    assert "<tr><th>author_works</th><td>1</td></tr>" in section
+    for operation in Operation:
+        assert f"<tr><th>{operation.value}</th>" in section
+    assert section.count("<td>0</td>") == len(Operation) - 3
 
 
 # --- replay of a real capture ------------------------------------------------------

@@ -54,6 +54,26 @@ def op_matrix(cases: Sequence[Mapping[str, Any]], provider_ids: Sequence[str]) -
     return matrix
 
 
+def operation_fixture_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """How many fixtures exercise each operation, including operations at zero.
+
+    A fixture exercises an operation when the case declares it or when any row
+    from the run performed it, so a traversal step (a book lookup that derives
+    ``author_works``) counts as well. Nothing here is provider-specific.
+    """
+
+    counts = {operation.value: 0 for operation in Operation}
+    for case in cases:
+        exercised = {str(name) for name in case.get("operations") or []}
+        exercised.update(
+            str(row["operation"]) for row in case.get("results") or [] if row.get("operation")
+        )
+        for name in exercised:
+            if name in counts:
+                counts[name] += 1
+    return counts
+
+
 def check_tallies(
     cases: Sequence[Mapping[str, Any]], provider_ids: Sequence[str]
 ) -> dict[str, Any]:
@@ -239,4 +259,11 @@ def measurements(
     return {"by_provider": by_provider, "by_case": by_case}
 
 
-__all__ = ["SCORED_EXCLUDED", "check_tallies", "dimension_display", "measurements", "op_matrix"]
+__all__ = [
+    "SCORED_EXCLUDED",
+    "check_tallies",
+    "dimension_display",
+    "measurements",
+    "op_matrix",
+    "operation_fixture_counts",
+]

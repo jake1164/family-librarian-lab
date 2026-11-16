@@ -23,7 +23,7 @@ from ..model import (
     SeriesRecord,
     SeriesRef,
 )
-from .base import ProviderAdapter
+from .base import ProviderAdapter, Unsupported
 
 BASE_URL = "https://openlibrary.org"
 SEARCH_FIELDS = (
@@ -260,9 +260,21 @@ class OpenLibraryAdapter(ProviderAdapter):
     #: doc's engineering margin between the two, not an Open Library quota.
     min_interval_s: ClassVar[float] = 2.0
 
-    #: No operation is declared UNSUPPORTED: every gap below is our adapter's,
-    #: not the provider's (author_series can be derived from per-work editions).
-    unsupported: ClassVar[dict[Operation, Any]] = {}
+    #: Every other gap below is our adapter's, not the provider's. ``author_series``
+    #: is the exception: no author->series endpoint exists, and series data is only
+    #: free text on individual editions.
+    unsupported: ClassVar[dict[Operation, Unsupported]] = {
+        Operation.AUTHOR_SERIES: Unsupported(
+            reason=(
+                "The API index lists no author-to-series endpoint. Series data exists only as "
+                "free-text strings on individual editions (\"The Empyrean (#1)\"), and the Books "
+                "API does not document that field. Answering author_series would need an "
+                "undocumented fan-out over the author's works and each work's editions, and no "
+                "endpoint supplies series member positions."
+            ),
+            source_url="https://openlibrary.org/developers/api#api-index",
+        )
+    }
 
     def check_connection(self, ctx: OpContext) -> str:
         payload = ctx.get_json(

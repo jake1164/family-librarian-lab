@@ -110,7 +110,17 @@ class BookBrainzAdapter(ProviderAdapter):
                 "endpoint and /search is free text."
             ),
             source_url="https://api.bookbrainz.org/1/docs/",
-        )
+        ),
+        Operation.AUTHOR_SERIES: Unsupported(
+            reason=(
+                "The web service exposes /search, /author/{bbid}, /edition/{bbid}, "
+                "/edition-group/{bbid}, /publisher/{bbid}, /series/{bbid} and /work/{bbid} plus "
+                "aliases/identifiers/relationships sub-paths. Authors carry no series "
+                "relationship and there is no author-to-series endpoint; the only route would be "
+                "an N-call fan-out over every work's relationships."
+            ),
+            source_url="https://api.bookbrainz.org/1/docs/",
+        ),
     }
 
     def check_connection(self, ctx: OpContext) -> str:

@@ -118,9 +118,13 @@ def test_author_resolve_and_works():
     assert works[0].source_url.endswith(f"/author/{AUTHOR_BBID}")
 
 
-def test_author_series_is_not_implemented():
+def test_author_series_is_declared_unsupported_with_a_citation():
     assert ADAPTER.implements(Operation.AUTHOR_SERIES) is False
-    assert ADAPTER.declared_support(Operation.AUTHOR_SERIES) == "not_implemented"
+    assert ADAPTER.declared_support(Operation.AUTHOR_SERIES) == "unsupported"
+
+    declaration = ADAPTER.unsupported[Operation.AUTHOR_SERIES]
+    assert declaration.reason.strip()
+    assert declaration.source_url.startswith("https://api.bookbrainz.org/")
 
 
 def test_check_connection_reports_a_count():

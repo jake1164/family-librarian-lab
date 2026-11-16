@@ -142,7 +142,11 @@ def test_missing_key_is_an_auth_error():
 
 
 def test_unsupported_operations_are_declared_with_citations():
-    for operation in (Operation.SERIES_MEMBERS, Operation.AUTHOR_SERIES):
+    for operation in (
+        Operation.SERIES_MEMBERS,
+        Operation.AUTHOR_SERIES,
+        Operation.AUTHOR_RESOLVE,
+    ):
         declaration = ADAPTER.unsupported[operation]
         assert declaration.reason
         assert declaration.source_url.startswith("https://developers.google.com/")
@@ -150,9 +154,10 @@ def test_unsupported_operations_are_declared_with_citations():
 
 
 def test_unclear_operations_stay_not_implemented():
+    # series_for_book is undocumented, not impossible: our adapter has not built it.
     assert ADAPTER.implements(Operation.SERIES_FOR_BOOK) is False
-    assert ADAPTER.implements(Operation.AUTHOR_RESOLVE) is False
     assert ADAPTER.declared_support(Operation.SERIES_FOR_BOOK) == "not_implemented"
+    assert Operation.SERIES_FOR_BOOK not in ADAPTER.unsupported
 
 
 def test_credential_env_and_aliases_are_declared():

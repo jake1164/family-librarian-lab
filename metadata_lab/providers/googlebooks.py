@@ -40,6 +40,14 @@ _UNSUPPORTED = {
         ),
         source_url="https://developers.google.com/books/docs/v1/reference/volumes",
     ),
+    Operation.AUTHOR_RESOLVE: Unsupported(
+        reason=(
+            "The Books API has no author resource. volumes.list takes no author identifier (the "
+            "inauthor: operator only narrows volume search) and the Volume resource exposes no "
+            "author id, alias list or disambiguation field, so authors cannot be resolved."
+        ),
+        source_url="https://developers.google.com/books/docs/v1/reference/volumes",
+    ),
 }
 
 

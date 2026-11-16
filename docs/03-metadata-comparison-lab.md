@@ -77,6 +77,12 @@ calls". That is deliberate: no single misclick should spend a hundred calls.
 The generated `report.html` is shown in the page, unchanged and sandboxed. Below it are downloads for
 `result.json` (everything) and `ai.json` (a smaller, trimmed view safe to paste into a chat).
 
+The **capability declarations** table (provider x operation) is read from the adapters' own declarations and
+says what each provider can do: `supported`, `unsupported` (with the cited reason underneath) or
+`not_implemented`. It is static capability, independent of the run. **Fixture coverage** then shows how many
+fixtures in the loaded suite exercise each of the seven operations, so a zero is visible as "the fixtures say
+nothing here".
+
 The **capability matrix** counts outcomes per provider and operation. It is a tally, not a score. The
 outcome words mean exactly this:
 
