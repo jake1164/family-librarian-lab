@@ -1,0 +1,248 @@
+suite: author-works
+version: 1
+providers: all
+as_of: 2026-11-16
+# WP7: direct author-work and bibliography cases. Every case starts from an author NAME and
+# never from a book, so it is independent of the book-to-series traversal (which stops when
+# the book step returns no author id). References follow the WP5 protocol: each expectation
+# declares source_kind and evidence, and no expectation relies on a provider or on a source
+# a provider ingests. Title lists are verified SUBSETS (exhaustive: false), never complete
+# bibliographies, so a provider is scored on coverage of what the references prove and not
+# penalised for further real titles.
+#
+# What each case tells apart (read with the fact statuses, which stay separate):
+#   author.name           identification  (did the provider find this person or pen name?)
+#   author.titles[i]      bibliography coverage (is each verified title attributed to them?)
+#   author.forbid_titles  identification accuracy (is a namesake's book wrongly merged in?)
+# A provider that cannot be asked is `blocked:unsupported` (the provider's gap) or
+# `blocked:not_implemented` (ours); a provider that ran and returned nothing is `omitted`;
+# a truncated page is `incomplete`. None of these is a wrong answer.
+cases:
+  - id: aw01-rebecca-yarros
+    tier: easy
+    tags: [author_works, authors, completeness]
+    description: "Rebecca Yarros resolves as one author and her Empyrean, Flight & Glory, Renegades and Legacy titles are attributed to her."
+    reference:
+      source: "https://rebeccayarros.com/empyrean, https://rebeccayarros.com/flightandglory, https://rebeccayarros.com/renegades and https://rebeccayarros.com/legacy (the author's own series pages)"
+      verified_on: "2026-11-16"
+      confidence: high
+    input:
+      author: "Rebecca Yarros"
+    operations: [author_resolve, author_works]
+    notes:
+      - "Titles are those on the author's series pages with a series label. The homepage lists further titles (for example The Last Letter, Variation, Peculiar Stars, preorder 17 Nov 2026) whose series labels were not read, so they are not asserted. Threshing Day is covered by P08, where its date is disputed."
+      - "No co-author is named on any of the pages read; the In Luv Duet co-author question from P07 is not asserted here either."
+    expect:
+      author_resolve:
+        name: "Rebecca Yarros"
+        aliases: []
+        fact_type: fixed
+        source: "https://rebeccayarros.com"
+        source_kind: primary
+        evidence: "The author's own site."
+        verified_on: "2026-11-16"
+        confidence: high
+      author_works:
+        name: "Rebecca Yarros"
+        aliases: []
+        titles:
+          - "Fourth Wing"
+          - "Iron Flame"
+          - "Onyx Storm"
+          - "Full Measures"
+          - "Eyes Turned Skyward"
+          - "Hallowed Ground"
+          - "Wilder"
+          - "Nova"
+          - "Rebel"
+          - "Point of Origin"
+          - "Ignite"
+        exhaustive: false
+        fact_type: coverage
+        source: "https://rebeccayarros.com/empyrean, /flightandglory, /renegades, /legacy (Series: ... Book n)"
+        source_kind: primary
+        evidence: "Each title is printed with a series label and number on the author's series pages."
+        verified_on: "2026-11-16"
+        confidence: high
+
+  - id: aw02-james-s-a-corey
+    tier: medium
+    tags: [author_works, authors, aliases]
+    description: "James S. A. Corey, the joint pen name of Daniel Abraham and Ty Franck, is found as a single author with the nine Expanse novels and Memory's Legion."
+    reference:
+      source: "https://www.jamessacorey.com/about (\"James S.A. Corey is the pen name of fantasy author Daniel Abraham and Ty Franck\") and https://www.jamessacorey.com/books (the Expanse titles)"
+      verified_on: "2026-11-16"
+      confidence: high
+    input:
+      author: "James S. A. Corey"
+    operations: [author_resolve, author_works]
+    notes:
+      - "Pen name, two people. aliases stay empty on purpose: a provider that resolves only Daniel Abraham or Ty Franck has not identified the pen name, and that shows as a missing author.name, not as a match. Whether a provider also links the two individuals is outside this case."
+      - "The site prints the name as 'James S.A. Corey'; the matcher treats initials with and without spaces as the same name."
+      - "Titles in the author's order: Leviathan Wakes to Leviathan Falls are the nine numbered novels (Publishers Weekly: Leviathan Falls is 'the ninth and final'); Memory's Legion is the collection (P11). The Faith of Beasts and The Mercy of Gods are on the same site but belong to a different series and were not read, so they are not asserted."
+    expect:
+      author_resolve:
+        name: "James S. A. Corey"
+        aliases: ["James S.A. Corey"]
+        fact_type: fixed
+        source: "https://www.jamessacorey.com/about"
+        source_kind: primary
+        evidence: "'James S.A. Corey is the pen name of fantasy author Daniel Abraham and Ty Franck.'"
+        verified_on: "2026-11-16"
+        confidence: high
+      author_works:
+        name: "James S. A. Corey"
+        aliases: ["James S.A. Corey"]
+        titles:
+          - "Leviathan Wakes"
+          - "Caliban's War"
+          - "Abaddon's Gate"
+          - "Cibola Burn"
+          - "Nemesis Games"
+          - "Babylon's Ashes"
+          - "Persepolis Rising"
+          - "Tiamat's Wrath"
+          - "Leviathan Falls"
+          - "Memory's Legion"
+        exhaustive: false
+        fact_type: coverage
+        source: "https://www.jamessacorey.com/books and https://publishersweekly.com/9780316669191"
+        source_kind: primary
+        evidence: "All ten titles are in the author's 'All Books' grid; Publishers Weekly numbers Books 4, 7, 8 and 9."
+        verified_on: "2026-11-16"
+        confidence: high
+
+  - id: aw03-jd-robb
+    tier: hard
+    tags: [author_works, authors, aliases]
+    description: "J. D. Robb is a pseudonym of Nora Roberts; the first In Death novels are attributed to the resolved author."
+    reference:
+      source: "https://jdrobb.com/elementor-510/ (the author's bio: \"J. D. Robb was a pseudonym for bestselling powerhouse Nora Roberts\") and https://jdrobb.com/list-of-books/ (In Death titles, ascending by year)"
+      verified_on: "2026-11-16"
+      confidence: medium
+    input:
+      author: "J. D. Robb"
+    operations: [author_resolve, author_works]
+    notes:
+      - "Legitimate ambiguity kept: a provider may hold the In Death books under 'J. D. Robb' or under 'Nora Roberts' (one person, two bylines). 'Nora Roberts' is therefore an accepted alias of the author name, and the titles are checked against whichever matching record the provider returns. The evidence on each check records which name matched, so a provider that only knows the legal name is visible but not wrongly scored as missing."
+      - "Sources: noraroberts.com carries no pseudonym statement on the pages read; jdrobb.com does. The publisher series pages (Penguin Random House 404, Macmillan 403) could not be read, so no publisher credit was checked. Both read sites are the author's own (copyright Nora Roberts) and not independent of each other."
+      - "Titles: the first five In Death novels as listed in ascending order on jdrobb.com. The list shows no numbers (and the bio's numbering does not match a simple count of the list), so no series position is asserted."
+      - "Not asserted: the latest In Death title (Fury in Death, dated 8 September 2026 on the homepage) because its status and the 80-title count were only partly read."
+    expect:
+      author_resolve:
+        name: "J. D. Robb"
+        aliases: ["J.D. Robb", "Nora Roberts"]
+        fact_type: fixed
+        source: "https://jdrobb.com/elementor-510/"
+        source_kind: primary
+        evidence: "'...the publisher fully revealed that J. D. Robb was a pseudonym for bestselling powerhouse Nora Roberts.'"
+        verified_on: "2026-11-16"
+        confidence: high
+      author_works:
+        name: "J. D. Robb"
+        aliases: ["J.D. Robb", "Nora Roberts"]
+        titles:
+          - "Naked in Death"
+          - "Glory in Death"
+          - "Immortal in Death"
+          - "Rapture in Death"
+          - "Ceremony in Death"
+        exhaustive: false
+        fact_type: coverage
+        source: "https://jdrobb.com/list-of-books/"
+        source_kind: primary
+        evidence: "First five entries of the author's ascending list, 1995 onwards."
+        verified_on: "2026-11-16"
+        confidence: medium
+
+  - id: aw04-frank-herbert
+    tier: hard
+    tags: [author_works, authors, forbid]
+    description: "Frank Herbert is credited with the six original Dune novels, and the later Brian Herbert and Kevin J. Anderson novel Paul of Dune is not merged into his list."
+    reference:
+      source: "https://dunenovels.com/original-dune-series/ (the Herbert Properties site lists the six original novels) and https://www.dunenovels.com/ (\"Paul of Dune by Brian Herbert and Kevin J. Anderson\")"
+      verified_on: "2026-11-16"
+      confidence: medium
+    input:
+      author: "Frank Herbert"
+    operations: [author_resolve, author_works]
+    notes:
+      - "Tests identification accuracy, not only coverage: Brian Herbert shares the surname and continues the series. The forbid_titles entry fails a provider that lists Paul of Dune among Frank Herbert's works. A provider that returns no works for the matched author gets no pass for it (the check is omitted)."
+      - "The original-series page lists the six titles by cover and link without years; the years were not read, so none are asserted."
+      - "'Dune' is a prefix of several titles; the matcher keeps 'Dune' and 'Dune Messiah' apart by design."
+    expect:
+      author_resolve:
+        name: "Frank Herbert"
+        aliases: []
+        fact_type: fixed
+        source: "https://www.dunenovels.com/ (Authors section lists Frank Herbert, Brian Herbert and Kevin J. Anderson as distinct authors)"
+        source_kind: primary
+        evidence: "The estate's site keeps the three authors on separate author pages."
+        verified_on: "2026-11-16"
+        confidence: high
+      author_works:
+        name: "Frank Herbert"
+        aliases: []
+        titles:
+          - "Dune"
+          - "Dune Messiah"
+          - "Children of Dune"
+          - "God Emperor of Dune"
+          - "Heretics of Dune"
+          - "Chapterhouse: Dune"
+        forbid_titles:
+          - "Paul of Dune"
+        exhaustive: false
+        fact_type: coverage
+        source: "https://dunenovels.com/original-dune-series/ and https://www.dunenovels.com/"
+        source_kind: primary
+        evidence: "Six titles on the original-series page; 'Paul of Dune by Brian Herbert and Kevin J. Anderson' on the home page."
+        verified_on: "2026-11-16"
+        confidence: high
+
+  - id: aw05-stephen-king
+    tier: hard
+    tags: [author_works, authors, pagination]
+    description: "Stephen King has a bibliography far larger than one provider page: verified titles from 1974 to 2025 must be found or reported as incomplete, never as a clean miss."
+    reference:
+      source: "https://stephenking.com/works/novel/ (the author's list of novels with dates) and https://stephenking.com/works/novel/talisman.html (\"Written With: Peter Straub\")"
+      verified_on: "2026-11-16"
+      confidence: high
+    input:
+      author: "Stephen King"
+    operations: [author_resolve, author_works]
+    options: {max_pages: 3, max_calls: 12}
+    notes:
+      - "Titles span fifty years on purpose, so a provider that returns only a first page of a large catalogue loses the oldest or newest ones; the engine then marks the missing facts incomplete (a truncated listing), not not_found."
+      - "Titles come from the author's novel list: Carrie (1974), The Shining (1977), The Stand (1978), IT (1986), The Talisman (1984, written with Peter Straub), Fairy Tale (2022), Holly (2023), Never Flinch (2025)."
+      - "Legitimate ambiguity kept and NOT scored: the author's site lists the Richard Bachman books (for example The Long Walk, Thinner) among his works typed 'Bachman Novel'; providers may or may not attribute them to Stephen King. The Talisman is co-written: a provider that credits only Peter Straub, or only King, is not penalised on the other name."
+      - "Not asserted: 'Other Worlds Than These' (listed on the author's site with date 6 October 2026) because its type and edition status were not checked."
+    expect:
+      author_resolve:
+        name: "Stephen King"
+        aliases: []
+        fact_type: fixed
+        source: "https://stephenking.com/works/novel/"
+        source_kind: primary
+        evidence: "The author's site; footer copyright Stephen King 2000-2026."
+        verified_on: "2026-11-16"
+        confidence: high
+      author_works:
+        name: "Stephen King"
+        aliases: []
+        titles:
+          - "Carrie"
+          - "The Shining"
+          - "The Stand"
+          - "IT"
+          - "The Talisman"
+          - "Fairy Tale"
+          - "Holly"
+          - "Never Flinch"
+        exhaustive: false
+        fact_type: coverage
+        source: "https://stephenking.com/works/novel/"
+        source_kind: primary
+        evidence: "Each title is in the author's Novels & Novellas list with type Novel."
+        verified_on: "2026-11-16"
+        confidence: high

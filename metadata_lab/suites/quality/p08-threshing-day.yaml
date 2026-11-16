@@ -5,11 +5,11 @@ as_of: 2026-11-14
 cases:
   - id: p08-threshing-day
     tier: medium
-    tags: [first-six, fractional_position, work_type, forbid, freshness]
-    description: "The Empyrean carries a 2026 entry at position 3.5 that is not main novel number 4."
+    tags: [first-six, work_type, forbid, freshness]
+    description: "Threshing Day is a 2026 collection of thirteen stories in the Empyrean world, catalogued as Empyrean 3.5 and not main novel number 4."
     reference:
-      source: "https://en.wikipedia.org/wiki/Rebecca_Yarros (\"On September 29, 2026, Threshing Day was released as a companion volume to the series featuring 13 stories told from the perspectives of 13 different characters\"; bibliography entry \"Threshing Day (short story collection). Red Tower Books. 2026\") and https://openlibrary.org/works/OL45870364W/editions.json (an edition of 'Threshing Day', series 'The Empyrean Series, Book 3.5')"
-      verified_on: "2026-11-14"
+      source: "https://rebeccayarros.com/threshing-day (\"Thirteen unforgettable stories\"; Series: Empyrean, Secret Project), https://lunch.publishersmarketplace.com/2026/07/forthcoming-yarross-next-fourth-wing-book-is-called-threshing-day/ (trade press quoting the author: \"not the next in the series, but a collection of stories\"; release 29 September) and https://www.entangledpublishing.com/books/threshing-day (publisher page: Release Date November 16, 2026) and https://www.overdrive.com/media/13223405/threshing-day (distributor catalogue: The Empyrean #3.5, Short Stories, 29 September 2026)"
+      verified_on: "2026-11-16"
       confidence: medium
     input:
       series: "The Empyrean"
@@ -17,27 +17,37 @@ cases:
       author: "Rebecca Yarros"
     operations: [series_members]
     notes:
-      - "Position 3.5 comes from the Open Library edition record (series 'The Empyrean Series, Book 3.5'); the 2026-09-29 date and the short-story-collection type come from the Wikipedia Rebecca Yarros article."
-      - "The edition title 'Threshing Day (Wing and Claw Collection)' is not used as evidence of the work type: the same 'Wing and Claw Collection' wording appears on special editions of Fourth Wing and Iron Flame."
+      - "WP5 re-verification 2026-11-16, corrected the same day. Deliberate changes: (1) published gains an accepted alternative; (2) work_type and the forbids cite the author's site, trade press and a distributor catalogue instead of Open Library and Wikipedia; (3) the series position 3.5 stays, now on separate catalogue evidence (see next note)."
+      - "Position 3.5, two views kept apart. CATALOGUE: OverDrive lists the title in 'The Empyrean' as '#3.5 in series' (page https://www.overdrive.com/media/13223405/threshing-day, read 2026-11-16), and the owner independently verified the same record's structured readingOrder field, which the fetch of the rendered page could not show. AUTHOR/PUBLISHER: the author's site gives the series line 'Empyrean, Secret Project' with no number, and the author is quoted saying the book is 'not the next in the series'. These do not contradict each other: 3.5 is a catalogue reading order, and the author/publisher state no number. The catalogue value is therefore scored (accepted 3.5, medium confidence, source_kind secondary, upstream overlap with the providers not established) and does NOT supersede the author's classification, which is kept as the 'no main-line number' reading: a provider with no position for Threshing Day is omitted, not wrong, and 'Book 4' stays forbidden."
+      - "An earlier version of this fixture and of its verification notes said 3.5 came only from Open Library. That was wrong and is corrected here."
+      - "Legitimate ambiguity kept: the release date. OverDrive's record gives 29 September 2026, as do trade press and a retailer; the publisher's own product page says 'Release Date: November 16, 2026' (the same date sits on its Fourth Wing page with blank ISBN and page fields, so it may be a placeholder); the author's site says 'Available now!' without a date. Both dates are accepted. Confidence is medium for the member: three sources agree on 29 September, the publisher page disagrees."
+      - "work_type collection: the author's page says 'Thirteen unforgettable stories'; OverDrive's subject is 'Short Stories'; the word 'collection' is the author's, quoted by Publishers Lunch from her Instagram post (not fetched). 'Wing and Claw Collection' appears only on retailer titles, never on the author's or publisher's pages, so it is an alias, not evidence of the work type."
+      - "Unverifiable here: the first edition's format, and the imprint 'Red Tower Books' (retailers only; the publisher page names no imprint; OverDrive names Entangled Publishing, LLC)."
     expect:
       series_members:
         series: "The Empyrean"
         fact_type: time_sensitive
-        source: "https://openlibrary.org/works/OL45870364W/editions.json"
-        verified_on: "2026-11-14"
+        source: "https://rebeccayarros.com/threshing-day (Series: Empyrean, Secret Project)"
+        source_kind: primary
+        evidence: "Author site lists Threshing Day in The Empyrean with no book number."
+        verified_on: "2026-11-16"
         confidence: medium
         exhaustive: false
         members:
           - title: "Threshing Day"
+            aliases: ["Threshing Day (Wing and Claw Collection)"]
             position: "3.5"
             accepted_positions: ["3.5"]
             position_scheme: publication
             work_type: collection
             published: "2026-09-29"
+            accepted_published: ["2026-11-16"]
             fact_type: time_sensitive
             valid_until: "2026-12-31"
-            source: "https://openlibrary.org/works/OL45870364W/editions.json (position 3.5) and https://en.wikipedia.org/wiki/Rebecca_Yarros (released 2026-09-29; short story collection)"
-            verified_on: "2026-11-14"
+            source: "https://www.overdrive.com/media/13223405/threshing-day (The Empyrean '#3.5 in series', subject Short Stories, release 29 September 2026; readingOrder verified by the owner); https://lunch.publishersmarketplace.com/2026/07/forthcoming-yarross-next-fourth-wing-book-is-called-threshing-day/ (29 September; 'a collection of stories'); https://www.entangledpublishing.com/books/threshing-day (Release Date: November 16, 2026); https://rebeccayarros.com/threshing-day ('Thirteen unforgettable stories', Series: Empyrean, Secret Project)"
+            source_kind: secondary
+            evidence: "Position 3.5, 'Short Stories' and 29 Sep from OverDrive's catalogue record; collection and 'not the next in the series' from the author via trade press; the author's page gives no number; the publisher page dates it 16 Nov."
+            verified_on: "2026-11-16"
             confidence: medium
         forbid:
           - {title: "Threshing Day", work_type: novel}

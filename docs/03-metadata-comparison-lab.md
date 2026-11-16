@@ -132,6 +132,73 @@ Independent and traversal modes are separate tables and are never mixed. The old
 tallies** below the reference facts count only the checks that actually ran, so a provider that could not
 run an operation has a smaller denominator there; do not compare providers with them.
 
+## Where a reference comes from (fixture provenance)
+
+A reference is only as good as its source, and four of the five providers ingest the same public sources
+the references like to cite. Every reviewed expectation therefore declares:
+
+| Key | Meaning |
+| --- | --- |
+| `source` | The URL (and the quoted wording) the value was read from. |
+| `source_kind` | `primary` (author, publisher, imprint), `catalogue` (national library, ISBN agency), `secondary` (trade press, retailers, reference works), `aggregator` (community databases) or `provider_derived` (supplied or ingested by a provider under test, such as Open Library or Wikidata). |
+| `evidence` | The short quotation or observation, so the fixture stands on its own without the research notes. |
+| `upstream_overlap` | Optional list of provider ids whose data derives from the source. |
+| `verified_on` / `confidence` | When it was read and how far it can be trusted. `provider_derived` is capped at `low` and rejected above it; `high` is reserved for `primary` or `catalogue`. |
+
+Legitimate ambiguity is recorded, not resolved: a member can carry `accepted_positions` (with the scheme named) and
+`accepted_published` (several documented dates). A fact that has no independent source is removed from the reference
+rather than kept at medium confidence. `metadata_lab.cases.provenance_summary(suite)` counts expectations by
+`source_kind` and confidence, with provider-derived and undeclared ones apart. Expectations from fixtures that have
+not been through verification show as `undeclared`.
+
+## Publication status (dated assertions)
+
+A series member can assert where a work stood on a date, with `publication_status:` and the keys `status`, `as_of`, `confidence`
+and `evidence` (all required but confidence, which defaults to the member's):
+
+| Status | Meaning |
+| --- | --- |
+| `planned` | announced as coming, no release date announced |
+| `scheduled` | a future release date is announced (the member's `published` date is required) |
+| `published` | released on or before the evaluation date |
+| `unknown` | the references cannot say; always `needs_review` |
+
+A provider only supplies a date, so its status is derived from that date against the run's as-of date: `published`, `scheduled`, or
+`unknown` when a year or month still contains the evaluation date. The rules that keep this from scoring a provider wrongly:
+
+- **No date, no verdict.** A missing release date is never read as "unpublished"; that fact is `omitted`.
+- **Uncertain references review, they do not score.** Below `high` confidence a contradiction is `needs_review`; at `high` it is a difference.
+  At `low`, even agreement is reviewed.
+- **A date cannot confirm `planned`.** Only a contradiction or silence is possible against it.
+- `scheduled` and `published` assertions that carry the member's release date follow the calendar, so a scheduled title is published on its
+  release day with no edit. A `planned` assertion is bounded by `valid_until`.
+
+The check and its evidence are recorded as `series.member[i].publication_status` (dimension freshness).
+
+## Direct author-work cases
+
+`suites/author-works.yaml` holds five cases that start from an author name alone, so they never depend on the
+book-to-series traversal (which stops when the book step returns no author id). They measure two things:
+
+- **Identification:** `author.name` (did the provider find this person or pen name; pseudonyms are cases of their own)
+  and `author.forbid_titles` (is a namesake's book wrongly merged into the author; a provider that returned no works at
+  all gets no pass).
+- **Coverage:** `author.titles[i]` for a verified subset of the bibliography (`exhaustive: false`).
+
+The reasons a fact has no value stay apart in the fact table: `blocked:unsupported` (the provider has no such
+operation), `blocked:not_implemented` (our adapter has not built it), `omitted` (the operation ran and returned
+nothing for it) and `incomplete` (a truncated listing). `tests/unit/test_metadata_lab_author_works.py` runs the real suite
+through the engine against five fake providers to prove it.
+
+## Capping a live run (`--max-requests-per-provider`)
+
+`run --max-requests-per-provider N` is a hard cap on real HTTP requests to each provider for the whole run. Retries count, and the worst case
+of one call (the request plus two retries) is reserved before it is sent, so the total cannot pass N even when every call retries. When a
+provider's cap is spent, its remaining rows are `not_run` with reason `request_budget` and its facts show as `blocked:request_budget`
+(a run condition, not a provider gap and not a miss). An operation that reaches the cap mid-way is truncated and its facts read `incomplete`.
+`result.json` records `run.request_budget` (limit and used per provider). The cap is refused with traversal, whose call count cannot be
+predicted. Per-case `max_calls` still bounds each operation.
+
 ## Response cache (optional, off by default)
 
 `run --cache` reuses a recent provider answer instead of asking again, which matters most for rate-limit-sensitive

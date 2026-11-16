@@ -55,12 +55,14 @@ def test_controlled_vocabularies():
     assert "audiobook" in FORMATS
     assert RECORD_LEVELS == {"work", "edition", "unknown"}
     # cooling_down: the provider is in a rate-limit cool-down, so nothing was attempted.
+    # request_budget: the run-wide per-provider request cap was already spent.
     assert NOT_RUN_REASONS == {
         "excluded",
         "cancelled",
         "chain_broken",
         "not_requested",
         "cooling_down",
+        "request_budget",
     }
 
 

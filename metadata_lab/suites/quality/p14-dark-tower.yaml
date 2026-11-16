@@ -8,9 +8,9 @@ cases:
     tags: [first-six, accepted_alternatives, position_scheme, position]
     description: "The Dark Tower: The Wind Through the Keyhole is the eighth novel published but sits between volumes four and five in story order."
     reference:
-      source: "https://www.wikidata.org/wiki/Q280898 (seven parts numbered 1-7; The Wind Through the Keyhole listed without a P1545 ordinal) and https://en.wikipedia.org/wiki/The_Dark_Tower:_The_Wind_Through_the_Keyhole (\"it is the eighth novel, but it is set chronologically between volumes four and five\")"
-      verified_on: "2026-11-14"
-      confidence: medium
+      source: "https://stephenking.com/promo/dark-tower-2016-collection/ (the author's site: The Dark Tower I to VII, 'IV 1/2' for The Wind Through the Keyhole; \"officially the eighth book of the Dark Tower saga\"; King \"likes to call ... book 4.5\")"
+      verified_on: "2026-11-16"
+      confidence: high
     input:
       series: "The Dark Tower"
       title: "The Dark Tower: The Gunslinger"
@@ -18,72 +18,92 @@ cases:
     operations: [series_members]
     options: {max_calls: 20}
     notes:
-      - "The 4.5 value is the story-order reading of 'set between volumes four and five'; 8 is the publication order. Both are accepted so the matched scheme can be recorded."
-      - "Member aliases are the short titles these books are published and catalogued under (for example The Gunslinger for The Dark Tower: The Gunslinger). They are exact alternates, not fuzzy matches: translations, graphic-novel adaptations and other works that merely share words stay non-matches. The alias forms still need independent verification (corrective plan WP5)."
+      - "WP5 re-verification 2026-11-16 against stephenking.com; the earlier Wikidata/Wikipedia sources are no longer used."
+      - "Both readings of The Wind Through the Keyhole are primary-source facts, not guesses: the author's site says it is 'officially the eighth book' (publication order, 8) and that King calls it 'book 4.5', taking place after Wizard and Glass and before Wolves of the Calla (story order, 4.5). Both are accepted, so the matched scheme can be recorded. The same page prints its label as 'THE DARK TOWER IV 1/2'; the Scribner trade listing prints 'The Dark Tower IV-1/2'."
+      - "Titles: the author's site prints 'The Dark Tower I: The Gunslinger' ... 'The Dark Tower VII: The Dark Tower', and 'The Song of Susannah' (with 'The'). The fixture keeps its original canonical title strings so earlier results stay comparable, and carries the official forms as exact aliases, together with the short titles. Aliases are exact alternates, not fuzzy matches: translations, graphic-novel adaptations and other works that merely share words stay non-matches."
+      - "Unverified: Simon & Schuster and Scribner pages returned 403/404, so no publisher-side title list was read."
     expect:
       series_members:
         series: "The Dark Tower"
         fact_type: coverage
-        source: "https://www.wikidata.org/wiki/Q280898"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://stephenking.com/promo/dark-tower-2016-collection/"
+        source_kind: primary
+        evidence: "The author's site lists the eight books in order with numerals I to VII and IV 1/2."
+        verified_on: "2026-11-16"
+        confidence: high
         exhaustive: false
         members:
           - title: "The Dark Tower: The Gunslinger"
-            aliases: ["The Gunslinger"]
+            aliases: ["The Gunslinger", "The Dark Tower I: The Gunslinger"]
             position: "1"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=1)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER I: THE GUNSLINGER')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER I'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower II: The Drawing of the Three"
             aliases: ["The Drawing of the Three"]
             position: "2"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=2)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER II')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER II'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower III: The Waste Lands"
             aliases: ["The Waste Lands"]
             position: "3"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=3)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER III')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER III'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower IV: Wizard and Glass"
             aliases: ["Wizard and Glass"]
             position: "4"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=4)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER IV')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER IV'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower V: Wolves of the Calla"
             aliases: ["Wolves of the Calla"]
             position: "5"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=5)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER V')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER V'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower VI: Song of Susannah"
-            aliases: ["Song of Susannah"]
+            aliases: ["Song of Susannah", "The Song of Susannah", "The Dark Tower VI: The Song of Susannah"]
             position: "6"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=6)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER VI: THE SONG OF SUSANNAH')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER VI'; the page prints 'The Song of Susannah'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower VII: The Dark Tower"
             aliases: ["The Dark Tower"]
             position: "7"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=7)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER VII: THE DARK TOWER')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER VII'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower: The Wind Through the Keyhole"
-            aliases: ["The Wind Through the Keyhole"]
+            aliases: ["The Wind Through the Keyhole", "The Dark Tower IV 1/2: The Wind Through the Keyhole", "The Dark Tower IV-1/2: The Wind Through the Keyhole"]
             position: "4.5"
             accepted_positions: ["4.5", "8"]
             position_scheme: story
             fact_type: definition_dependent
-            source: "https://en.wikipedia.org/wiki/The_Dark_Tower:_The_Wind_Through_the_Keyhole (eighth novel, set between volumes four and five)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('officially the eighth book of the Dark Tower saga'; 'book 4.5'; label 'IV 1/2')"
+            source_kind: primary
+            evidence: "Author's site gives both the publication-order reading (eighth) and the story-order reading (4.5)."
+            verified_on: "2026-11-16"
+            confidence: high

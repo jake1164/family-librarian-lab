@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
 
+from .publication import UNKNOWN, classify_date, effective_status
 from .matcher import (
     compare_date,
     compare_position,
@@ -268,21 +269,44 @@ def _date_check(
     *,
     dimension: str,
     missing_evidence: str = "provider supplied no date",
+    alternatives: Sequence[Any] = (),
 ) -> dict[str, Any]:
+    """Compare a date; ``alternatives`` are further dates the references legitimately allow."""
+
     if observed in (None, ""):
         return check(
             name,
             Outcome.NOT_FOUND,
-            expected,
+            [expected, *alternatives] if alternatives else expected,
             None,
             evidence=missing_evidence,
             dimension=dimension,
         )
     result = compare_date(expected, observed)
+    if not result.equal and alternatives:
+        for candidate in alternatives:
+            other = compare_date(candidate, observed)
+            if other.equal:
+                return check(
+                    name,
+                    Outcome.OK,
+                    [expected, *alternatives],
+                    observed,
+                    evidence=f"matches accepted alternative {candidate}: {other.note}",
+                    dimension=dimension,
+                )
+        return check(
+            name,
+            Outcome.DIFFERS,
+            [expected, *alternatives],
+            observed,
+            evidence=f"{observed} matches none of {[expected, *alternatives]}",
+            dimension=dimension,
+        )
     return check(
         name,
         Outcome.OK if result.equal else Outcome.DIFFERS,
-        expected,
+        [expected, *alternatives] if alternatives else expected,
         observed,
         evidence=result.note,
         dimension=dimension,
@@ -428,12 +452,88 @@ def _member_matches(
     )
 
 
+def _publication_status_check(
+    name: str,
+    wanted: Mapping[str, Any],
+    member: SeriesMember | None,
+    as_of: str | None,
+) -> dict[str, Any]:
+    """Score a provider's release date against a dated publication-status assertion.
+
+    The provider only ever supplies a date, so its status is derived from that date; it can be
+    ``published``, ``scheduled`` or ``unknown``, never ``planned``. See :mod:`metadata_lab.publication`
+    for the rules that stop a missing date or an uncertain reference from scoring a provider wrongly.
+    """
+
+    assertion = wanted["publication_status"]
+    confidence = str(assertion.get("confidence") or wanted.get("confidence") or "low")
+    expected_status, why = effective_status(assertion, wanted.get("published"), as_of)
+    expected = {
+        "status": expected_status,
+        "as_of": assertion.get("as_of"),
+        "confidence": confidence,
+        "evidence": assertion.get("evidence"),
+    }
+
+    def result(outcome: Outcome, observed: Any, evidence: str) -> dict[str, Any]:
+        return check(name, outcome, expected, observed, evidence=evidence, dimension="freshness")
+
+    if member is None:
+        return result(
+            Outcome.NOT_FOUND, None, "member not present in this record, so no release date was supplied"
+        )
+    if expected_status == UNKNOWN:
+        return result(
+            Outcome.NEEDS_REVIEW,
+            member.published,
+            f"the reference cannot say ({why}); shown, not scored",
+        )
+    if not member.published:
+        return result(
+            Outcome.NOT_FOUND,
+            None,
+            "provider supplied no release date; a missing date is not evidence that the work is "
+            "unpublished, so nothing is scored",
+        )
+    observed_status = classify_date(member.published, as_of)
+    observed = {"published": member.published, "status": observed_status}
+    if observed_status == UNKNOWN:
+        return result(
+            Outcome.NEEDS_REVIEW,
+            observed,
+            f"release date {member.published} cannot be placed before or after {as_of}",
+        )
+    agrees = observed_status == expected_status
+    if confidence == "low":
+        return result(
+            Outcome.NEEDS_REVIEW,
+            observed,
+            f"reference confidence is low, so {'agreement' if agrees else 'disagreement'} is "
+            f"reviewed, not scored ({why})",
+        )
+    if agrees:
+        return result(Outcome.OK, observed, f"status {observed_status} agrees ({why})")
+    if confidence == "high":
+        return result(
+            Outcome.DIFFERS,
+            observed,
+            f"provider's date implies {observed_status}; the reference says {expected_status} ({why})",
+        )
+    return result(
+        Outcome.NEEDS_REVIEW,
+        observed,
+        f"provider's date implies {observed_status}; the reference says {expected_status} but only at "
+        f"{confidence} confidence, so this is reviewed, not scored ({why})",
+    )
+
+
 def _member_checks_for_record(
     index: int,
     wanted: Mapping[str, Any],
     record: SeriesRecord,
     truncated: bool,
     context_terms: Iterable[str],
+    as_of: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Checks for one expected member against one series record."""
 
@@ -560,6 +660,12 @@ def _member_checks_for_record(
             member.published if member is not None else None,
             missing_evidence="member not present in this record, so no date was supplied",
             dimension="freshness",
+            alternatives=wanted.get("accepted_published") or (),
+        )
+
+    if "publication_status" in wanted:
+        evaluated[f"series.member[{index}].publication_status"] = _publication_status_check(
+            f"series.member[{index}].publication_status", wanted, member, as_of
         )
 
     for author_index, author in enumerate(str(a) for a in wanted.get("authors") or []):
@@ -753,7 +859,7 @@ def _series_checks(
             per_record: dict[str, list[tuple[str, dict[str, Any]]]] = {}
             for record in matching:
                 evaluated = _member_checks_for_record(
-                    index, wanted, record, truncated, context_terms
+                    index, wanted, record, truncated, context_terms, as_of
                 )
                 for name, item in evaluated.items():
                     per_record.setdefault(name, []).append((record.provider_id, item))
@@ -801,6 +907,46 @@ def _series_checks(
 
 
 # --- author ---------------------------------------------------------------------
+
+
+def _forbid_author_title(
+    index: int, forbidden: str, matching: Sequence[AuthorRecord]
+) -> dict[str, Any]:
+    """A work that must not be attributed to the resolved author (a namesake's book).
+
+    An author that came back with no works at all cannot be said to have avoided the
+    forbidden title, so that case is ``not_found`` (omitted), never a vacuous pass.
+    """
+
+    name = f"author.forbid_titles[{index}]"
+    works = [work for record in matching for work in record.works]
+    if not works:
+        return check(
+            name,
+            Outcome.NOT_FOUND,
+            forbidden,
+            [],
+            evidence="the matched author record lists no works, so the absence proves nothing",
+            dimension="accuracy",
+        )
+    hits = [work for work in works if match_name(forbidden, work, field="title").is_match]
+    if hits:
+        return check(
+            name,
+            Outcome.DIFFERS,
+            forbidden,
+            hits,
+            evidence="forbidden work attributed to the resolved author: " + "; ".join(hits),
+            dimension="accuracy",
+        )
+    return check(
+        name,
+        Outcome.OK,
+        forbidden,
+        {"violations": 0},
+        evidence="forbidden work absent from the resolved author's works",
+        dimension="accuracy",
+    )
 
 
 def _author_checks(
@@ -874,6 +1020,9 @@ def _author_checks(
             )
             per_record.append((record.provider_id, found))
         checks.append(_merge(f"author.titles[{index}]", per_record, "coverage"))
+
+    for index, forbidden in enumerate(expect.get("forbid_titles") or []):
+        checks.append(_forbid_author_title(index, str(forbidden), matching))
 
     series_names = [ref.name for record in matching for ref in record.series]
     for index, series in enumerate(expect.get("series") or []):
@@ -999,6 +1148,8 @@ def expected_facts(
                 facts.append(_fact(f"series.member[{index}].work_type", "classification"))
             if "published" in wanted:
                 facts.append(_fact(f"series.member[{index}].published", "freshness"))
+            if "publication_status" in wanted:
+                facts.append(_fact(f"series.member[{index}].publication_status", "freshness"))
             for author_index, _author in enumerate(wanted.get("authors") or []):
                 facts.append(_fact(f"series.member[{index}].authors[{author_index}]", "accuracy"))
         for index, entry in enumerate(expect.get("forbid") or []):
@@ -1022,6 +1173,8 @@ def expected_facts(
         review = bool(_review_reason(expect, as_of))
         for index, _title in enumerate(expect.get("titles") or []):
             facts.append(_fact(f"author.titles[{index}]", "freshness" if review else "coverage"))
+        for index, _forbidden in enumerate(expect.get("forbid_titles") or []):
+            facts.append(_fact(f"author.forbid_titles[{index}]", "accuracy"))
         for index, _series in enumerate(expect.get("series") or []):
             facts.append(_fact(f"author.series[{index}]", "coverage"))
         return facts

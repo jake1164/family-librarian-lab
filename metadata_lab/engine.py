@@ -21,7 +21,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from . import VERSION, config
 from .cases import Case, Reference, Suite
 from .checks import compute_checks, duplicates, expected_facts
-from .http import DEFAULT_MAX_PAGES, BudgetExceeded, OpContext, scrub
+from .http import DEFAULT_MAX_PAGES, BudgetExceeded, OpContext, RequestBudget, scrub
 from .matcher import MATCHER_VERSION, match_name
 from .measurements import check_tallies, measurements, op_matrix
 from .model import (
@@ -53,6 +53,8 @@ TRAVERSAL_OPERATIONS = (
 )
 #: ``not_run`` reason for a provider inside a rate-limit cool-down.
 COOLING_DOWN_REASON = "cooling_down"
+#: A row skipped because the provider's run-wide request cap was already spent.
+REQUEST_BUDGET_REASON = "request_budget"
 
 HttpFactory = Callable[[str], Any]
 AdapterMap = Mapping[str, type[ProviderAdapter]]
@@ -200,6 +202,7 @@ def _run_operation(
     configured: bool,
     as_of: str | None,
     query: Query | None = None,
+    request_budget: RequestBudget | None = None,
 ) -> tuple[dict[str, Any], list[Any]]:
     """Run one operation for one provider and return ``(row, records)``."""
 
@@ -269,12 +272,15 @@ def _run_operation(
     credential = config.resolve_credential(adapter)
     max_pages = int(case.options.get("max_pages", DEFAULT_MAX_PAGES))
     max_calls = int(case.options.get("max_calls", DEFAULT_MAX_CALLS))
-    ctx: OpContext = http.context(
-        operation=operation,
-        credential=credential,
-        max_calls=max_calls,
-        max_pages=max_pages,
-    )
+    context_kwargs: dict[str, Any] = {
+        "operation": operation,
+        "credential": credential,
+        "max_calls": max_calls,
+        "max_pages": max_pages,
+    }
+    if request_budget is not None:
+        context_kwargs["request_budget"] = request_budget
+    ctx: OpContext = http.context(**context_kwargs)
     ctx.allow_cache = _cache_allowed(case, operation, as_of)
     method = getattr(adapter, operation.value)
 
@@ -658,8 +664,15 @@ def run_suite(
     progress: ProgressCallback | None = None,
     cooldowns: CooldownStore | None = None,
     ignore_cooldown: bool = False,
+    max_requests_per_provider: int | None = None,
 ) -> dict[str, Any]:
     """Run a suite and return the result document. The only way to run a suite.
+
+    ``max_requests_per_provider`` is a hard cap on real HTTP requests per provider for the whole
+    run (retries included; see :class:`RequestBudget`). Rows that start after a provider's cap is
+    spent are ``not_run`` with reason ``request_budget``, and an operation that hits the cap
+    mid-way is truncated, so its missing facts read ``incomplete``. Traversal is refused with a
+    cap: its call count depends on what each step returns.
 
     ``should_cancel`` and ``progress`` exist for callers with no terminal: the
     first is checked before each planned row and stops the run through the same
@@ -672,6 +685,9 @@ def run_suite(
     """
 
     started_at = _utc_now()
+    if max_requests_per_provider is not None:
+        # Validate before anything is planned, so a bad cap costs nothing.
+        RequestBudget(max_requests_per_provider)
     selected = _select_providers(adapters, providers, suite.providers)
     is_configured = resolve_configured or config.is_configured
     excluded = [provider for provider in dict.fromkeys(exclude) if provider in selected]
@@ -742,6 +758,18 @@ def run_suite(
                 for operation in TRAVERSAL_OPERATIONS:
                     plan.append((case, provider_id, operation, Mode.TRAVERSAL))
 
+    if max_requests_per_provider is not None and any(
+        mode is Mode.TRAVERSAL for _case, _pid, _op, mode in plan
+    ):
+        raise ValueError(
+            "a request cap cannot be combined with traversal: its call count depends on each "
+            "step's answer. Run without --traversal (and without traversal cases)."
+        )
+    budgets: dict[str, RequestBudget] = (
+        {provider_id: RequestBudget(max_requests_per_provider) for provider_id in selected}
+        if max_requests_per_provider is not None
+        else {}
+    )
     done: set[tuple[str, str, str, str]] = set()
     http_by_provider: dict[str, Any] = {}
     blocked_recorded: set[str] = set()
@@ -825,6 +853,23 @@ def run_suite(
                 done.add(key)
                 continue
 
+            budget = budgets.get(provider_id)
+            if budget is not None and not budget.room() and configured[provider_id]:
+                append_row(
+                    case.id,
+                    _skipped_row(
+                        case,
+                        provider_id,
+                        operation,
+                        mode,
+                        REQUEST_BUDGET_REASON,
+                        f"not run: the request cap of {budget.limit} for this provider is spent "
+                        f"({budget.used} used)",
+                    ),
+                )
+                done.add(key)
+                continue
+
             adapter = adapters[provider_id]()
             http = http_by_provider.setdefault(provider_id, http_factory(provider_id))
             if provider_id in cooling_notes and hasattr(http, "block"):
@@ -856,6 +901,7 @@ def run_suite(
                 mode=mode,
                 configured=configured[provider_id],
                 as_of=resolved_as_of,
+                request_budget=budget,
             )
             append_row(case.id, row)
             done.add(key)
@@ -899,6 +945,16 @@ def run_suite(
             "git_revision": git_revision(),
             "python": sys.version.split()[0],
             "cache": cache_block,
+            **(
+                {
+                    "request_budget": {
+                        "limit": max_requests_per_provider,
+                        "used": {pid: budget.used for pid, budget in budgets.items()},
+                    }
+                }
+                if budgets
+                else {}
+            ),
         },
         "suite": {
             "name": suite.name,
@@ -991,6 +1047,7 @@ def run_oneoff(
 
 __all__ = [
     "COOLING_DOWN_REASON",
+    "REQUEST_BUDGET_REASON",
     "SCHEMA",
     "TRAVERSAL_OPERATIONS",
     "ProgressCallback",

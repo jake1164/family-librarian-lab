@@ -366,6 +366,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             resume=resume,
             cooldowns=_cooldowns(args.out),
             ignore_cooldown=args.ignore_cooldown,
+            max_requests_per_provider=args.max_requests_per_provider,
         )
     except (CaseValidationError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
@@ -572,6 +573,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run the traversal measurement for every case",
     )
     run.add_argument("--out", help=f"output root (default {DEFAULT_OUT_ROOT})")
+    run.add_argument(
+        "--max-requests-per-provider",
+        dest="max_requests_per_provider",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "hard cap on real HTTP requests to each provider for the whole run, retries included. "
+            "Later rows are skipped (not_run / request_budget). Not usable with traversal"
+        ),
+    )
     run.add_argument(
         "--ignore-cooldown",
         action="store_true",

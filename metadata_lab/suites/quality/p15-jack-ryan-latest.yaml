@@ -8,38 +8,50 @@ cases:
     tags: [first-six, as_of, valid_until, authors, date]
     description: "Jack Ryan as of 2026-11-14: Rules of Engagement released 2026-05-19 and The Coldest War scheduled for 2026-11-24."
     reference:
-      source: "https://openlibrary.org/search.json?q=series%3A%22Jack+Ryan%22&fields=title,author_name,first_publish_year (returns 'Tom Clancy Rules of Engagement' by Ward Larsen and 'Tom Clancy The Coldest War') and https://openlibrary.org/books/OL62376271M.json (The Coldest War, publish_date 2026-11-24, publisher Penguin) and https://openlibrary.org/search.json?title=Rules+of+Engagement&author=Larsen (first_publish_year 2026, publish_date 2026-05-19)"
-      verified_on: "2026-11-14"
-      confidence: medium
+      source: "https://www.penguinrandomhouse.com/books/819307/tom-clancy-the-coldest-war-by-m-p-woodward/ (publisher: By M.P. Woodward, Book 28 of 28 A Jack Ryan Novel, G.P. Putnam's Sons, hardcover available Nov 24, 2026) and https://tomclancy.com/product/rules-of-engagement (By Ward Larsen, A Jack Ryan Novel, G.P. Putnam's Sons, May 19, 2026)"
+      verified_on: "2026-11-16"
+      confidence: high
     input:
       series: "Jack Ryan"
       title: "Rules of Engagement"
       author: "Ward Larsen"
     operations: [series_members]
     notes:
-      - "The Coldest War edition record names no author, and the Wikipedia Jack Ryan (character) article lists M. P. Woodward's Jack Ryan novels as Shadow State (2024), Line of Demarcation (2025) and Terminal Velocity (2025) without this title. The plan's attribution to M. P. Woodward is therefore not confirmed here, so no member author expectation is made for that title; the title and the 2026-11-24 date are confirmed by the edition record."
-      - "valid_until on both members keeps the evaluation date explicit; after 2026-12-31 the release status must be re-checked."
+      - "WP5 re-verification 2026-11-16 against the publisher (Penguin Random House) and the Tom Clancy franchise site; Open Library is no longer a source. This also resolves the earlier open question: the publisher credits The Coldest War to M. P. Woodward, so that author expectation is now asserted."
+      - "Time-sensitive. As of 2026-11-16 The Coldest War is still scheduled (24 Nov 2026) and Rules of Engagement is on sale. valid_until stays 2026-12-31; after that the release status must be re-checked and the check reports needs_review."
+      - "Legitimate ambiguity kept: edition dates differ. The Coldest War hardcover, ebook and audiobook are listed for Nov 24, 2026 but the large-print edition for Dec 15, 2026 on the same page. The expectation is the hardcover/ebook date; a provider reporting the large-print date would show differs and the evidence says why."
+      - "Series numbering ('Book 28 of 28', Rules of Engagement is 27 per retailers) is the publisher's count of 'A Jack Ryan Novel' titles; whether providers share that scheme is unknown, so no position is asserted."
+      - "tomclancy.com is the franchise site and prints the imprint (G.P. Putnam's Sons) next to the author and date, but its operator is not stated on the page, so the Rules of Engagement facts are medium. The Penguin Random House page for Rules of Engagement itself could not be read (it returned an empty stub)."
     expect:
       series_members:
         series: "Jack Ryan"
         fact_type: time_sensitive
-        source: "https://openlibrary.org/search.json?q=series%3A%22Jack+Ryan%22&fields=title,author_name,first_publish_year"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://www.penguinrandomhouse.com/books/819307/tom-clancy-the-coldest-war-by-m-p-woodward/ ('A Jack Ryan Novel')"
+        source_kind: primary
+        evidence: "Publisher series line: 'Book 28 of 28: A Jack Ryan Novel'."
+        verified_on: "2026-11-16"
+        confidence: high
         exhaustive: false
         members:
           - title: "Rules of Engagement"
+            aliases: ["Tom Clancy Rules of Engagement"]
             published: "2026-05-19"
             authors: ["Ward Larsen"]
             fact_type: time_sensitive
             valid_until: "2026-12-31"
-            source: "https://openlibrary.org/search.json?title=Rules+of+Engagement&author=Larsen"
-            verified_on: "2026-11-14"
+            source: "https://tomclancy.com/product/rules-of-engagement ('By Ward Larsen'; 'Hardcover | 448 pages | 978-0593718094 | May 19, 2026')"
+            source_kind: primary
+            evidence: "Franchise site prints author, imprint and date."
+            verified_on: "2026-11-16"
             confidence: medium
           - title: "The Coldest War"
+            aliases: ["Tom Clancy The Coldest War"]
             published: "2026-11-24"
+            authors: ["M. P. Woodward"]
             fact_type: time_sensitive
             valid_until: "2026-12-31"
-            source: "https://openlibrary.org/books/OL62376271M.json (title, publish_date 2026-11-24, publisher Penguin)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://www.penguinrandomhouse.com/books/819307/tom-clancy-the-coldest-war-by-m-p-woodward/ ('By M.P. Woodward'; 'Available on Nov 24, 2026')"
+            source_kind: primary
+            evidence: "Publisher page: author, imprint G.P. Putnam's Sons, hardcover/ebook/audio Nov 24, 2026; large print Dec 15, 2026."
+            verified_on: "2026-11-16"
+            confidence: high

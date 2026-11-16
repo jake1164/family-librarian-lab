@@ -8,8 +8,8 @@ cases:
     tags: [forbid, position, freshness]
     description: "A Song of Ice and Fire: The Winds of Winter is the planned sixth novel and must not be treated as published."
     reference:
-      source: "https://www.wikidata.org/wiki/Q2712708 (instance of 'unpublished work', P179 A Song of Ice and Fire, P1545=6, no P577 publication date) and https://en.wikipedia.org/wiki/The_Winds_of_Winter (\"the planned sixth and penultimate novel\") and https://www.wikidata.org/wiki/Q45875 (A Dream of Spring at P1545=7)"
-      verified_on: "2026-11-14"
+      source: "https://georgerrmartin.com/notablog/2025/04/07/rolling-rolling-rolling/ (the author, 7 April 2025: \"THE WINDS OF WINTER, the sixth volume of A SONG OF ICE & FIRE\"), https://www.penguinrandomhouse.com/series/SOO/a-song-of-ice-and-fire/ (publisher series list: five books, no Winds of Winter) and https://en.wikipedia.org/wiki/The_Winds_of_Winter (publication date TBD)"
+      verified_on: "2026-11-16"
       confidence: medium
     input:
       series: "A Song of Ice and Fire"
@@ -17,14 +17,18 @@ cases:
       author: "George R. R. Martin"
     operations: [series_members]
     notes:
-      - "The plan asks that no unverified release date be accepted. A forbid entry needs a specific value to compare against, and no release date exists in any source opened here, so this fixture cannot express that assertion; the 2026-11-24 style checks belong to P15. Recorded as a schema gap rather than guessed."
-      - "Position 7 belongs to A Dream of Spring, so a member at position 7 is a verifiable error."
+      - "WP5 re-verification 2026-11-16, repeating the 2026-11-14 baseline. Position 6 now rests on the author's own wording; the earlier Wikidata sources are no longer used."
+      - "Unpublished status, evidence for 'not published as of 2026-11-16': the author's blog has no 2026 post about the book (latest posts 19 Feb, 7 May, 1 Jul, 3 Aug and 3 Sep 2026 are about other topics; 'Better Late Than Never', 3 Aug 2026, gives no book news); the publisher's series page lists five books only; Wikipedia gives the publication date as TBD; Bantam denied an April rumour of a leaked finished manuscript (IBTimes, 1 Nov 2026, secondary). This is absence of an announcement, not a statement that no date exists."
+      - "Publication status is now expressed as a dated assertion (publication_status: planned, as of 2026-11-16, medium confidence). It is not inferred from a missing release date: the evidence is the author's repeated 'not announcing completion', the publisher's list of published books, and Bantam's denial of a leak. How it scores: a provider with no release date is omitted, not right; a provider whose date says published or scheduled contradicts a medium-confidence reference, so that fact is needs_review, never a difference. A date-only provider can therefore never confirm 'planned' either."
+      - "A Dream of Spring is 'planned seventh' only in secondary sources (Wikipedia, IBTimes); the author's pages read do not name it. The position-7 forbid follows from position 6 being the author's stated volume number."
     expect:
       series_members:
         series: "A Song of Ice and Fire"
         fact_type: time_sensitive
-        source: "https://www.wikidata.org/wiki/Q2712708"
-        verified_on: "2026-11-14"
+        source: "https://www.penguinrandomhouse.com/series/SOO/a-song-of-ice-and-fire/ (published books only)"
+        source_kind: primary
+        evidence: "Publisher series list stops at Book 5, A Dance with Dragons."
+        verified_on: "2026-11-16"
         confidence: medium
         exhaustive: false
         members:
@@ -32,8 +36,15 @@ cases:
             position: "6"
             fact_type: time_sensitive
             valid_until: "2026-12-31"
-            source: "https://www.wikidata.org/wiki/Q2712708 (P1545=6, unpublished work, no publication date)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://georgerrmartin.com/notablog/2025/04/07/rolling-rolling-rolling/ (\"the sixth volume of A SONG OF ICE & FIRE\")"
+            source_kind: primary
+            evidence: "Author, 7 April 2025: 'THE WINDS OF WINTER, the sixth volume of A SONG OF ICE & FIRE'."
+            verified_on: "2026-11-16"
+            confidence: high
+            publication_status:
+              status: planned
+              as_of: 2026-11-16
+              confidence: medium
+              evidence: "Announced as the planned sixth volume with no release date: the author's blog (latest posts Feb to Sep 2026) announces nothing and his April 2025 post says he is not announcing completion; the publisher's series page lists only the five published books; Bantam denied a completion rumour (IBTimes, 1 Nov 2026, secondary); Wikipedia gives the date as TBD. Absence of an announcement, not proof that none exists."
         forbid:
           - {title: "The Winds of Winter", position: "7"}

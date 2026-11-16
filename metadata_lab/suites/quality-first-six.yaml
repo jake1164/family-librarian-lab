@@ -11,66 +11,89 @@ cases:
     tags: [first-six, count, position]
     description: "Harry Potter: seven original novels by J. K. Rowling, with the third entry at position 3."
     reference:
-      source: "https://www.wikidata.org/wiki/Q8337 (P527 lists the seven novels plus the prequel short story) and https://en.wikipedia.org/wiki/Harry_Potter (\"a series of seven children's fantasy novels\"); ordinals confirmed per book on Wikipedia, e.g. https://en.wikipedia.org/wiki/Harry_Potter_and_the_Prisoner_of_Azkaban (\"The third novel in the Harry Potter series\")"
-      verified_on: "2026-11-14"
+      source: "https://jkrowling.com/ (\"a series of seven novels following friends Harry, Ron, and Hermione\"), https://www.jkrowling.com/writing/ (the seven titles in order; Cursed Child listed separately as a stage play published as a script book) and https://kids.scholastic.com/kids/books/harry-potter/ (US publisher: \"the series of seven books\"; fourth book, sixth story, concluded in 2007 with Deathly Hallows)"
+      verified_on: "2026-11-16"
       confidence: medium
     input:
       series: "Harry Potter"
       title: "Harry Potter and the Philosopher's Stone"
       author: "J. K. Rowling"
     operations: [series_members]
+    notes:
+      - "WP5 re-verification 2026-11-16 against the author's site and the US publisher; the earlier Wikipedia/Wikidata sources are no longer used."
+      - "Ordinals: the author site lists the seven novels in order but prints no numbers. Positions 1, 4, 6 and 7 are stated outright by the Scholastic page; 2, 3 and 5 rest on the order of the author's list, hence confidence medium for those."
+      - "Book 1 has two official titles: the UK title (Philosopher's Stone, the author's site) and the US title (Sorcerer's Stone, Scholastic). Both are accepted, the second as an alias."
+      - "Legitimate ambiguity kept: the author's site and the Wizarding World site call Cursed Child 'the eighth story' (a stage play, published as a script book) but list it unnumbered and apart from the novels. main_count 7 counts the novels only; a provider that lists Cursed Child as an eighth entry is not contradicting the official wording, only the novel count. P12 tests its classification."
+      - "Not reachable: Bloomsbury (blocked), Simon & Schuster pages. No catalogue (LoC/BL) record was read."
     expect:
       series_members:
         series: "Harry Potter"
         fact_type: coverage
-        source: "https://www.wikidata.org/wiki/Q8337"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://jkrowling.com/ (\"series of seven novels\") and https://kids.scholastic.com/kids/books/harry-potter/ (\"the series of seven books\")"
+        source_kind: primary
+        evidence: "jkrowling.com: 'began a series of seven novels'; Scholastic bio: 'the series of seven books'."
+        verified_on: "2026-11-16"
+        confidence: high
         exhaustive: false
         main_count: 7
         members:
           - title: "Harry Potter and the Philosopher's Stone"
+            aliases: ["Harry Potter and the Sorcerer's Stone"]
             position: "1"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Philosopher%27s_Stone (\"the first novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://kids.scholastic.com/kids/books/harry-potter/ (\"the first was published in the UK as Harry Potter and the Philosopher's Stone in 1997\"; US listings use Sorcerer's Stone) and https://www.jkrowling.com/writing/"
+            source_kind: primary
+            evidence: "Scholastic: first book; US title Sorcerer's Stone, UK title Philosopher's Stone."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "Harry Potter and the Chamber of Secrets"
             position: "2"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Chamber_of_Secrets (\"The second novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
+            source: "https://www.jkrowling.com/writing/ (second in the author's ordered list)"
+            source_kind: primary
+            evidence: "Order of the author's list only; no number printed."
+            verified_on: "2026-11-16"
             confidence: medium
           - title: "Harry Potter and the Prisoner of Azkaban"
             position: "3"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Prisoner_of_Azkaban (\"The third novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
+            source: "https://www.jkrowling.com/writing/ (third in the author's ordered list)"
+            source_kind: primary
+            evidence: "Order of the author's list only; no number printed."
+            verified_on: "2026-11-16"
             confidence: medium
           - title: "Harry Potter and the Goblet of Fire"
             position: "4"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Goblet_of_Fire (\"the fourth novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://kids.scholastic.com/kids/books/harry-potter/ (\"the fourth book in the Harry Potter series\")"
+            source_kind: primary
+            evidence: "Scholastic: 'the fourth book in the Harry Potter series'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "Harry Potter and the Order of the Phoenix"
             position: "5"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Order_of_the_Phoenix (\"the fifth and longest novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
+            source: "https://www.jkrowling.com/writing/ (fifth in the author's ordered list)"
+            source_kind: primary
+            evidence: "Order of the author's list only; no number printed."
+            verified_on: "2026-11-16"
             confidence: medium
           - title: "Harry Potter and the Half-Blood Prince"
             position: "6"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Half-Blood_Prince (\"the sixth and penultimate novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://kids.scholastic.com/kids/books/harry-potter/ (\"the pivotal sixth story in J.K. Rowling's classic series\")"
+            source_kind: primary
+            evidence: "Scholastic: 'the pivotal sixth story'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "Harry Potter and the Deathly Hallows"
             position: "7"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Deathly_Hallows (\"the seventh and final novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://kids.scholastic.com/kids/books/harry-potter/ (series concluded \"in 2007 with the publication of Harry Potter and the Deathly Hallows\")"
+            source_kind: primary
+            evidence: "Scholastic: the seven-book series concluded with Deathly Hallows (2007)."
+            verified_on: "2026-11-16"
+            confidence: high
   - id: p07-yarros-other-series
     tier: medium
     tags: [first-six, traversal, author_series, authors]
@@ -102,11 +125,11 @@ cases:
         confidence: medium
   - id: p08-threshing-day
     tier: medium
-    tags: [first-six, fractional_position, work_type, forbid, freshness]
-    description: "The Empyrean carries a 2026 entry at position 3.5 that is not main novel number 4."
+    tags: [first-six, work_type, forbid, freshness]
+    description: "Threshing Day is a 2026 collection of thirteen stories in the Empyrean world, catalogued as Empyrean 3.5 and not main novel number 4."
     reference:
-      source: "https://en.wikipedia.org/wiki/Rebecca_Yarros (\"On September 29, 2026, Threshing Day was released as a companion volume to the series featuring 13 stories told from the perspectives of 13 different characters\"; bibliography entry \"Threshing Day (short story collection). Red Tower Books. 2026\") and https://openlibrary.org/works/OL45870364W/editions.json (an edition of 'Threshing Day', series 'The Empyrean Series, Book 3.5')"
-      verified_on: "2026-11-14"
+      source: "https://rebeccayarros.com/threshing-day (\"Thirteen unforgettable stories\"; Series: Empyrean, Secret Project), https://lunch.publishersmarketplace.com/2026/07/forthcoming-yarross-next-fourth-wing-book-is-called-threshing-day/ (trade press quoting the author: \"not the next in the series, but a collection of stories\"; release 29 September) and https://www.entangledpublishing.com/books/threshing-day (publisher page: Release Date November 16, 2026) and https://www.overdrive.com/media/13223405/threshing-day (distributor catalogue: The Empyrean #3.5, Short Stories, 29 September 2026)"
+      verified_on: "2026-11-16"
       confidence: medium
     input:
       series: "The Empyrean"
@@ -114,27 +137,37 @@ cases:
       author: "Rebecca Yarros"
     operations: [series_members]
     notes:
-      - "Position 3.5 comes from the Open Library edition record (series 'The Empyrean Series, Book 3.5'); the 2026-09-29 date and the short-story-collection type come from the Wikipedia Rebecca Yarros article."
-      - "The edition title 'Threshing Day (Wing and Claw Collection)' is not used as evidence of the work type: the same 'Wing and Claw Collection' wording appears on special editions of Fourth Wing and Iron Flame."
+      - "WP5 re-verification 2026-11-16, corrected the same day. Deliberate changes: (1) published gains an accepted alternative; (2) work_type and the forbids cite the author's site, trade press and a distributor catalogue instead of Open Library and Wikipedia; (3) the series position 3.5 stays, now on separate catalogue evidence (see next note)."
+      - "Position 3.5, two views kept apart. CATALOGUE: OverDrive lists the title in 'The Empyrean' as '#3.5 in series' (page https://www.overdrive.com/media/13223405/threshing-day, read 2026-11-16), and the owner independently verified the same record's structured readingOrder field, which the fetch of the rendered page could not show. AUTHOR/PUBLISHER: the author's site gives the series line 'Empyrean, Secret Project' with no number, and the author is quoted saying the book is 'not the next in the series'. These do not contradict each other: 3.5 is a catalogue reading order, and the author/publisher state no number. The catalogue value is therefore scored (accepted 3.5, medium confidence, source_kind secondary, upstream overlap with the providers not established) and does NOT supersede the author's classification, which is kept as the 'no main-line number' reading: a provider with no position for Threshing Day is omitted, not wrong, and 'Book 4' stays forbidden."
+      - "An earlier version of this fixture and of its verification notes said 3.5 came only from Open Library. That was wrong and is corrected here."
+      - "Legitimate ambiguity kept: the release date. OverDrive's record gives 29 September 2026, as do trade press and a retailer; the publisher's own product page says 'Release Date: November 16, 2026' (the same date sits on its Fourth Wing page with blank ISBN and page fields, so it may be a placeholder); the author's site says 'Available now!' without a date. Both dates are accepted. Confidence is medium for the member: three sources agree on 29 September, the publisher page disagrees."
+      - "work_type collection: the author's page says 'Thirteen unforgettable stories'; OverDrive's subject is 'Short Stories'; the word 'collection' is the author's, quoted by Publishers Lunch from her Instagram post (not fetched). 'Wing and Claw Collection' appears only on retailer titles, never on the author's or publisher's pages, so it is an alias, not evidence of the work type."
+      - "Unverifiable here: the first edition's format, and the imprint 'Red Tower Books' (retailers only; the publisher page names no imprint; OverDrive names Entangled Publishing, LLC)."
     expect:
       series_members:
         series: "The Empyrean"
         fact_type: time_sensitive
-        source: "https://openlibrary.org/works/OL45870364W/editions.json"
-        verified_on: "2026-11-14"
+        source: "https://rebeccayarros.com/threshing-day (Series: Empyrean, Secret Project)"
+        source_kind: primary
+        evidence: "Author site lists Threshing Day in The Empyrean with no book number."
+        verified_on: "2026-11-16"
         confidence: medium
         exhaustive: false
         members:
           - title: "Threshing Day"
+            aliases: ["Threshing Day (Wing and Claw Collection)"]
             position: "3.5"
             accepted_positions: ["3.5"]
             position_scheme: publication
             work_type: collection
             published: "2026-09-29"
+            accepted_published: ["2026-11-16"]
             fact_type: time_sensitive
             valid_until: "2026-12-31"
-            source: "https://openlibrary.org/works/OL45870364W/editions.json (position 3.5) and https://en.wikipedia.org/wiki/Rebecca_Yarros (released 2026-09-29; short story collection)"
-            verified_on: "2026-11-14"
+            source: "https://www.overdrive.com/media/13223405/threshing-day (The Empyrean '#3.5 in series', subject Short Stories, release 29 September 2026; readingOrder verified by the owner); https://lunch.publishersmarketplace.com/2026/07/forthcoming-yarross-next-fourth-wing-book-is-called-threshing-day/ (29 September; 'a collection of stories'); https://www.entangledpublishing.com/books/threshing-day (Release Date: November 16, 2026); https://rebeccayarros.com/threshing-day ('Thirteen unforgettable stories', Series: Empyrean, Secret Project)"
+            source_kind: secondary
+            evidence: "Position 3.5, 'Short Stories' and 29 Sep from OverDrive's catalogue record; collection and 'not the next in the series' from the author via trade press; the author's page gives no number; the publisher page dates it 16 Nov."
+            verified_on: "2026-11-16"
             confidence: medium
         forbid:
           - {title: "Threshing Day", work_type: novel}
@@ -144,9 +177,9 @@ cases:
     tags: [first-six, work_type, forbid, collection]
     description: "Memory's Legion is a collection of Expanse short fiction, not main novel number 10."
     reference:
-      source: "https://en.wikipedia.org/wiki/Memory%27s_Legion (\"a collection of science fiction short stories and novellas ... Published by Orbit Books on March 15, 2022\") and https://www.wikidata.org/wiki/Q107316456 (\"2022 short story collection by James S. A. Corey\", P179 The Expanse with no series ordinal)"
-      verified_on: "2026-11-14"
-      confidence: medium
+      source: "https://www.jamessacorey.com/books/memorys-legion (\"the complete collection of short fiction set in the Expanse universe\"; no series number), https://www.hachettebookgroup.com/?p=1259087 (Orbit: \"Memory's Legion: The Complete Expanse Story Collection\", Collections & Anthologies, series The Expanse, no number) and https://publishersweekly.com/9780316669191 (review: eight stories; Leviathan Falls is \"the ninth and final\" Expanse novel)"
+      verified_on: "2026-11-16"
+      confidence: high
     input:
       series: "The Expanse"
       title: "Memory's Legion"
@@ -154,22 +187,31 @@ cases:
     operations: [series_members]
     options: {max_calls: 20}
     notes:
-      - "Wikidata records no P1545 ordinal for Memory's Legion while every main novel carries one (1-9), which is the evidence that it is not main novel 10."
+      - "WP5 re-verification 2026-11-16 against the author's site, the publisher (Orbit, Hachette Book Group) and Publishers Weekly; the earlier Wikipedia/Wikidata sources are no longer used."
+      - "Three independent primary or trade sources agree it is a short-fiction collection and none gives it a series number, which is the evidence for the 'not novel 10' forbid. Absence of a number is the finding; no source says 'not book 10' in words."
+      - "Full title: the publisher prints the subtitle 'The Complete Expanse Story Collection'; the author's site prints only 'Memory's Legion'. The long form is an alias."
+      - "Publication dates are edition-specific and conflict (author site 22 and 24 March 2022; Hachette paperback 9 May 2023), so no published date is asserted."
+      - "Not reachable: Locus review (403)."
     expect:
       series_members:
         series: "The Expanse"
         fact_type: coverage
-        source: "https://www.wikidata.org/wiki/Q107316456"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://www.hachettebookgroup.com/?p=1259087 (series: The Expanse)"
+        source_kind: primary
+        evidence: "Publisher lists Memory's Legion under the series The Expanse with no number."
+        verified_on: "2026-11-16"
+        confidence: high
         exhaustive: false
         members:
           - title: "Memory's Legion"
+            aliases: ["Memory's Legion: The Complete Expanse Story Collection"]
             work_type: collection
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q107316456 and https://en.wikipedia.org/wiki/Memory%27s_Legion"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://www.jamessacorey.com/books/memorys-legion (\"the complete collection of short fiction\") and https://www.hachettebookgroup.com/?p=1259087 (Collections & Anthologies)"
+            source_kind: primary
+            evidence: "Author site and publisher both describe a collection of short fiction."
+            verified_on: "2026-11-16"
+            confidence: high
         forbid:
           - {title: "Memory's Legion", position: "10"}
   - id: p14-dark-tower
@@ -177,9 +219,9 @@ cases:
     tags: [first-six, accepted_alternatives, position_scheme, position]
     description: "The Dark Tower: The Wind Through the Keyhole is the eighth novel published but sits between volumes four and five in story order."
     reference:
-      source: "https://www.wikidata.org/wiki/Q280898 (seven parts numbered 1-7; The Wind Through the Keyhole listed without a P1545 ordinal) and https://en.wikipedia.org/wiki/The_Dark_Tower:_The_Wind_Through_the_Keyhole (\"it is the eighth novel, but it is set chronologically between volumes four and five\")"
-      verified_on: "2026-11-14"
-      confidence: medium
+      source: "https://stephenking.com/promo/dark-tower-2016-collection/ (the author's site: The Dark Tower I to VII, 'IV 1/2' for The Wind Through the Keyhole; \"officially the eighth book of the Dark Tower saga\"; King \"likes to call ... book 4.5\")"
+      verified_on: "2026-11-16"
+      confidence: high
     input:
       series: "The Dark Tower"
       title: "The Dark Tower: The Gunslinger"
@@ -187,112 +229,144 @@ cases:
     operations: [series_members]
     options: {max_calls: 20}
     notes:
-      - "The 4.5 value is the story-order reading of 'set between volumes four and five'; 8 is the publication order. Both are accepted so the matched scheme can be recorded."
-      - "Member aliases are the short titles these books are published and catalogued under (for example The Gunslinger for The Dark Tower: The Gunslinger). They are exact alternates, not fuzzy matches: translations, graphic-novel adaptations and other works that merely share words stay non-matches. The alias forms still need independent verification (corrective plan WP5)."
+      - "WP5 re-verification 2026-11-16 against stephenking.com; the earlier Wikidata/Wikipedia sources are no longer used."
+      - "Both readings of The Wind Through the Keyhole are primary-source facts, not guesses: the author's site says it is 'officially the eighth book' (publication order, 8) and that King calls it 'book 4.5', taking place after Wizard and Glass and before Wolves of the Calla (story order, 4.5). Both are accepted, so the matched scheme can be recorded. The same page prints its label as 'THE DARK TOWER IV 1/2'; the Scribner trade listing prints 'The Dark Tower IV-1/2'."
+      - "Titles: the author's site prints 'The Dark Tower I: The Gunslinger' ... 'The Dark Tower VII: The Dark Tower', and 'The Song of Susannah' (with 'The'). The fixture keeps its original canonical title strings so earlier results stay comparable, and carries the official forms as exact aliases, together with the short titles. Aliases are exact alternates, not fuzzy matches: translations, graphic-novel adaptations and other works that merely share words stay non-matches."
+      - "Unverified: Simon & Schuster and Scribner pages returned 403/404, so no publisher-side title list was read."
     expect:
       series_members:
         series: "The Dark Tower"
         fact_type: coverage
-        source: "https://www.wikidata.org/wiki/Q280898"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://stephenking.com/promo/dark-tower-2016-collection/"
+        source_kind: primary
+        evidence: "The author's site lists the eight books in order with numerals I to VII and IV 1/2."
+        verified_on: "2026-11-16"
+        confidence: high
         exhaustive: false
         members:
           - title: "The Dark Tower: The Gunslinger"
-            aliases: ["The Gunslinger"]
+            aliases: ["The Gunslinger", "The Dark Tower I: The Gunslinger"]
             position: "1"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=1)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER I: THE GUNSLINGER')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER I'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower II: The Drawing of the Three"
             aliases: ["The Drawing of the Three"]
             position: "2"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=2)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER II')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER II'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower III: The Waste Lands"
             aliases: ["The Waste Lands"]
             position: "3"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=3)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER III')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER III'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower IV: Wizard and Glass"
             aliases: ["Wizard and Glass"]
             position: "4"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=4)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER IV')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER IV'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower V: Wolves of the Calla"
             aliases: ["Wolves of the Calla"]
             position: "5"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=5)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER V')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER V'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower VI: Song of Susannah"
-            aliases: ["Song of Susannah"]
+            aliases: ["Song of Susannah", "The Song of Susannah", "The Dark Tower VI: The Song of Susannah"]
             position: "6"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=6)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER VI: THE SONG OF SUSANNAH')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER VI'; the page prints 'The Song of Susannah'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower VII: The Dark Tower"
             aliases: ["The Dark Tower"]
             position: "7"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q280898 (P1545=7)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('THE DARK TOWER VII: THE DARK TOWER')"
+            source_kind: primary
+            evidence: "Label 'THE DARK TOWER VII'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "The Dark Tower: The Wind Through the Keyhole"
-            aliases: ["The Wind Through the Keyhole"]
+            aliases: ["The Wind Through the Keyhole", "The Dark Tower IV 1/2: The Wind Through the Keyhole", "The Dark Tower IV-1/2: The Wind Through the Keyhole"]
             position: "4.5"
             accepted_positions: ["4.5", "8"]
             position_scheme: story
             fact_type: definition_dependent
-            source: "https://en.wikipedia.org/wiki/The_Dark_Tower:_The_Wind_Through_the_Keyhole (eighth novel, set between volumes four and five)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://stephenking.com/promo/dark-tower-2016-collection/ ('officially the eighth book of the Dark Tower saga'; 'book 4.5'; label 'IV 1/2')"
+            source_kind: primary
+            evidence: "Author's site gives both the publication-order reading (eighth) and the story-order reading (4.5)."
+            verified_on: "2026-11-16"
+            confidence: high
   - id: p15-jack-ryan-latest
     tier: hard
     tags: [first-six, as_of, valid_until, authors, date]
     description: "Jack Ryan as of 2026-11-14: Rules of Engagement released 2026-05-19 and The Coldest War scheduled for 2026-11-24."
     reference:
-      source: "https://openlibrary.org/search.json?q=series%3A%22Jack+Ryan%22&fields=title,author_name,first_publish_year (returns 'Tom Clancy Rules of Engagement' by Ward Larsen and 'Tom Clancy The Coldest War') and https://openlibrary.org/books/OL62376271M.json (The Coldest War, publish_date 2026-11-24, publisher Penguin) and https://openlibrary.org/search.json?title=Rules+of+Engagement&author=Larsen (first_publish_year 2026, publish_date 2026-05-19)"
-      verified_on: "2026-11-14"
-      confidence: medium
+      source: "https://www.penguinrandomhouse.com/books/819307/tom-clancy-the-coldest-war-by-m-p-woodward/ (publisher: By M.P. Woodward, Book 28 of 28 A Jack Ryan Novel, G.P. Putnam's Sons, hardcover available Nov 24, 2026) and https://tomclancy.com/product/rules-of-engagement (By Ward Larsen, A Jack Ryan Novel, G.P. Putnam's Sons, May 19, 2026)"
+      verified_on: "2026-11-16"
+      confidence: high
     input:
       series: "Jack Ryan"
       title: "Rules of Engagement"
       author: "Ward Larsen"
     operations: [series_members]
     notes:
-      - "The Coldest War edition record names no author, and the Wikipedia Jack Ryan (character) article lists M. P. Woodward's Jack Ryan novels as Shadow State (2024), Line of Demarcation (2025) and Terminal Velocity (2025) without this title. The plan's attribution to M. P. Woodward is therefore not confirmed here, so no member author expectation is made for that title; the title and the 2026-11-24 date are confirmed by the edition record."
-      - "valid_until on both members keeps the evaluation date explicit; after 2026-12-31 the release status must be re-checked."
+      - "WP5 re-verification 2026-11-16 against the publisher (Penguin Random House) and the Tom Clancy franchise site; Open Library is no longer a source. This also resolves the earlier open question: the publisher credits The Coldest War to M. P. Woodward, so that author expectation is now asserted."
+      - "Time-sensitive. As of 2026-11-16 The Coldest War is still scheduled (24 Nov 2026) and Rules of Engagement is on sale. valid_until stays 2026-12-31; after that the release status must be re-checked and the check reports needs_review."
+      - "Legitimate ambiguity kept: edition dates differ. The Coldest War hardcover, ebook and audiobook are listed for Nov 24, 2026 but the large-print edition for Dec 15, 2026 on the same page. The expectation is the hardcover/ebook date; a provider reporting the large-print date would show differs and the evidence says why."
+      - "Series numbering ('Book 28 of 28', Rules of Engagement is 27 per retailers) is the publisher's count of 'A Jack Ryan Novel' titles; whether providers share that scheme is unknown, so no position is asserted."
+      - "tomclancy.com is the franchise site and prints the imprint (G.P. Putnam's Sons) next to the author and date, but its operator is not stated on the page, so the Rules of Engagement facts are medium. The Penguin Random House page for Rules of Engagement itself could not be read (it returned an empty stub)."
     expect:
       series_members:
         series: "Jack Ryan"
         fact_type: time_sensitive
-        source: "https://openlibrary.org/search.json?q=series%3A%22Jack+Ryan%22&fields=title,author_name,first_publish_year"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://www.penguinrandomhouse.com/books/819307/tom-clancy-the-coldest-war-by-m-p-woodward/ ('A Jack Ryan Novel')"
+        source_kind: primary
+        evidence: "Publisher series line: 'Book 28 of 28: A Jack Ryan Novel'."
+        verified_on: "2026-11-16"
+        confidence: high
         exhaustive: false
         members:
           - title: "Rules of Engagement"
+            aliases: ["Tom Clancy Rules of Engagement"]
             published: "2026-05-19"
             authors: ["Ward Larsen"]
             fact_type: time_sensitive
             valid_until: "2026-12-31"
-            source: "https://openlibrary.org/search.json?title=Rules+of+Engagement&author=Larsen"
-            verified_on: "2026-11-14"
+            source: "https://tomclancy.com/product/rules-of-engagement ('By Ward Larsen'; 'Hardcover | 448 pages | 978-0593718094 | May 19, 2026')"
+            source_kind: primary
+            evidence: "Franchise site prints author, imprint and date."
+            verified_on: "2026-11-16"
             confidence: medium
           - title: "The Coldest War"
+            aliases: ["Tom Clancy The Coldest War"]
             published: "2026-11-24"
+            authors: ["M. P. Woodward"]
             fact_type: time_sensitive
             valid_until: "2026-12-31"
-            source: "https://openlibrary.org/books/OL62376271M.json (title, publish_date 2026-11-24, publisher Penguin)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://www.penguinrandomhouse.com/books/819307/tom-clancy-the-coldest-war-by-m-p-woodward/ ('By M.P. Woodward'; 'Available on Nov 24, 2026')"
+            source_kind: primary
+            evidence: "Publisher page: author, imprint G.P. Putnam's Sons, hardcover/ebook/audio Nov 24, 2026; large print Dec 15, 2026."
+            verified_on: "2026-11-16"
+            confidence: high

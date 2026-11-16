@@ -79,7 +79,14 @@ RECORD_LEVEL_UNKNOWN = "unknown"
 #: Allowed ``reason`` values on a ``not_run`` row. ``cooling_down`` means the
 #: provider is inside a rate-limit cool-down, so the row was never attempted.
 NOT_RUN_REASONS = frozenset(
-    {"excluded", "cancelled", "chain_broken", "not_requested", "cooling_down"}
+    {
+        "excluded",
+        "cancelled",
+        "chain_broken",
+        "not_requested",
+        "cooling_down",
+        "request_budget",
+    }
 )
 
 

@@ -6,42 +6,52 @@ cases:
   - id: p09-legacy
     tier: medium
     tags: [fractional_position, position]
-    description: "Rebecca Yarros's Legacy series uses decimal positions: 0.5, 0.7 and 1."
+    description: "Rebecca Yarros's Legacy series uses decimal positions: Point of Origin 0.5, Ignite 0.75 and Reason to Believe 1."
     reference:
-      source: "https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year returns 'Point of Origin - Legacy #0.5' (2016), 'Ignite - Legacy #0.7' (2016) and 'Reason to Believe - Legacy #1' (2018)"
-      verified_on: "2026-11-14"
-      confidence: medium
+      source: "https://rebeccayarros.com/legacy (the author's own series page: \"Series: Legacy, Book .5\" Point Of Origin, \"Book .75\" Ignite, \"Book 1\" Reason To Believe)"
+      verified_on: "2026-11-16"
+      confidence: high
     input:
       series: "Legacy"
       title: "Point of Origin"
       author: "Rebecca Yarros"
     operations: [series_members]
     notes:
-      - "CONFLICT: the plan gives Ignite position 0.75; the Open Library edition title says 'Legacy #0.7'. The source value 0.7 is kept (see .ai_docs/metadata-lab-fixture-conflicts.md)."
+      - "Reference correction 2026-11-16 (owner decision): Ignite is position 0.75. The author's own page lists it as 'Book .75'. The earlier value 0.7 came from an Open Library edition title ('Ignite - Legacy #0.7') and is wrong; 0.7 is not accepted as equivalent, so a provider reporting 0.7 scores as a difference."
+      - "Point Of Origin and Reason To Believe are confirmed by the same page ('Book .5' and 'Book 1')."
+      - "The author's page prints the title as 'Point Of Origin'; title matching ignores case."
     expect:
       series_members:
         series: "Legacy"
         fact_type: coverage
-        source: "https://openlibrary.org/search.json?author=Rebecca+Yarros&fields=title,first_publish_year"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://rebeccayarros.com/legacy"
+        source_kind: primary
+        evidence: "The author's Legacy page lists the three books with 'Series: Legacy, Book n'."
+        verified_on: "2026-11-16"
+        confidence: high
         exhaustive: false
         members:
           - title: "Point of Origin"
             position: "0.5"
             fact_type: fixed
-            source: "Open Library edition title 'Point of Origin - Legacy #0.5' (2016)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://rebeccayarros.com/legacy (\"Series: Legacy, Book .5\")"
+            source_kind: primary
+            evidence: "Series: Legacy, Book .5."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "Ignite"
-            position: "0.7"
+            position: "0.75"
             fact_type: fixed
-            source: "Open Library edition title 'Ignite - Legacy #0.7' (2016); the plan says 0.75 (conflict)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://rebeccayarros.com/legacy (\"Series: Legacy, Book .75\")"
+            source_kind: primary
+            evidence: "Series: Legacy, Book .75."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "Reason to Believe"
             position: "1"
             fact_type: fixed
-            source: "Open Library edition title 'Reason to Believe - Legacy #1' (2018)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://rebeccayarros.com/legacy (\"Series: Legacy, Book 1\")"
+            source_kind: primary
+            evidence: "Series: Legacy, Book 1."
+            verified_on: "2026-11-16"
+            confidence: high

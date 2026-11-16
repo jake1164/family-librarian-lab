@@ -8,45 +8,59 @@ cases:
     tags: [series_for_book, position]
     description: "Fourth Wing is the first book in Rebecca Yarros's Empyrean series."
     reference:
-      source: "https://en.wikipedia.org/wiki/Fourth_Wing (\"It is the first book in the Empyrean series\") and https://www.wikidata.org/wiki/Q124618108 (series Q124618108: Fourth Wing P1545=1, Iron Flame P1545=2, Onyx Storm P1545=3)"
-      verified_on: "2026-11-14"
-      confidence: medium
+      source: "https://rebeccayarros.com/empyrean, https://rebeccayarros.com/fourthwing, https://rebeccayarros.com/ironflame and https://rebeccayarros.com/onyxstorm (the author's own book pages: Series: Empyrean, Book 1 / 2 / 3)"
+      verified_on: "2026-11-16"
+      confidence: high
     input:
       title: "Fourth Wing"
       author: "Rebecca Yarros"
       series: "The Empyrean"
     operations: [series_for_book, series_members]
+    notes:
+      - "WP5 re-verification 2026-11-16 against the author's site; the earlier Wikipedia/Wikidata sources are no longer used."
+      - "Series name forms: the author's site headline and 'More Books in The Series' use 'The Empyrean'; the structured 'Series:' field reads 'Empyrean'. Both are accepted ('Empyrean' is in series_aliases). 'Empyrean Series' appears in the author's trigger-warning text ('The Empyrean Series')."
+      - "Threshing Day carries 'Series: Empyrean, Secret Project' (no number) on the same site; see P08."
     expect:
       series_for_book:
         series: "The Empyrean"
         series_aliases: ["Empyrean", "Empyrean Series"]
         fact_type: fixed
-        source: "https://www.wikidata.org/wiki/Q124618108"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://rebeccayarros.com/empyrean (heading 'THE EMPYREAN'; 'Series: Empyrean, Book 1')"
+        source_kind: primary
+        evidence: "Author site prints 'The Empyrean' as the display name and 'Empyrean' in the Series field."
+        verified_on: "2026-11-16"
+        confidence: high
       series_members:
         series: "The Empyrean"
         fact_type: coverage
-        source: "https://www.wikidata.org/wiki/Q124618108"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://rebeccayarros.com/empyrean"
+        source_kind: primary
+        evidence: "Author site lists Fourth Wing, Iron Flame and Onyx Storm as Books 1 to 3."
+        verified_on: "2026-11-16"
+        confidence: high
         exhaustive: false
         members:
           - title: "Fourth Wing"
             position: "1"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q120798796 (P179 The Empyrean, P1545=1)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://rebeccayarros.com/fourthwing (\"Series: Empyrean, Book 1\")"
+            source_kind: primary
+            evidence: "Series: Empyrean, Book 1."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "Iron Flame"
             position: "2"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q123452043 (P179 The Empyrean, P1545=2)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://rebeccayarros.com/ironflame (\"Series: Empyrean, Book 2\")"
+            source_kind: primary
+            evidence: "Series: Empyrean, Book 2."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "Onyx Storm"
             position: "3"
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q124618108 (Onyx Storm, P1545=3)"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://rebeccayarros.com/onyxstorm (\"Series: Empyrean, Book 3\")"
+            source_kind: primary
+            evidence: "Series: Empyrean, Book 3."
+            verified_on: "2026-11-16"
+            confidence: high

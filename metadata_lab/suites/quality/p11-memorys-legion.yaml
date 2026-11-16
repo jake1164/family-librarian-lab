@@ -8,9 +8,9 @@ cases:
     tags: [first-six, work_type, forbid, collection]
     description: "Memory's Legion is a collection of Expanse short fiction, not main novel number 10."
     reference:
-      source: "https://en.wikipedia.org/wiki/Memory%27s_Legion (\"a collection of science fiction short stories and novellas ... Published by Orbit Books on March 15, 2022\") and https://www.wikidata.org/wiki/Q107316456 (\"2022 short story collection by James S. A. Corey\", P179 The Expanse with no series ordinal)"
-      verified_on: "2026-11-14"
-      confidence: medium
+      source: "https://www.jamessacorey.com/books/memorys-legion (\"the complete collection of short fiction set in the Expanse universe\"; no series number), https://www.hachettebookgroup.com/?p=1259087 (Orbit: \"Memory's Legion: The Complete Expanse Story Collection\", Collections & Anthologies, series The Expanse, no number) and https://publishersweekly.com/9780316669191 (review: eight stories; Leviathan Falls is \"the ninth and final\" Expanse novel)"
+      verified_on: "2026-11-16"
+      confidence: high
     input:
       series: "The Expanse"
       title: "Memory's Legion"
@@ -18,21 +18,30 @@ cases:
     operations: [series_members]
     options: {max_calls: 20}
     notes:
-      - "Wikidata records no P1545 ordinal for Memory's Legion while every main novel carries one (1-9), which is the evidence that it is not main novel 10."
+      - "WP5 re-verification 2026-11-16 against the author's site, the publisher (Orbit, Hachette Book Group) and Publishers Weekly; the earlier Wikipedia/Wikidata sources are no longer used."
+      - "Three independent primary or trade sources agree it is a short-fiction collection and none gives it a series number, which is the evidence for the 'not novel 10' forbid. Absence of a number is the finding; no source says 'not book 10' in words."
+      - "Full title: the publisher prints the subtitle 'The Complete Expanse Story Collection'; the author's site prints only 'Memory's Legion'. The long form is an alias."
+      - "Publication dates are edition-specific and conflict (author site 22 and 24 March 2022; Hachette paperback 9 May 2023), so no published date is asserted."
+      - "Not reachable: Locus review (403)."
     expect:
       series_members:
         series: "The Expanse"
         fact_type: coverage
-        source: "https://www.wikidata.org/wiki/Q107316456"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://www.hachettebookgroup.com/?p=1259087 (series: The Expanse)"
+        source_kind: primary
+        evidence: "Publisher lists Memory's Legion under the series The Expanse with no number."
+        verified_on: "2026-11-16"
+        confidence: high
         exhaustive: false
         members:
           - title: "Memory's Legion"
+            aliases: ["Memory's Legion: The Complete Expanse Story Collection"]
             work_type: collection
             fact_type: fixed
-            source: "https://www.wikidata.org/wiki/Q107316456 and https://en.wikipedia.org/wiki/Memory%27s_Legion"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://www.jamessacorey.com/books/memorys-legion (\"the complete collection of short fiction\") and https://www.hachettebookgroup.com/?p=1259087 (Collections & Anthologies)"
+            source_kind: primary
+            evidence: "Author site and publisher both describe a collection of short fiction."
+            verified_on: "2026-11-16"
+            confidence: high
         forbid:
           - {title: "Memory's Legion", position: "10"}

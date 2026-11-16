@@ -8,63 +8,86 @@ cases:
     tags: [first-six, count, position]
     description: "Harry Potter: seven original novels by J. K. Rowling, with the third entry at position 3."
     reference:
-      source: "https://www.wikidata.org/wiki/Q8337 (P527 lists the seven novels plus the prequel short story) and https://en.wikipedia.org/wiki/Harry_Potter (\"a series of seven children's fantasy novels\"); ordinals confirmed per book on Wikipedia, e.g. https://en.wikipedia.org/wiki/Harry_Potter_and_the_Prisoner_of_Azkaban (\"The third novel in the Harry Potter series\")"
-      verified_on: "2026-11-14"
+      source: "https://jkrowling.com/ (\"a series of seven novels following friends Harry, Ron, and Hermione\"), https://www.jkrowling.com/writing/ (the seven titles in order; Cursed Child listed separately as a stage play published as a script book) and https://kids.scholastic.com/kids/books/harry-potter/ (US publisher: \"the series of seven books\"; fourth book, sixth story, concluded in 2007 with Deathly Hallows)"
+      verified_on: "2026-11-16"
       confidence: medium
     input:
       series: "Harry Potter"
       title: "Harry Potter and the Philosopher's Stone"
       author: "J. K. Rowling"
     operations: [series_members]
+    notes:
+      - "WP5 re-verification 2026-11-16 against the author's site and the US publisher; the earlier Wikipedia/Wikidata sources are no longer used."
+      - "Ordinals: the author site lists the seven novels in order but prints no numbers. Positions 1, 4, 6 and 7 are stated outright by the Scholastic page; 2, 3 and 5 rest on the order of the author's list, hence confidence medium for those."
+      - "Book 1 has two official titles: the UK title (Philosopher's Stone, the author's site) and the US title (Sorcerer's Stone, Scholastic). Both are accepted, the second as an alias."
+      - "Legitimate ambiguity kept: the author's site and the Wizarding World site call Cursed Child 'the eighth story' (a stage play, published as a script book) but list it unnumbered and apart from the novels. main_count 7 counts the novels only; a provider that lists Cursed Child as an eighth entry is not contradicting the official wording, only the novel count. P12 tests its classification."
+      - "Not reachable: Bloomsbury (blocked), Simon & Schuster pages. No catalogue (LoC/BL) record was read."
     expect:
       series_members:
         series: "Harry Potter"
         fact_type: coverage
-        source: "https://www.wikidata.org/wiki/Q8337"
-        verified_on: "2026-11-14"
-        confidence: medium
+        source: "https://jkrowling.com/ (\"series of seven novels\") and https://kids.scholastic.com/kids/books/harry-potter/ (\"the series of seven books\")"
+        source_kind: primary
+        evidence: "jkrowling.com: 'began a series of seven novels'; Scholastic bio: 'the series of seven books'."
+        verified_on: "2026-11-16"
+        confidence: high
         exhaustive: false
         main_count: 7
         members:
           - title: "Harry Potter and the Philosopher's Stone"
+            aliases: ["Harry Potter and the Sorcerer's Stone"]
             position: "1"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Philosopher%27s_Stone (\"the first novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://kids.scholastic.com/kids/books/harry-potter/ (\"the first was published in the UK as Harry Potter and the Philosopher's Stone in 1997\"; US listings use Sorcerer's Stone) and https://www.jkrowling.com/writing/"
+            source_kind: primary
+            evidence: "Scholastic: first book; US title Sorcerer's Stone, UK title Philosopher's Stone."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "Harry Potter and the Chamber of Secrets"
             position: "2"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Chamber_of_Secrets (\"The second novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
+            source: "https://www.jkrowling.com/writing/ (second in the author's ordered list)"
+            source_kind: primary
+            evidence: "Order of the author's list only; no number printed."
+            verified_on: "2026-11-16"
             confidence: medium
           - title: "Harry Potter and the Prisoner of Azkaban"
             position: "3"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Prisoner_of_Azkaban (\"The third novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
+            source: "https://www.jkrowling.com/writing/ (third in the author's ordered list)"
+            source_kind: primary
+            evidence: "Order of the author's list only; no number printed."
+            verified_on: "2026-11-16"
             confidence: medium
           - title: "Harry Potter and the Goblet of Fire"
             position: "4"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Goblet_of_Fire (\"the fourth novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://kids.scholastic.com/kids/books/harry-potter/ (\"the fourth book in the Harry Potter series\")"
+            source_kind: primary
+            evidence: "Scholastic: 'the fourth book in the Harry Potter series'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "Harry Potter and the Order of the Phoenix"
             position: "5"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Order_of_the_Phoenix (\"the fifth and longest novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
+            source: "https://www.jkrowling.com/writing/ (fifth in the author's ordered list)"
+            source_kind: primary
+            evidence: "Order of the author's list only; no number printed."
+            verified_on: "2026-11-16"
             confidence: medium
           - title: "Harry Potter and the Half-Blood Prince"
             position: "6"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Half-Blood_Prince (\"the sixth and penultimate novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://kids.scholastic.com/kids/books/harry-potter/ (\"the pivotal sixth story in J.K. Rowling's classic series\")"
+            source_kind: primary
+            evidence: "Scholastic: 'the pivotal sixth story'."
+            verified_on: "2026-11-16"
+            confidence: high
           - title: "Harry Potter and the Deathly Hallows"
             position: "7"
             fact_type: fixed
-            source: "https://en.wikipedia.org/wiki/Harry_Potter_and_the_Deathly_Hallows (\"the seventh and final novel in the Harry Potter series\")"
-            verified_on: "2026-11-14"
-            confidence: medium
+            source: "https://kids.scholastic.com/kids/books/harry-potter/ (series concluded \"in 2007 with the publication of Harry Potter and the Deathly Hallows\")"
+            source_kind: primary
+            evidence: "Scholastic: the seven-book series concluded with Deathly Hallows (2007)."
+            verified_on: "2026-11-16"
+            confidence: high

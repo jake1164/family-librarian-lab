@@ -16,6 +16,7 @@ from typing import Any, Iterable, Mapping, NoReturn
 import yaml
 
 from .model import WORK_TYPES, Operation
+from .publication import ASSERTION_KEYS, PUBLICATION_STATUSES
 
 SUITE_KEYS = {"suite", "version", "providers", "cases", "as_of"}
 CASE_KEYS = {
@@ -41,6 +42,13 @@ CONFIDENCES = frozenset({"high", "medium", "low"})
 TIERS = frozenset({"easy", "medium", "hard"})
 FACT_TYPES = frozenset({"fixed", "time_sensitive", "definition_dependent", "coverage"})
 POSITION_SCHEMES = frozenset({"publication", "story", "provider_default"})
+#: Where an expected value came from (corrective plan WP5). ``primary`` is the author,
+#: publisher or imprint; ``catalogue`` a national-library or ISBN-agency record;
+#: ``secondary`` trade press, retailers and reference works; ``aggregator`` a community
+#: database; ``provider_derived`` anything one of the lab's own providers supplied or
+#: ingests (Open Library, Wikidata via Inventaire, ...). A provider-derived expectation
+#: cannot carry more than ``low`` confidence: it is not independent of the thing measured.
+SOURCE_KINDS = frozenset({"primary", "catalogue", "secondary", "aggregator", "provider_derived"})
 
 #: Provenance keys allowed on any expectation or member.
 PROVENANCE_KEYS = {
@@ -50,6 +58,9 @@ PROVENANCE_KEYS = {
     "fact_type",
     "valid_until",
     "manual_review",
+    "source_kind",
+    "upstream_overlap",
+    "evidence",
 }
 
 #: A book-record completeness check may name any of these record fields.
@@ -104,7 +115,8 @@ EXPECT_KEYS: dict[Operation, set[str]] = {
     }
     | PROVENANCE_KEYS,
     Operation.AUTHOR_RESOLVE: {"name", "aliases"} | PROVENANCE_KEYS,
-    Operation.AUTHOR_WORKS: {"titles", "exhaustive"} | PROVENANCE_KEYS,
+    Operation.AUTHOR_WORKS: {"name", "aliases", "titles", "exhaustive", "forbid_titles"}
+    | PROVENANCE_KEYS,
     Operation.AUTHOR_SERIES: {"series"} | PROVENANCE_KEYS,
 }
 
@@ -128,6 +140,8 @@ MEMBER_KEYS = {
     "published",
     "accepted_positions",
     "position_scheme",
+    "accepted_published",
+    "publication_status",
 } | PROVENANCE_KEYS
 
 FORBID_KEYS = {"title", "work_type", "position", "authors", "published", "kind", "reason"}
@@ -301,6 +315,44 @@ def _validate_provenance(mapping: Mapping[str, Any], where: str) -> None:
         _parse_iso_date(mapping["valid_until"], f"{where}.valid_until")
     if "manual_review" in mapping and not isinstance(mapping["manual_review"], bool):
         _fail(f"{where}.manual_review", "must be a boolean")
+    if "source_kind" in mapping and mapping["source_kind"] not in SOURCE_KINDS:
+        _fail(f"{where}.source_kind", f"must be one of {', '.join(sorted(SOURCE_KINDS))}")
+    if mapping.get("source_kind") == "provider_derived" and mapping.get("confidence") not in (
+        None,
+        "low",
+    ):
+        _fail(
+            f"{where}.confidence",
+            "a provider_derived expectation is not independent of the providers under test, so "
+            "its confidence cannot exceed 'low'",
+        )
+    if "upstream_overlap" in mapping:
+        overlap = mapping["upstream_overlap"]
+        if not isinstance(overlap, list) or not all(isinstance(item, str) for item in overlap):
+            _fail(f"{where}.upstream_overlap", "must be a list of provider ids")
+    if "evidence" in mapping and not isinstance(mapping["evidence"], str):
+        _fail(f"{where}.evidence", "must be a string")
+
+
+def _validate_publication_status(member: Mapping[str, Any], where: str) -> None:
+    """A dated publication-status assertion needs a status, a date and its evidence."""
+
+    here = f"{where}.publication_status"
+    assertion = _require_mapping(member["publication_status"], here, "publication_status")
+    _reject_unknown(assertion, ASSERTION_KEYS, here)
+    status = assertion.get("status")
+    if status not in PUBLICATION_STATUSES:
+        _fail(f"{here}.status", f"must be one of {', '.join(sorted(PUBLICATION_STATUSES))}")
+    if not assertion.get("as_of"):
+        _fail(f"{here}.as_of", "is required: a status is only true on a date")
+    _parse_iso_date(assertion["as_of"], f"{here}.as_of")
+    if assertion.get("confidence") is not None and assertion["confidence"] not in CONFIDENCES:
+        _fail(f"{here}.confidence", f"must be one of {', '.join(sorted(CONFIDENCES))}")
+    evidence = assertion.get("evidence")
+    if not isinstance(evidence, str) or not evidence.strip():
+        _fail(f"{here}.evidence", "is required: say what the status rests on")
+    if status == "scheduled" and not member.get("published"):
+        _fail(here, "a scheduled status needs the member's announced 'published' date")
 
 
 def _parse_input(value: Any, where: str) -> dict[str, str]:
@@ -385,6 +437,8 @@ def _parse_expect(value: Any, operations: tuple[Operation, ...], where: str) -> 
         _check_work_type(entry_mapping, entry_where)
         _check_string_list(entry_mapping, "authors", entry_where)
         _check_string_list(entry_mapping, "titles", entry_where)
+        _check_string_list(entry_mapping, "aliases", entry_where)
+        _check_string_list(entry_mapping, "forbid_titles", entry_where)
         if operation is Operation.AUTHOR_SERIES:
             _check_string_list(entry_mapping, "series", entry_where)
         if "exhaustive" in entry_mapping and not isinstance(entry_mapping["exhaustive"], bool):
@@ -432,6 +486,14 @@ def _parse_expect(value: Any, operations: tuple[Operation, ...], where: str) -> 
                     member_mapping["published"], (str, date)
                 ):
                     _fail(f"{member_where}.published", "must be a date string")
+                if "publication_status" in member_mapping:
+                    _validate_publication_status(member_mapping, member_where)
+                if "accepted_published" in member_mapping:
+                    if "published" not in member_mapping:
+                        _fail(f"{member_where}.accepted_published", "needs a 'published' value")
+                    _check_string_list(member_mapping, "accepted_published", member_where)
+                    for item in member_mapping["accepted_published"]:
+                        _parse_iso_date(item, f"{member_where}.accepted_published")
                 scheme = member_mapping.get("position_scheme")
                 if scheme is not None and scheme not in POSITION_SCHEMES:
                     _fail(
@@ -560,6 +622,34 @@ def load_suite_file(path: Path | str) -> Suite:
     )
 
 
+def provenance_summary(suite: Suite) -> dict[str, Any]:
+    """Count expectations by ``source_kind`` and confidence, provider-derived apart.
+
+    Expectations without a ``source_kind`` are counted as ``undeclared`` so a suite
+    that has not been through reference verification is visible as such. Each member
+    and each operation-level expectation counts once.
+    """
+
+    by_kind: dict[str, int] = {}
+    by_confidence: dict[str, int] = {}
+    total = 0
+    for case in suite.cases:
+        for entry in case.expect.values():
+            for item in [entry, *(entry.get("members") or [])]:
+                kind = str(item.get("source_kind") or "undeclared")
+                by_kind[kind] = by_kind.get(kind, 0) + 1
+                confidence = str(item.get("confidence") or "unstated")
+                by_confidence[confidence] = by_confidence.get(confidence, 0) + 1
+                total += 1
+    return {
+        "expectations": total,
+        "by_source_kind": dict(sorted(by_kind.items())),
+        "by_confidence": dict(sorted(by_confidence.items())),
+        "provider_derived": by_kind.get("provider_derived", 0),
+        "undeclared": by_kind.get("undeclared", 0),
+    }
+
+
 def load_suites(paths: Iterable[Path | str]) -> list[Suite]:
     return [load_suite_file(path) for path in paths]
 
@@ -645,6 +735,8 @@ __all__ = [
     "Suite",
     "file_sha256",
     "load_suite_file",
+    "SOURCE_KINDS",
     "load_suites",
+    "provenance_summary",
     "suite_from_result",
 ]

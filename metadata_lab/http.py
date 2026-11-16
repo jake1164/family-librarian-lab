@@ -29,6 +29,32 @@ MAX_RETRIES = 2
 BACKOFF_S = (1.0, 3.0)
 RETRY_AFTER_CAP_S = 20.0
 DEFAULT_MAX_CALLS = 10
+
+
+class RequestBudget:
+    """A hard cap on real HTTP requests to one provider across a whole run.
+
+    The per-operation ``max_calls`` limits logical calls; one logical call can become up to
+    ``1 + MAX_RETRIES`` requests. This budget reserves that worst case before each call, so
+    ``used`` can never pass ``limit`` even when every call retries. A request answered from the
+    response cache is not an HTTP request and is given back.
+    """
+
+    def __init__(self, limit: int) -> None:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("the request budget must be a positive integer")
+        self.limit = limit
+        self.used = 0
+
+    @property
+    def worst_case(self) -> int:
+        return 1 + MAX_RETRIES
+
+    def room(self) -> bool:
+        return self.used + self.worst_case <= self.limit
+
+    def to_dict(self) -> dict[str, int]:
+        return {"limit": self.limit, "used": self.used}
 DEFAULT_MAX_PAGES = 3
 DEFAULT_MIN_INTERVAL_S = 1.0
 REDACTED = "***"
@@ -312,6 +338,7 @@ class HttpClient:
         credential: str | None = None,
         max_calls: int = DEFAULT_MAX_CALLS,
         max_pages: int = DEFAULT_MAX_PAGES,
+        request_budget: "RequestBudget | None" = None,
     ) -> "OpContext":
         return OpContext(
             self,
@@ -319,6 +346,7 @@ class HttpClient:
             credential=credential,
             max_calls=max_calls,
             max_pages=max_pages,
+            request_budget=request_budget,
         )
 
     def _throttle(self, interval_s: float | None = None) -> None:
@@ -420,8 +448,10 @@ class OpContext:
         credential: str | None = None,
         max_calls: int = DEFAULT_MAX_CALLS,
         max_pages: int = DEFAULT_MAX_PAGES,
+        request_budget: RequestBudget | None = None,
     ) -> None:
         self._sender = sender
+        self._request_budget = request_budget
         self.provider_id = sender.provider_id
         self.operation = operation
         self.credential = credential
@@ -508,7 +538,24 @@ class OpContext:
     def _spend_call(self) -> None:
         if self.calls_used >= self.max_calls:
             raise BudgetExceeded(f"operation budget of {self.max_calls} calls reached")
+        if self._request_budget is not None:
+            if not self._request_budget.room():
+                raise BudgetExceeded(
+                    f"run request cap of {self._request_budget.limit} for this provider reached "
+                    f"({self._request_budget.used} used)"
+                )
+            self._request_budget.used += 1
         self.calls_used += 1
+
+    def _settle_request_budget(self, retries_before: int, from_cache: bool) -> None:
+        """Count the retries this call really made; give back a call the cache answered."""
+
+        if self._request_budget is None:
+            return
+        if from_cache:
+            self._request_budget.used -= 1
+            return
+        self._request_budget.used += max(0, self._call_stats.get("retries", 0) - retries_before)
 
     def get_json(
         self,
@@ -594,6 +641,7 @@ class OpContext:
             cache.key(self.provider_id, method, url, public_params, body) if use_cache else None
         )
         cached = cache.get(cache_key) if use_cache and cache_key else None
+        retries_before = self._call_stats.get("retries", 0)
         try:
             if cached is not None:
                 response = TransportResponse(cached.status, {}, cached.text)
@@ -611,6 +659,7 @@ class OpContext:
                     interval_s=self._sender.interval_for(request_class),
                 )
         except ProviderError as exc:
+            self._settle_request_budget(retries_before, cached is not None)
             self.exchanges.append(
                 RawExchange(
                     method=method,
@@ -624,6 +673,7 @@ class OpContext:
                 )
             )
             raise
+        self._settle_request_budget(retries_before, cached is not None)
 
         elapsed_ms = int((time.monotonic() - started) * 1000)
         try:
@@ -674,6 +724,7 @@ __all__ = [
     "REQUEST_CLASS_LOOKUP",
     "REQUEST_CLASS_SEARCH",
     "RETRY_AFTER_CAP_S",
+    "RequestBudget",
     "RequestsTransport",
     "Transport",
     "TransportResponse",
