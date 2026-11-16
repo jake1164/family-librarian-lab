@@ -280,7 +280,7 @@ def _normalise_edition(
 class OpenLibraryAdapter(ProviderAdapter):
     id: ClassVar[str] = "openlibrary"
     display_name: ClassVar[str] = "Open Library"
-    adapter_version: ClassVar[str] = "2"
+    adapter_version: ClassVar[str] = "3"
     credential_env: ClassVar[str | None] = None  # keyless
     #: Verified by the live Fourth Wing run on 2026-11-14 (six operations answered).
     VERIFIED_LIVE: ClassVar[bool] = True
@@ -289,9 +289,9 @@ class OpenLibraryAdapter(ProviderAdapter):
     #: doc's engineering margin between the two, not an Open Library quota.
     min_interval_s: ClassVar[float] = 2.0
 
-    #: Nothing is declared unsupported. ``author_series`` has no dedicated endpoint, but an
-    #: author-filtered ``search.json`` returns each work's series fields in one paginated
-    #: sequence; this adapter just does not deduplicate them yet (a gap in this tool).
+    #: Nothing is declared unsupported. ``author_series`` has no dedicated endpoint; it is
+    #: derived from the author-filtered ``search.json`` (one paginated list, no per-work calls)
+    #: and labelled as derived in the row notes.
     unsupported: ClassVar[dict[Operation, Unsupported]] = {}
 
     def check_connection(self, ctx: OpContext) -> str:
@@ -512,6 +512,74 @@ class OpenLibraryAdapter(ProviderAdapter):
                 name=q.author or "",
                 works=works,
                 source_url=f"{BASE_URL}{author_path}/works.json",
+            )
+        ]
+
+    def author_series(self, ctx: OpContext, q: Query) -> list[AuthorRecord]:
+        """Series of an author, **derived** from the author-filtered work search.
+
+        Open Library has no author-to-series endpoint. ``search.json?author=`` returns each
+        work with its ``series_key``/``series_name`` fields, so one bounded, paginated list is
+        read and the series are de-duplicated by their Open Library series key (``OL...L``),
+        never by name. Only works whose ``author_key`` contains the resolved author count, so a
+        namesake's works are ignored. A work without series fields is not evidence that it has
+        no series, so absence from this list proves nothing.
+        """
+
+        author_path = self._author_path(q.provider_id) if q.provider_id else ""
+        name = q.author or ""
+        if not author_path:
+            resolved = self.author_resolve(ctx, q)
+            if resolved:
+                author_path = resolved[0].provider_id
+                name = name or resolved[0].name
+        if not author_path or not name:
+            return []
+        author_olid = author_path.rsplit("/", 1)[-1]
+
+        series: dict[str, str] = {}
+        retrieved = 0
+        total: int | None = None
+        complete = False
+        for page in range(1, ctx.max_pages + 1):
+            payload = ctx.get_json(
+                f"{BASE_URL}/search.json",
+                params={
+                    "author": name,
+                    "fields": SERIES_FIELDS,
+                    "limit": SERIES_PAGE_LIMIT,
+                    "page": page,
+                },
+            )
+            docs = _docs(payload, "author series search")
+            body = _payload_dict(payload, "author series search")
+            total = body.get("numFound") if isinstance(body.get("numFound"), int) else None
+            retrieved += len(docs)
+            for doc in docs:
+                if author_olid not in [str(key) for key in doc.get("author_key") or []]:
+                    continue
+                for key, series_name, _position in _doc_series(doc):
+                    series.setdefault(key, series_name)
+            ctx.note_pagination(page, size=SERIES_PAGE_LIMIT, total=total, retrieved=retrieved)
+            if len(docs) < SERIES_PAGE_LIMIT or (total is not None and retrieved >= total):
+                complete = True
+                break
+        if not complete:
+            ctx.mark_truncated(f"stopped after {ctx.max_pages} page(s) of works for {author_path}")
+        ctx.notes.append(
+            "derived: series collected from the author-filtered work search and de-duplicated by "
+            "Open Library series key; works without series fields say nothing about absence"
+        )
+        if not series:
+            return []
+        return [
+            AuthorRecord(
+                provider_id=author_path,
+                name=name,
+                series=[
+                    SeriesRef(name=series_name, provider_id=key) for key, series_name in series.items()
+                ],
+                source_url=f"{BASE_URL}/search.json?author={name}",
             )
         ]
 

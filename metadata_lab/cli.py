@@ -16,6 +16,7 @@ from typing import Any, Sequence
 
 from . import artifacts, config, registry
 from .cases import CaseValidationError, Suite, load_suite_file, suite_from_result
+from .cache import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_S, ResponseCache
 from .compare import compare
 from .engine import build_oneoff_suite, estimate_plan, run_oneoff, run_suite
 from .model import Mode, Operation, ProviderError, RunMode
@@ -32,8 +33,27 @@ def _adapters() -> dict[str, type[ProviderAdapter]]:
     return registry.discover()
 
 
-def _http_factory(adapters: dict[str, type[ProviderAdapter]]):
-    return registry.http_factory(adapters)
+def _http_factory(adapters: dict[str, type[ProviderAdapter]], cache: ResponseCache | None = None):
+    return registry.http_factory(adapters, cache)
+
+
+def _run_http_factory(adapters: dict[str, type[ProviderAdapter]], cache: ResponseCache | None):
+    """The cache is only passed on when asked for, so the default path is unchanged."""
+
+    return _http_factory(adapters, cache) if cache is not None else _http_factory(adapters)
+
+
+def _response_cache(args: argparse.Namespace) -> ResponseCache | None:
+    """The optional response cache, or ``None`` (the default: every call is live)."""
+
+    if not getattr(args, "cache", False):
+        return None
+    root = Path(getattr(args, "out", None) or DEFAULT_OUT_ROOT) / "cache"
+    return ResponseCache(
+        root,
+        ttl_s=float(getattr(args, "cache_ttl_hours", DEFAULT_TTL_S / 3600.0)) * 3600.0,
+        max_entries=int(getattr(args, "cache_max_entries", DEFAULT_MAX_ENTRIES)),
+    )
 
 
 def _cooldowns(out: str | None) -> CooldownStore:
@@ -337,7 +357,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             suite,
             _split_providers(args.providers),
             [case.strip() for case in args.cases.split(",")] if args.cases else None,
-            http_factory=_http_factory(adapters),
+            http_factory=_run_http_factory(adapters, _response_cache(args)),
             adapters=adapters,
             traversal=args.traversal,
             exclude=_split_providers(args.exclude) or (),
@@ -557,6 +577,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="call a provider even if cooldowns.json still records a cool-down for it",
     )
+    run.add_argument(
+        "--cache",
+        action="store_true",
+        help=(
+            "reuse recent provider answers from a bounded local cache (off by default). Cached "
+            "rows are labelled; a case that expects a freshness fact is always read live"
+        ),
+    )
+    run.add_argument(
+        "--cache-ttl-hours",
+        dest="cache_ttl_hours",
+        type=float,
+        default=DEFAULT_TTL_S / 3600.0,
+        help="how long a cached answer stays usable (default %(default)s hours)",
+    )
+    run.add_argument(
+        "--cache-max-entries",
+        dest="cache_max_entries",
+        type=int,
+        default=DEFAULT_MAX_ENTRIES,
+        help="cache size bound; the oldest answers are dropped first (default %(default)s)",
+    )
     run.set_defaults(func=_cmd_run)
 
     replay = subparsers.add_parser("replay", help="re-run a saved result from its raw captures")
@@ -569,7 +611,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("second")
     compare.set_defaults(func=_cmd_compare)
 
-    selftest = subparsers.add_parser("selftest", help="harness validation suite (H01-H28)")
+    selftest = subparsers.add_parser("selftest", help="harness validation suite (H01-H30)")
     selftest.add_argument("--only", help="comma-separated scenario ids")
     selftest.add_argument("--json", action="store_true", help="machine-readable summary")
     selftest.set_defaults(func=_cmd_selftest)

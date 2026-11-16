@@ -23,6 +23,7 @@ _VOLATILE_RUN_KEYS = (
     "mode",
     "replay_of",
     "harness",
+    "cache",
 )
 
 
@@ -37,15 +38,23 @@ def semantic_view(result: Mapping[str, Any]) -> dict[str, Any]:
     for case in view.get("cases", []) or []:
         for row in case.get("results", []) or []:
             row.pop("raw", None)
+            # Live, cached and replayed evidence carry the same facts.
+            row.pop("data_source", None)
+            row.pop("fetched_at", None)
             row["elapsed_ms"] = 0
             stats = row.get("stats")
             if isinstance(stats, dict):
                 stats["elapsed_ms"] = 0
+                stats["cache_hits"] = 0
     # The measurements block is derived, so its timing must be neutralised too.
     for profile in (view.get("measurements") or {}).get("by_provider", {}).values():
         performance = profile.get("performance")
         if isinstance(performance, dict):
             performance["elapsed_ms"] = 0
+    # How the evidence was obtained (live, cache, replay) is provenance, not a result.
+    for block in ((view.get("measurements") or {}).get("facts") or {}).get("modes", {}).values():
+        for profile in block.get("providers", {}).values():
+            profile.pop("evidence", None)
     for per_provider in (view.get("measurements") or {}).get("by_case", {}).values():
         for profile in per_provider.values():
             performance = profile.get("performance")

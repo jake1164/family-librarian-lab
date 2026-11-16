@@ -608,13 +608,13 @@ def test_harness_status_is_reported(lab):
     assert payload["ran_at"] is None
 
 
-def test_selftest_reports_twenty_eight_results(lab):
+def test_selftest_reports_thirty_results(lab):
     reply = lab.post("/api/selftest", {})
 
     assert reply.status == 200
     payload = reply.json()
-    assert len(payload["results"]) == 28
-    assert payload["passed"] == 28, payload["results"]
+    assert len(payload["results"]) == 30
+    assert payload["passed"] == 30, payload["results"]
     assert payload["harness"]["status"] == "validated"
     assert all(set(item) >= {"id", "ok", "title", "detail"} for item in payload["results"])
 

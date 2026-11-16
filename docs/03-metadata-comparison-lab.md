@@ -103,6 +103,52 @@ outcome words mean exactly this:
 fact, an expired time-sensitive reference, or nothing to classify). It is excluded from every
 denominator rather than counted as a failure.
 
+## Reference facts: comparing providers on the same denominator
+
+The **reference facts** table is the one to compare providers with. Each fixture expects a number of
+atomic facts (a series name, a member being present, its position, a date, an author...). Counting them
+needs only the fixtures, so every provider is measured against the same N. Each fact lands in exactly one
+column, so the columns add up to N:
+
+| Column | Meaning |
+| --- | --- |
+| `correct` / `differs` | The provider returned a value and it matched or did not match the reference. **agree** is divided by these returned values only, and no percentage is printed below five of them. |
+| `ambiguous` | A real conflict between records (one says right, another wrong) or only a fuzzy near match; nothing is chosen. |
+| `omitted` | The operation ran and the provider supplied nothing for this fact. |
+| `incomplete` | Our call budget or page cap stopped the answer. |
+| `needs_review` | Not scored automatically (manual or expired reference). |
+| `blocked` | The provider could not be asked. `unsupported` is the provider's gap, `not_implemented` is a gap in this tool, anything else (`excluded`, `cooling_down`, `chain_broken`, `error:...`) is a run condition. A blocked fact is not an omission and not an error. |
+
+**Field presence and series identity are reported apart.** When a provider returns several series with the
+same name and exactly one holds a fact while the others merely lack it (no record contradicts it), the fact is
+scored from that one observation (it counts as correct or differs) and is also counted as "from one of several
+same-named series". The lab never picks or merges a series: which series is the right one stays ambiguous, and the
+count shows how much of a provider's score rests on it. Two records that genuinely contradict each other stay
+`ambiguous`.
+
+The last column, **evidence (rows)**, says how each row's answer was obtained: `live`, `cache`, `mixed` or `replay`.
+
+Independent and traversal modes are separate tables and are never mixed. The older **executed-check
+tallies** below the reference facts count only the checks that actually ran, so a provider that could not
+run an operation has a smaller denominator there; do not compare providers with them.
+
+## Response cache (optional, off by default)
+
+`run --cache` reuses a recent provider answer instead of asking again, which matters most for rate-limit-sensitive
+providers. It is bounded (`--cache-max-entries`, default 500 and 50 MB) and answers expire after
+`--cache-ttl-hours` (default 24). It lives under `results/metadata-compare/cache/`, which git ignores.
+
+What keeps it from distorting a measurement:
+
+- every exchange and result row says `live`, `cache`, `mixed` or `replay`, and a cached row carries the time the
+  provider actually answered; the run header records the cache settings and how many answers it served;
+- a case whose fixture expects a **freshness fact** (a publication date, "the latest book") is never read from the
+  cache, because those facts are about now;
+- only successful JSON answers are stored; credentials are scrubbed from stored bodies, and a request that carries a
+  secret parameter is never cached;
+- an adapter can opt out (`cache_policy = "none"`); Google Books does, since its terms restrict caching;
+- a cached answer still uses the operation's call budget, so cached and live runs have the same semantic result.
+
 ## Compare two runs
 
 **Past runs** lists every run under the results directory with its suite, date, providers, status,

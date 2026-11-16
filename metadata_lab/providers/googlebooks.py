@@ -35,6 +35,18 @@ _UNSUPPORTED = {
         ),
         source_url="https://developers.google.com/books/docs/v1/reference/volumes/list",
     ),
+    # Probed live on 2026-11-16 (results/metadata-compare/probes/20261116-capability): with this
+    # lab's API key both series.get and series.membership.get answered HTTP 401. The generated
+    # schema lists a Books OAuth scope for them, and the lab holds a key only.
+    Operation.SERIES_MEMBERS: Unsupported(
+        reason=(
+            "With API-key access the series endpoints are closed: series.get and "
+            "series.membership.get both answered HTTP 401 to this lab's key on 2026-11-16, and the "
+            "generated Books schema lists an OAuth scope for them. Series membership therefore cannot "
+            "be read with a key; whether OAuth user access would work is untested."
+        ),
+        source_url="https://code.googlesource.com/google-api-go-client/+/refs/heads/master/books/v1/books-api.json",
+    ),
     Operation.AUTHOR_RESOLVE: Unsupported(
         reason=(
             "The Books API has no author resource. volumes.list takes no author identifier (the "
@@ -116,6 +128,8 @@ class GoogleBooksAdapter(ProviderAdapter):
     #: seen only an unkeyed "quota_limit_value: 0" 429. 3 s is lab judgement, not a
     #: Google-published allowance.
     min_interval_s: ClassVar[float] = 3.0
+    #: The Books API terms restrict caching Google content, so nothing is ever stored.
+    cache_policy: ClassVar[str] = "none"
     unsupported: ClassVar[dict[Operation, Unsupported]] = _UNSUPPORTED
 
     def check_connection(self, ctx: OpContext) -> str:

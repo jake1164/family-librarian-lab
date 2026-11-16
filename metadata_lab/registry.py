@@ -8,6 +8,7 @@ from typing import Callable, Mapping
 
 from .http import HttpClient
 from .model import Operation
+from .cache import ResponseCache
 from .providers.base import ProviderAdapter
 
 _SKIP_MODULES = {"base"}
@@ -54,8 +55,13 @@ def sorted_operations() -> list[Operation]:
     return list(Operation)
 
 
-def http_factory(adapters: Mapping[str, type[ProviderAdapter]]) -> Callable[[str], HttpClient]:
-    """One ``HttpClient`` per provider, paced at that adapter's declared intervals."""
+def http_factory(
+    adapters: Mapping[str, type[ProviderAdapter]], cache: "ResponseCache | None" = None
+) -> Callable[[str], HttpClient]:
+    """One ``HttpClient`` per provider, paced at that adapter's declared intervals.
+
+    ``cache`` is optional; an adapter with ``cache_policy = "none"`` never receives it.
+    """
 
     def factory(provider_id: str) -> HttpClient:
         adapter_cls = adapters.get(provider_id)
@@ -63,10 +69,14 @@ def http_factory(adapters: Mapping[str, type[ProviderAdapter]]) -> Callable[[str
         intervals = (
             dict(getattr(adapter_cls, "request_intervals_s", {}) or {}) if adapter_cls else {}
         )
+        allowed = cache is not None and (
+            adapter_cls is None or getattr(adapter_cls, "cache_policy", "persistent") == "persistent"
+        )
         return HttpClient(
             provider_id=provider_id,
             min_interval_s=interval,
             request_intervals_s=intervals,
+            cache=cache if allowed else None,
         )
 
     return factory

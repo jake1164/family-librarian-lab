@@ -20,7 +20,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import VERSION, config
 from .cases import Case, Reference, Suite
-from .checks import compute_checks, duplicates
+from .checks import compute_checks, duplicates, expected_facts
 from .http import DEFAULT_MAX_PAGES, BudgetExceeded, OpContext, scrub
 from .matcher import MATCHER_VERSION, match_name
 from .measurements import check_tallies, measurements, op_matrix
@@ -75,7 +75,53 @@ def _empty_pagination() -> dict[str, Any]:
 
 
 def _empty_stats() -> dict[str, int]:
-    return {"calls": 0, "retries": 0, "throttled": 0, "elapsed_ms": 0}
+    return {"calls": 0, "retries": 0, "throttled": 0, "elapsed_ms": 0, "cache_hits": 0}
+
+
+def _cache_allowed(case: Case, operation: Operation, as_of: str | None) -> bool:
+    """A fixture that expects a freshness fact always reads the provider live.
+
+    Freshness is about *now* (a release date, "the latest book"), so a stored answer would
+    quietly turn a freshness measurement into a measurement of the cache.
+    """
+
+    facts = expected_facts(operation, case.expect.get(operation.value) or {}, as_of=as_of)
+    return not any(fact["dimension"] == "freshness" for fact in facts)
+
+
+def _evidence_source(exchanges: Sequence[Any]) -> tuple[str | None, str | None]:
+    """``(live | cache | mixed | replay | None, oldest fetched_at of a cached answer)``."""
+
+    sources = {str(getattr(exchange, "source", "live")) for exchange in exchanges}
+    if not sources:
+        return None, None
+    fetched = sorted(
+        str(exchange.fetched_at)
+        for exchange in exchanges
+        if getattr(exchange, "source", "live") == "cache" and getattr(exchange, "fetched_at", None)
+    )
+    oldest = fetched[0] if fetched else None
+    if sources == {"cache"}:
+        return "cache", oldest
+    if "cache" in sources:
+        return "mixed", oldest
+    if sources == {"replay"}:
+        return "replay", None
+    return "live", None
+
+
+def _cache_block(clients: Iterable[Any], cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The run header's account of the cache: off, or its settings and what it served."""
+
+    configs = [client.cache.config() for client in clients if getattr(client, "cache", None)]
+    if not configs:
+        return {"enabled": False}
+    hits = sum(
+        int((row.get("stats") or {}).get("cache_hits", 0) or 0)
+        for case in cases
+        for row in case.get("results", [])
+    )
+    return {**configs[0], "hits": hits}
 
 
 def _op_outcome(
@@ -168,6 +214,8 @@ def _run_operation(
     stats = _empty_stats()
     found_duplicates: list[dict[str, Any]] = []
     secrets: set[str] = set()
+    data_source: str | None = None
+    fetched_at: str | None = None
 
     def row(
         outcome: Outcome, elapsed_ms: int | None = None, reason: str | None = None
@@ -192,6 +240,9 @@ def _run_operation(
             "pagination": pagination,
             "duplicates": found_duplicates,
             "stats": stats,
+            # Where the evidence came from: live, cache, mixed or replay (None when nothing was asked).
+            "data_source": data_source,
+            "fetched_at": fetched_at,
         }
         if reason:
             payload["reason"] = reason
@@ -224,6 +275,7 @@ def _run_operation(
         max_calls=max_calls,
         max_pages=max_pages,
     )
+    ctx.allow_cache = _cache_allowed(case, operation, as_of)
     method = getattr(adapter, operation.value)
 
     try:
@@ -242,6 +294,7 @@ def _run_operation(
         pagination = ctx.pagination.to_dict()
         pagination["truncated"] = truncated
         stats = {**ctx.stats(), "elapsed_ms": int((time.monotonic() - started) * 1000)}
+        data_source, fetched_at = _evidence_source(ctx.exchanges)
         secrets = ctx.secret_values()
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -825,6 +878,7 @@ def run_suite(
             done.add(key)
     report(None, None, None, None)
 
+    cache_block = _cache_block(http_by_provider.values(), case_documents)
     document = {
         "schema": SCHEMA,
         "run": {
@@ -844,6 +898,7 @@ def run_suite(
             "matcher_version": MATCHER_VERSION,
             "git_revision": git_revision(),
             "python": sys.version.split()[0],
+            "cache": cache_block,
         },
         "suite": {
             "name": suite.name,
@@ -856,7 +911,7 @@ def run_suite(
         "cases": case_documents,
         "matrix": op_matrix(case_documents, selected),
         "matrix_checks": check_tallies(case_documents, selected),
-        "measurements": measurements(case_documents, selected),
+        "measurements": measurements(case_documents, selected, as_of=resolved_as_of),
     }
     document["run"]["semantic_digest"] = semantic_digest(document)
     return document

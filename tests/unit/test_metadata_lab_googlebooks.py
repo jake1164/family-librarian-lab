@@ -152,12 +152,18 @@ def test_unsupported_operations_are_declared_with_citations():
         assert ADAPTER.declared_support(operation) == "unsupported"
 
 
-def test_unclear_operations_stay_not_implemented():
-    # series_members: the generated Books schema documents series.membership.get (access with
-    # an API key is unverified), so it is our gap, not a verdict on the provider.
-    assert ADAPTER.declared_support(Operation.SERIES_MEMBERS) == "not_implemented"
-    assert Operation.SERIES_MEMBERS not in ADAPTER.unsupported
-    # series_for_book is undocumented, not impossible: our adapter has not built it.
+def test_series_members_is_unsupported_with_key_access_on_probe_evidence():
+    declaration = ADAPTER.unsupported[Operation.SERIES_MEMBERS]
+
+    assert ADAPTER.declared_support(Operation.SERIES_MEMBERS) == "unsupported"
+    assert "401" in declaration.reason and "2026-11-16" in declaration.reason
+    assert declaration.source_url.startswith("https://")
+
+
+def test_series_for_book_stays_a_tool_gap():
+    # Probe 2026-11-16: volumes.get?includeNonComicsSeries=true returned seriesInfo for Fourth Wing
+    # (series id, order 1) but not for Harry Potter, so a key-only route exists and our adapter has
+    # not built it. That is our gap, with uneven provider coverage.
     assert ADAPTER.implements(Operation.SERIES_FOR_BOOK) is False
     assert ADAPTER.declared_support(Operation.SERIES_FOR_BOOK) == "not_implemented"
     assert Operation.SERIES_FOR_BOOK not in ADAPTER.unsupported

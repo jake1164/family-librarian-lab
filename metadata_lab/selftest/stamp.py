@@ -22,6 +22,8 @@ from .. import VERSION
 from .. import config
 
 STAMP_DIR = Path("results") / "metadata-compare" / "selftest"
+_CRLF = bytes([13, 10])
+_LF = bytes([10])
 
 
 def _package_root() -> Path:
@@ -39,7 +41,8 @@ def harness_source_digest(root: Path | None = None) -> str:
         relative = path.relative_to(base).as_posix()
         hasher.update(relative.encode("utf-8"))
         hasher.update(b"\0")
-        hasher.update(path.read_bytes())
+        # CRLF folds to LF so one commit has one digest on every platform checkout.
+        hasher.update(path.read_bytes().replace(_CRLF, _LF))
         hasher.update(b"\0")
     return hasher.hexdigest()
 

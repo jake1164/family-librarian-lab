@@ -195,7 +195,10 @@ class BookBrainzAdapter(ProviderAdapter):
         members = [
             SeriesMember(
                 title=_name(work) or str(work["bbid"]),
-                # The browse response carries no ordinal: positions are not exposed.
+                # The browse response carries no ordinal: positions are not exposed. Probed live on
+                # 2026-11-16 for The Dark Tower: the series entity reports seriesOrderingType
+                # "Automatic", /series/{id}/relationships has no attribute or position field, and
+                # /work?series= returns members with only a relationship type. Nothing to read.
                 position=None,
                 provider_id=str(work["bbid"]),
                 work_type=_work_type(work.get("workType")),

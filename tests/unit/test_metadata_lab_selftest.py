@@ -21,12 +21,12 @@ def summary() -> dict:
     return run_all()
 
 
-def test_all_twenty_eight_scenarios_pass(summary: dict):
+def test_all_thirty_scenarios_pass(summary: dict):
     ids = [item["id"] for item in summary["results"]]
 
-    assert ids == [f"H{index:02d}" for index in range(1, 29)]
+    assert ids == [f"H{index:02d}" for index in range(1, 31)]
     assert summary["failed"] == 0, summary["failures"]
-    assert summary["passed"] == 28
+    assert summary["passed"] == 30
 
 
 def test_selftest_is_fast_enough(summary: dict):
@@ -150,6 +150,34 @@ def test_h28_detects_an_ignored_cooldown_file(monkeypatch: pytest.MonkeyPatch):
     assert summary["failed"] == 1, "H28 passed even though the cool-down record was ignored"
 
 
+def test_h29_detects_blocked_facts_scored_as_omissions(monkeypatch: pytest.MonkeyPatch):
+    """Meta-test: a provider that cannot be asked must stay blocked, not become omitted."""
+
+    monkeypatch.setattr("metadata_lab.measurements._row_is_blocked", lambda row: False)
+
+    summary = run_all(only=["H29"])
+
+    assert summary["failed"] == 1, "H29 passed although unsupported facts were scored as omissions"
+
+
+def test_h29_detects_a_denominator_that_varies_with_the_provider(monkeypatch: pytest.MonkeyPatch):
+    """Meta-test: dropping blocked facts (the old behaviour) must fail H29."""
+
+    from metadata_lab import measurements
+
+    original = measurements._fact_statuses
+
+    def dropping(facts, row):
+        statuses, extra = original(facts, row)
+        return [item for item in statuses if item[1] != "blocked"], extra
+
+    monkeypatch.setattr(measurements, "_fact_statuses", dropping)
+
+    summary = run_all(only=["H29"])
+
+    assert summary["failed"] == 1, "H29 passed although blocked facts were dropped from N"
+
+
 def test_offline_guard_blocks_non_loopback():
     with OfflineGuard():
         with pytest.raises(RuntimeError):
@@ -172,6 +200,30 @@ def test_stamp_digest_changes_with_the_sources(tmp_path):
     assert first != second != third
     assert source  # the module imported cleanly
     shutil.rmtree(target, ignore_errors=True)
+
+
+def test_stamp_digest_is_the_same_for_lf_crlf_and_mixed_line_endings(tmp_path):
+    lf, crlf = bytes([10]), bytes([13, 10])
+    body = [b"X = 1", b"Y = 2", b"Z = 3"]
+    layouts = {
+        "lf": lf.join(body) + lf,
+        "crlf": crlf.join(body) + crlf,
+        "mixed": body[0] + crlf + body[1] + lf + body[2] + crlf,
+    }
+    digests = {}
+    for label, payload in layouts.items():
+        package = tmp_path / label
+        package.mkdir()
+        (package / "a.py").write_bytes(payload)
+        digests[label] = harness_source_digest(package)
+
+    assert len(set(digests.values())) == 1, digests
+
+    # A real content change must still change the digest.
+    changed = tmp_path / "changed"
+    changed.mkdir()
+    (changed / "a.py").write_bytes(lf.join([b"X = 1", b"Y = 9", b"Z = 3"]) + lf)
+    assert harness_source_digest(changed) != digests["lf"]
 
 
 def test_harness_status_reports_not_run_without_a_stamp(tmp_path):

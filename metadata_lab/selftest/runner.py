@@ -90,6 +90,8 @@ class Harness:
         self.stderr = io.StringIO()
         self.transports: dict[str, Transport] = {}
         self.adapters: dict[str, type] = {}
+        #: Optional response cache handed to every client whose adapter allows caching (H30).
+        self.cache: Any = None
 
     # -- helpers -----------------------------------------------------------
 
@@ -105,6 +107,9 @@ class Harness:
                 request_intervals_s=dict(intervals),
                 sleep=self.clock.sleep,
                 clock=self.clock.clock,
+                cache=self.cache
+                if getattr(adapter_cls, "cache_policy", "persistent") == "persistent"
+                else None,
             )
 
         return factory

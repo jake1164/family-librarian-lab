@@ -276,6 +276,10 @@ class RawExchange(_Record):
     elapsed_ms: int = 0
     body: Any = None
     error: dict[str, str] | None = None
+    #: ``live`` (the provider answered now), ``cache`` (a stored answer) or ``replay``
+    #: (a capture). ``fetched_at`` is when the provider actually answered a cached exchange.
+    source: str = "live"
+    fetched_at: str | None = None
 
 
 class ProviderError(Exception):

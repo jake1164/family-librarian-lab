@@ -50,6 +50,9 @@ class ProviderAdapter:
     #: Optional per-request-class overrides, e.g. ``{"search": 10.0}`` while the
     #: base interval covers lookups. Same status: engineering choices, not quotas.
     request_intervals_s: ClassVar[Mapping[str, float]] = {}
+    #: ``"persistent"`` lets the optional response cache store this provider's answers;
+    #: ``"none"`` never does (set it where the provider's terms restrict caching).
+    cache_policy: ClassVar[str] = "persistent"
     #: Cool-down used when the provider trips the breaker without a Retry-After.
     cooldown_default_s: ClassVar[float] = DEFAULT_COOLDOWN_S
 

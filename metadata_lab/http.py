@@ -20,6 +20,7 @@ import requests
 
 from . import VERSION
 from .config import contact_detail
+from .cache import ResponseCache
 from .model import ErrorKind, Operation, Pagination, ProviderError, RawExchange
 
 CONNECT_TIMEOUT_S = 5.0
@@ -240,8 +241,11 @@ class HttpClient:
         max_retries: int = MAX_RETRIES,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        cache: "ResponseCache | None" = None,
     ) -> None:
         self.provider_id = provider_id
+        #: Optional bounded response cache. ``None`` (the default) means every call is live.
+        self.cache = cache
         self._transport = transport or RequestsTransport()
         self._min_interval_s = max(0.0, min_interval_s)
         self._request_intervals_s = {
@@ -425,6 +429,9 @@ class OpContext:
         self.max_pages = max_pages
         self.calls_used = 0
         self.exchanges: list[RawExchange] = []
+        #: The engine switches this off for operations whose fixtures expect a freshness fact.
+        self.allow_cache = True
+        self.cache_hits = 0
         self.truncated = False
         self.notes: list[str] = []
         self.pagination = Pagination()
@@ -441,6 +448,7 @@ class OpContext:
             "retries": self._call_stats.get("retries", 0),
             "throttled": self._call_stats.get("throttled", 0),
             "elapsed_ms": 0,
+            "cache_hits": self.cache_hits,
         }
 
     def secret_values(self) -> set[str]:
@@ -576,17 +584,32 @@ class OpContext:
         self._spend_call()
         started = time.monotonic()
         recorded_body = _scrub_text(body, self._secrets) if body is not None else None
+        replaying = bool(getattr(self._sender, "replays_only", False))
+        source = "replay" if replaying else "live"
+        fetched_at: str | None = None
+        cache = None if replaying else getattr(self._sender, "cache", None)
+        # A request carrying a secret *parameter* is never keyed or stored.
+        use_cache = cache is not None and self.allow_cache and not secret_param_values
+        cache_key = (
+            cache.key(self.provider_id, method, url, public_params, body) if use_cache else None
+        )
+        cached = cache.get(cache_key) if use_cache and cache_key else None
         try:
-            response = self._sender.send(
-                method,
-                url,
-                params=request_params or None,
-                headers=request_headers,
-                body=body,
-                secrets=secrets_for_sender,
-                stats=self._call_stats,
-                interval_s=self._sender.interval_for(request_class),
-            )
+            if cached is not None:
+                response = TransportResponse(cached.status, {}, cached.text)
+                source, fetched_at = "cache", cached.fetched_at
+                self.cache_hits += 1
+            else:
+                response = self._sender.send(
+                    method,
+                    url,
+                    params=request_params or None,
+                    headers=request_headers,
+                    body=body,
+                    secrets=secrets_for_sender,
+                    stats=self._call_stats,
+                    interval_s=self._sender.interval_for(request_class),
+                )
         except ProviderError as exc:
             self.exchanges.append(
                 RawExchange(
@@ -615,6 +638,8 @@ class OpContext:
                     status=response.status_code,
                     elapsed_ms=elapsed_ms,
                     body=_scrub_text(response.text[:2000], self._secrets),
+                    source=source,
+                    fetched_at=fetched_at,
                 )
             )
             raise ProviderError(
@@ -631,8 +656,12 @@ class OpContext:
                 elapsed_ms=elapsed_ms,
                 body=_scrub_value(parsed, self._secrets),
                 error=None,
+                source=source,
+                fetched_at=fetched_at,
             )
         )
+        if use_cache and cache_key and cached is None:
+            cache.put(cache_key, status=response.status_code, text=_scrub_text(response.text, self._secrets))
         return parsed
 
 

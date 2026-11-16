@@ -1,4 +1,4 @@
-"""H01-H28: does the harness record exactly what happened?
+"""H01-H30: does the harness record exactly what happened?
 
 Every scenario drives the real engine, HTTP helper, exports and report against a
 loopback scripted server. A scenario returns ``Evidence(True, detail)`` or raises
@@ -614,7 +614,11 @@ def h15(harness: Harness) -> Evidence:
     document = harness.run({"alpha": _adapter(harness)}, expect=MEMBER_EXPECT)
     row = _row(document)
     _require(row["pagination"]["pages_fetched"] == 1, "pagination block missing")
-    _require(set(row["stats"]) == {"calls", "retries", "throttled", "elapsed_ms"}, "stats block incomplete")
+    _require(
+        set(row["stats"]) == {"calls", "retries", "throttled", "elapsed_ms", "cache_hits"},
+        "stats block incomplete",
+    )
+    _require(row["data_source"] == "live" and row["fetched_at"] is None, "a live row must say it is live")
     _require(row["raw"], "raw exchanges missing")
     exchange = row["raw"][0]
     for key in ("method", "url", "params", "status", "elapsed_ms", "request_body"):
@@ -1252,6 +1256,146 @@ def h28(harness: Harness) -> Evidence:
         True,
         "run 2 skipped alpha as not_run/cooling_down with the time left in the note; beta ran",
     )
+
+
+@scenario("H29", "hard", "every provider is measured against the same reference facts")
+def h29(harness: Harness) -> Evidence:
+    from ..measurements import fact_invariant_errors
+
+    members = [
+        {"id": f"w{index}", "title": f"Member {index}", "position": str(index), "work_type": "novel"}
+        for index in range(1, 4)
+    ]
+    expected = {
+        "series_members": {
+            "series": "The Empyrean",
+            "members": [{"title": f"Member {index}", "position": str(index)} for index in range(1, 4)],
+        }
+    }
+    # series.name plus (present, position) for three members = 7 reference facts.
+    reference_facts = 7
+
+    harness.server.queue(
+        "/a/series",
+        scripted(200, {"series": [{"id": "s1", "name": "The Empyrean", "members": members}], "total": 3}),
+    )
+    # ccc answers with another series entirely, so no member check is ever emitted for it.
+    harness.server.queue(
+        "/c/series",
+        scripted(200, {"series": [{"id": "s9", "name": "Something Else", "members": members}], "total": 3}),
+    )
+    declared = make_adapter(
+        harness.server.base_url,
+        "bbb",
+        path_prefix="/b",
+        unsupported={
+            Operation.SERIES_MEMBERS: Unsupported(
+                reason="documented: no series endpoint", source_url="https://example.org/api"
+            )
+        },
+    )
+    adapters = {
+        "aaa": make_adapter(harness.server.base_url, "aaa", path_prefix="/a"),
+        "bbb": declared,
+        "ccc": make_adapter(harness.server.base_url, "ccc", path_prefix="/c"),
+    }
+    document = harness.run(adapters, expect=expected)
+    tables = document["measurements"]["facts"]
+    block = tables["modes"]["independent"]
+
+    _require(
+        block["reference_facts"]["total"] == reference_facts,
+        f"the suite has {reference_facts} reference facts, table says {block['reference_facts']}",
+    )
+    for provider in ("aaa", "bbb", "ccc"):
+        total = block["providers"][provider]["total"]
+        _require(
+            total["facts"] == reference_facts,
+            f"{provider} must be measured on all {reference_facts} facts, got {total['facts']}",
+        )
+    errors = fact_invariant_errors(tables)
+    _require(not errors, f"fixed-denominator invariants broken: {errors}")
+
+    a = block["providers"]["aaa"]["total"]
+    _require(a["correct"] == reference_facts and a["blocked"] == 0, f"aaa should answer everything: {a}")
+
+    b = block["providers"]["bbb"]["total"]
+    _require(
+        b["blocked_by"] == {"unsupported": reference_facts} and b["reachable"] == 0,
+        f"a declared-unsupported operation keeps its N as blocked, not omitted: {b}",
+    )
+    _require(b["omitted"] == 0, "a provider that cannot be asked must not be scored as having omitted facts")
+
+    c = block["providers"]["ccc"]["total"]
+    _require(
+        c["omitted"] == reference_facts and c["blocked"] == 0,
+        f"member checks skipped because the series was not found are omitted, not dropped: {c}",
+    )
+    return Evidence(
+        True,
+        f"all three providers measured on {reference_facts} facts: answered, blocked(unsupported), omitted",
+    )
+
+
+@scenario("H30", "hard", "a cached answer is labelled, expires, and never stands in for a freshness fact")
+def h30(harness: Harness) -> Evidence:
+    from ..cache import ResponseCache
+
+    cache = ResponseCache(harness.root / "h30-cache", ttl_s=3600.0, clock=harness.clock.clock)
+    harness.cache = cache
+    plain = {
+        "series_members": {
+            "series": "The Empyrean",
+            "members": [{"title": "Fourth Wing", "position": "1"}],
+        }
+    }
+    adapters = {"alpha": _adapter(harness)}
+
+    harness.server.queue("/series", scripted(200, SERIES_OK))
+    first = harness.run(adapters, expect=plain)
+    second = harness.run(adapters, expect=plain)
+    first_row, second_row = _row(first), _row(second)
+
+    _require(first_row["data_source"] == "live", f"first run must be live, got {first_row['data_source']}")
+    _require(
+        second_row["data_source"] == "cache" and second_row["stats"]["cache_hits"] == 1,
+        f"second run must be served from cache: {second_row['data_source']} {second_row['stats']}",
+    )
+    _require(second_row["fetched_at"], "a cached row must say when the provider answered")
+    _require(
+        len(harness.server.calls("/series")) == 1,
+        f"the cached run must not reach the provider, saw {len(harness.server.calls('/series'))} call(s)",
+    )
+    _require(
+        second["run"]["cache"].get("enabled") is True and second["run"]["cache"].get("hits") == 1,
+        f"the run header must account for the cache: {second['run']['cache']}",
+    )
+    _require(
+        semantic_digest(first) == semantic_digest(second),
+        "live and cached evidence must carry identical facts",
+    )
+
+    # A fixture that expects a freshness fact (a publication date) is always read live.
+    harness.server.queue("/series", scripted(200, SERIES_OK), scripted(200, SERIES_OK))
+    fresh_one = _row(harness.run(adapters, expect=MEMBER_EXPECT))
+    fresh_two = _row(harness.run(adapters, expect=MEMBER_EXPECT))
+    _require(
+        fresh_one["data_source"] == "live" and fresh_two["data_source"] == "live",
+        "a freshness fixture must never be answered from the cache",
+    )
+    _require(
+        len(harness.server.calls("/series")) == 3,
+        f"both freshness runs must have reached the provider, total calls {len(harness.server.calls('/series'))}",
+    )
+
+    # After the time-to-live the stored answer is gone, not served stale.
+    harness.clock.now += 7200.0
+    harness.server.queue("/series", scripted(200, SERIES_OK))
+    expired = _row(harness.run(adapters, expect=plain))
+    _require(expired["data_source"] == "live", f"an expired answer must be fetched again: {expired['data_source']}")
+    _require(len(harness.server.calls("/series")) == 4, "the expired entry must cost a real call")
+    harness.cache = None
+    return Evidence(True, "cached row labelled with its fetch time; freshness fixture and expired entry went live")
 
 
 __all__ = ["BOOKS", "MEMBER_EXPECT", "SERIES_OK", "TITLE"]

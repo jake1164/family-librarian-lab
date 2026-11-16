@@ -135,6 +135,10 @@ def _name_check(
     )
 
 
+#: Outcomes that say nothing about the value itself: the record simply does not contain the item.
+_NO_EVIDENCE = frozenset({Outcome.NOT_FOUND.value, Outcome.INCOMPLETE.value})
+
+
 def _merge(name: str, per_record: list[tuple[str, dict[str, Any]]], dimension: str) -> dict[str, Any]:
     """Apply the agreement rule to one check evaluated against several records."""
 
@@ -145,7 +149,7 @@ def _merge(name: str, per_record: list[tuple[str, dict[str, Any]]], dimension: s
         if len(per_record) > 1:
             merged["evidence"] = f"{merged.get('evidence') or ''} [records agree: {detail}]".strip()
         return merged
-    return check(
+    merged = check(
         name,
         Outcome.AMBIGUOUS,
         per_record[0][1]["expected"],
@@ -153,6 +157,29 @@ def _merge(name: str, per_record: list[tuple[str, dict[str, Any]]], dimension: s
         evidence=f"records disagree, nothing chosen: {detail}",
         dimension=dimension,
     )
+    # The rule above never chooses. This only records *why* it was ambiguous, so a
+    # reader can tell a real conflict (ok against differs) from several same-named
+    # series where just one holds the item and the rest merely lack it.
+    informative = outcomes - _NO_EVIDENCE
+    conflicting = not (
+        len(informative) <= 1 or informative == {Outcome.OK.value, Outcome.AMBIGUOUS.value}
+    )
+    # ``resolved`` is the one non-conflicting observation about the field itself (the
+    # member is present, its position is right or wrong). It never says which series is
+    # the right one: that stays ambiguous, and the measurement reports the two apart.
+    resolved: str | None = None
+    if not conflicting:
+        if informative == {Outcome.OK.value, Outcome.AMBIGUOUS.value}:
+            resolved = Outcome.OK.value
+        elif informative in ({Outcome.OK.value}, {Outcome.DIFFERS.value}):
+            resolved = next(iter(informative))
+    merged["merge"] = {
+        "records": len(per_record),
+        "holding": sum(1 for _, item in per_record if item["outcome"] not in _NO_EVIDENCE),
+        "conflicting": conflicting,
+        "resolved": resolved,
+    }
+    return merged
 
 
 def _expired(expectation: Mapping[str, Any], as_of: str | None) -> bool:
@@ -913,6 +940,94 @@ def compute_checks(
     return _apply_unresolved(checks, unresolved or {})
 
 
+# --- reference facts ------------------------------------------------------------
+
+
+def _fact(name: str, dimension: str) -> dict[str, str]:
+    return {"name": name, "dimension": dimension}
+
+
+def expected_facts(
+    operation: Operation, expect: Mapping[str, Any], *, as_of: str | None = None
+) -> list[dict[str, str]]:
+    """Every atomic reference fact an ``expect`` block asks for.
+
+    The list depends on the fixture alone, never on what a provider returned, so
+    the fact count is identical for every provider. Names and dimensions mirror
+    what :func:`compute_checks` emits for a provider that answers everything; a
+    unit test builds such a provider for every shipped fixture and fails if the
+    two lists ever drift apart. A reference that is expired or marked for manual
+    review is one ``needs_review`` fact, exactly as the checks report it.
+    """
+
+    if not expect:
+        return []
+    facts: list[dict[str, str]] = []
+
+    if operation in (Operation.BOOK_BY_TITLE, Operation.BOOK_BY_ISBN):
+        if expect.get("title") is not None:
+            facts.append(_fact("book.title", "coverage"))
+        for index, _author in enumerate(expect.get("authors") or []):
+            facts.append(_fact(f"book.authors[{index}]", "accuracy"))
+        if "isbn13" in expect:
+            facts.append(_fact("book.isbn13", "accuracy"))
+        if "min_fields" in expect:
+            facts.append(_fact("book.min_fields", "coverage"))
+        if "work_type" in expect:
+            facts.append(_fact("book.work_type", "classification"))
+        if "format" in expect:
+            facts.append(_fact("book.format", "accuracy"))
+        if "first_published" in expect:
+            facts.append(_fact("book.first_published", "freshness"))
+        if "published" in expect:
+            facts.append(_fact("book.published", "freshness"))
+        return facts
+
+    if operation in (Operation.SERIES_FOR_BOOK, Operation.SERIES_MEMBERS):
+        if expect.get("series") is not None:
+            facts.append(_fact("series.name", "coverage"))
+        if operation is not Operation.SERIES_MEMBERS:
+            return facts
+        for index, wanted in enumerate(expect.get("members") or []):
+            if _review_reason(wanted, as_of):
+                facts.append(_fact(f"series.member[{index}]", "freshness"))
+                continue
+            facts.append(_fact(f"series.member[{index}].present", "coverage"))
+            if wanted.get("position") is not None or wanted.get("accepted_positions"):
+                facts.append(_fact(f"series.member[{index}].position", "ordering"))
+            if "work_type" in wanted:
+                facts.append(_fact(f"series.member[{index}].work_type", "classification"))
+            if "published" in wanted:
+                facts.append(_fact(f"series.member[{index}].published", "freshness"))
+            for author_index, _author in enumerate(wanted.get("authors") or []):
+                facts.append(_fact(f"series.member[{index}].authors[{author_index}]", "accuracy"))
+        for index, entry in enumerate(expect.get("forbid") or []):
+            dimension = (
+                "classification"
+                if "work_type" in entry or "kind" in entry
+                else (
+                    "ordering"
+                    if "position" in entry
+                    else ("freshness" if "published" in entry else "accuracy")
+                )
+            )
+            facts.append(_fact(f"series.forbid[{index}]", dimension))
+        if "main_count" in expect:
+            facts.append(_fact("series.main_count", "classification"))
+        return facts
+
+    if operation in (Operation.AUTHOR_RESOLVE, Operation.AUTHOR_WORKS, Operation.AUTHOR_SERIES):
+        if expect.get("name"):
+            facts.append(_fact("author.name", "coverage"))
+        review = bool(_review_reason(expect, as_of))
+        for index, _title in enumerate(expect.get("titles") or []):
+            facts.append(_fact(f"author.titles[{index}]", "freshness" if review else "coverage"))
+        for index, _series in enumerate(expect.get("series") or []):
+            facts.append(_fact(f"author.series[{index}]", "coverage"))
+        return facts
+    return facts
+
+
 # --- duplicates -----------------------------------------------------------------
 
 
@@ -955,4 +1070,5 @@ __all__ = [
     "check",
     "compute_checks",
     "duplicates",
+    "expected_facts",
 ]

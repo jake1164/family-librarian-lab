@@ -13,7 +13,7 @@ from typing import Any, Mapping, Sequence
 
 from .export import EXCLUDED_FROM_CAPABILITY
 from .measurements import DIMENSIONS as MEASUREMENT_DIMENSIONS
-from .measurements import operation_fixture_counts
+from .measurements import MIN_RETURNED_FOR_PERCENT, blocked_class, operation_fixture_counts
 from .model import Operation
 
 OUTCOME_CLASS = {
@@ -282,6 +282,71 @@ def _tallies(document: Mapping[str, Any]) -> str:
     )
 
 
+def _fact_tables(document: Mapping[str, Any]) -> str:
+    """Fixed-denominator tables: the same N for every provider, in each mode."""
+
+    tables = (document.get("measurements") or {}).get("facts") or {}
+    modes = tables.get("modes") or {}
+    if not modes:
+        return ""
+    sections: list[str] = [
+        "<h2>Reference facts (same denominator for every provider)</h2>",
+        '<p class="note">Every provider is measured against the same N reference facts. Each fact is '
+        "in exactly one column, so the columns add up to N. <strong>blocked</strong> facts could not be "
+        "asked: <em>unsupported</em> is a provider gap, <em>not_implemented</em> is a gap in this tool, "
+        "anything else is a run condition. A blocked fact is not an error and not an omission. "
+        "<strong>agree</strong> is divided by returned values only; below "
+        f"{MIN_RETURNED_FOR_PERCENT} returned values counts are shown without a percentage.</p>",
+    ]
+    for mode, block in modes.items():
+        reference = block["reference_facts"]
+        rows: list[str] = []
+        for provider, profile in block["providers"].items():
+            bucket = profile["total"]
+            blocked = ", ".join(
+                f"{_e(reason)}={count} ({_e(blocked_class(reason))})"
+                for reason, count in bucket["blocked_by"].items()
+            )
+            returned = bucket["returned"]
+            agree = (
+                f"{bucket['correct']} / {returned}"
+                if returned >= MIN_RETURNED_FOR_PERCENT
+                else f"{bucket['correct']} of {returned} (n&lt;{MIN_RETURNED_FOR_PERCENT})"
+            )
+            no_conflict = (
+                f" <small>({bucket['ambiguous_no_conflict']} with no conflicting record)</small>"
+                if bucket.get("ambiguous_no_conflict")
+                else ""
+            )
+            identity = (
+                f" <small>({bucket['identity_ambiguous']} from one of several same-named series)</small>"
+                if bucket.get("identity_ambiguous")
+                else ""
+            )
+            evidence = ", ".join(
+                f"{name} {count}" for name, count in (profile.get("evidence") or {}).items()
+            )
+            rows.append(
+                f"<tr><th>{_e(provider)}</th><td>{bucket['facts']}</td><td>{returned}</td>"
+                f"<td>{agree}{identity}</td><td>{bucket['differs']}</td><td>{bucket['ambiguous']}{no_conflict}</td>"
+                f"<td>{bucket['omitted']}</td><td>{bucket['incomplete']}</td>"
+                f"<td>{bucket['needs_review']}</td><td>{bucket['blocked']}</td>"
+                f"<td><small>{blocked}</small></td>"
+                f"<td><small>{_e(evidence)}</small></td></tr>"
+            )
+        dimensions = ", ".join(
+            f"{_e(name)} {count}" for name, count in reference["by_dimension"].items() if count
+        )
+        sections.append(
+            f"<h3>{_e(mode)} mode: {reference['total']} reference facts</h3>"
+            f'<p class="note">by dimension: {dimensions}</p>'
+            "<table><tr><th>provider</th><th>N</th><th>returned</th><th>agree</th><th>differs</th>"
+            "<th>ambiguous</th><th>omitted</th><th>incomplete</th><th>needs_review</th>"
+            f"<th>blocked</th><th>blocked by</th><th>evidence (rows)</th></tr>{''.join(rows)}</table>"
+        )
+    return "".join(sections)
+
+
 def _measurements(document: Mapping[str, Any]) -> str:
     by_provider = (document.get("measurements") or {}).get("by_provider") or {}
     if not by_provider:
@@ -311,8 +376,10 @@ def _measurements(document: Mapping[str, Any]) -> str:
             f"elapsed={performance.get('elapsed_ms', 0)} ms</td></tr>"
         )
     return (
-        "<h2>Measurements (separate, never summed)</h2>"
-        "<p class=\"note\">Accuracy is <code>ok / reported</code>: a value the provider omitted is "
+        "<h2>Measurements: executed-check tallies (separate, never summed)</h2>"
+        "<p class=\"note\"><strong>The denominator here varies by provider</strong>: only checks that "
+        "actually ran are counted, so use the reference-fact table above to compare providers. "
+        "Accuracy is <code>ok / reported</code>: a value the provider omitted is "
         "counted as <em>omitted</em> and against coverage, never against accuracy. "
         "Classification and ordering only divide by values the provider actually reported. "
         "\"Position coverage\" is reported / expected positions.</p>"
@@ -407,7 +474,7 @@ def render_report(document: Mapping[str, Any]) -> str:
         f"<h2>Providers</h2><ul>{providers}</ul>"
         f"{_declarations(document)}{_operation_fixtures(document)}"
         f"{_matrix(document)}{_best_per_capability(document)}{_tallies(document)}"
-        f"{_measurements(document)}"
+        f"{_fact_tables(document)}{_measurements(document)}"
         f"<h2>Cases</h2>{cases}"
         "<p class=\"note\">This report is a capability profile. It contains no composite score, "
         "no ranking and no recommendation.</p>"

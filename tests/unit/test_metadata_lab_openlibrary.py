@@ -40,6 +40,8 @@ class SampleTransport:
     def _body(self, url: str, params: dict) -> str:
         if "/search/authors.json" in url:
             return sample("author_resolve__rebecca-yarros.json")
+        if "/search.json" in url and params.get("author") and "page" in params:
+            return sample("author_series__yarros.json")
         if "/search.json" in url:
             query = str(params.get("q", ""))
             if query.startswith("series_key:"):
@@ -249,11 +251,58 @@ def test_author_works_returns_titles():
     assert len(records[0].works) == 10
 
 
-def test_author_series_is_a_tool_gap_not_a_provider_limit():
-    # Author-filtered search returns series fields, so Open Library is not "unsupported".
+def test_author_series_is_derived_from_one_list_and_deduplicated_by_series_key():
+    transport = SampleTransport()
+    ctx = make_ctx(transport)
+
+    records = ADAPTER.author_series(ctx, Query(author="Rebecca Yarros", provider_id="OL7825177A"))
+
     assert ADAPTER.unsupported == {}
-    assert ADAPTER.declared_support(Operation.AUTHOR_SERIES) == "not_implemented"
-    assert ADAPTER.declared_support(Operation.SERIES_MEMBERS) == "supported"
+    assert ADAPTER.declared_support(Operation.AUTHOR_SERIES) == "supported"
+    assert len(records) == 1
+    assert records[0].provider_id == "/authors/OL7825177A"
+    refs = {ref.provider_id: ref.name for ref in records[0].series}
+    # The live response had three series keys across eleven works with series data.
+    assert refs == {
+        "OL331363L": "The Empyrean",
+        "OL331365L": "The Renegades",
+        "OL331364L": "Flight & Glory",
+    }
+    searches = [r for r in transport.requests if r[1].endswith("/search.json")]
+    assert len(searches) == 1, "one paginated list, never a request per work"
+    assert searches[0][2]["author"] == "Rebecca Yarros"
+    assert any(note.startswith("derived:") for note in ctx.notes)
+
+
+def test_author_series_ignores_works_by_a_namesake():
+    ctx = make_ctx(SampleTransport())
+
+    records = ADAPTER.author_series(ctx, Query(author="Rebecca Yarros", provider_id="OL999999A"))
+
+    assert records == []
+
+
+def test_author_series_pages_until_the_total_is_retrieved_and_flags_truncation():
+    class Paged(SampleTransport):
+        def _body(self, url, params):
+            if url.endswith("/search.json"):
+                doc = {
+                    "key": "/works/OL1W",
+                    "title": "T",
+                    "author_key": ["OL7825177A"],
+                    "series_key": [f"OL{params['page']}L"],
+                    "series_name": [f"S{params['page']}"],
+                }
+                return json.dumps({"numFound": 999, "docs": [doc] * 100})
+            return super()._body(url, params)
+
+    ctx = make_ctx(Paged())
+    ctx.max_pages = 2
+
+    records = ADAPTER.author_series(ctx, Query(author="A B", provider_id="OL7825177A"))
+
+    assert {ref.provider_id for ref in records[0].series} == {"OL1L", "OL2L"}
+    assert ctx.truncated
 
 
 def test_check_connection_reports_a_result_count():
