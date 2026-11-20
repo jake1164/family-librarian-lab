@@ -44,3 +44,32 @@ def test_every_listed_provider_is_disabled_not_enabled() -> None:
 def test_a_failed_disable_fails_the_scenario_instead_of_going_live_silently() -> None:
     with pytest.raises(AssertionError, match="hermetic"):
         commands._disable_live_providers(_FakeApi(status=404))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("manual_value", [None, "false", "true"])
+def test_run_enables_demo_without_changing_manual_settings(manual_value, monkeypatch) -> None:
+    monkeypatch.delenv("FAMILY_LIBRARIAN_DEMO_PROVIDER_ENABLED", raising=False)
+    values = {} if manual_value is None else {"FAMILY_LIBRARIAN_DEMO_PROVIDER_ENABLED": manual_value}
+    original = values.copy()
+    factory = commands._BaseScenarioFactory(values, keep=False)
+    # Suites replace extra_env during setup/teardown; the fixture must survive that.
+    factory.extra_env = {"SAMPLE_PROVIDER_QUESTION_FIXTURES": "1"}
+    scenario = factory("SEC-01")
+    environments = []
+
+    def run(command, **kwargs):
+        environments.append(kwargs["env"])
+        return None
+
+    monkeypatch.setattr(commands.subprocess, "run", run)
+    commands._compose(scenario._values, scenario.project_name, "config")
+    commands._compose(values, "manual-up", "config")
+
+    assert environments[0]["FAMILY_LIBRARIAN_DEMO_PROVIDER_ENABLED"] == "true"
+    assert environments[0]["SAMPLE_PROVIDER_QUESTION_FIXTURES"] == "1"
+    assert values == original
+    assert factory.extra_env == {"SAMPLE_PROVIDER_QUESTION_FIXTURES": "1"}
+    if manual_value is None:
+        assert "FAMILY_LIBRARIAN_DEMO_PROVIDER_ENABLED" not in environments[1]
+    else:
+        assert environments[1]["FAMILY_LIBRARIAN_DEMO_PROVIDER_ENABLED"] == manual_value

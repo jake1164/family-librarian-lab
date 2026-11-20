@@ -39,6 +39,16 @@ choosing an arbitrary OPDS match or disabling the automatic worker.
 
 Every scenario starts its own Compose project and uses a run-specific project name, network, named volumes, bootstrap credentials, and fixture title. The PostgreSQL database **and** the CWA/ABS library state are fresh. A test run must never point at a household library, an operator's CWA, or an operator's Audiobookshelf instance.
 
+Automated runs explicitly enable local authentication and the sample metadata
+catalog, disable live metadata providers and unrelated chat/alert features, and
+use the disposable CWA mail relay and fake device addresses. Suite-specific TLS,
+question fixtures, reader seeding, and database choices reset at suite boundaries.
+Before any main cases, a disposable prerequisite scenario verifies the real
+boot, authentication, antiforgery, scanner, provider, request-format and demo-record
+contracts. A failed preflight produces a failed run report and saved artifacts,
+then stops the run. Each scenario also checks that its configured destinations
+are ready to accept requests before the case performs any negative mutations.
+
 ```text
 test driver
     |

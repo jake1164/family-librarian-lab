@@ -114,6 +114,31 @@ image built by an earlier `./lab build`/`./lab up`. Use `--test-group base` to n
 one group, or `--case SEC-02` to run one registered scenario while investigating a
 failure.
 
+Automated scenarios enable the sample metadata catalog with
+`FAMILY_LIBRARIAN_DEMO_PROVIDER_ENABLED=true` so their fixed book fixtures can be
+resolved even when the product's Development settings disable it. This override
+is scoped to `./lab run`; it does not edit `lab.env`. For manual `./lab up`, the
+catalog stays off by default; set `FAMILY_LIBRARIAN_DEMO_PROVIDER_ENABLED=true`
+in `lab.env` to enable it there too.
+
+Every `./lab run`, including `--skip-build` and single-case runs, first starts a
+disposable prerequisite scenario. It checks migrations, app/scanner readiness,
+administrator login and antiforgery, installed provider states, the request-format
+API, and all demo records used by the suites. A failed check stops before
+the main cases and saves a failed run report plus
+`results-run-prerequisites.json` pointing to its deployment logs and API trace.
+
+Automated scenarios use one test configuration policy: local login and the demo
+catalog are enabled; live metadata sources, general chat, interaction alerts,
+and model debug capture are disabled. CWA uses the disposable mail catcher and
+fake Kindle addresses even if manual `lab.env` settings specify real ones.
+Each suite supplies its controlled TLS, question, provider, or model fixtures
+and enables integrations through the real admin API when needed. Suite settings
+are reset at the next suite boundary, and configured ebook/audiobook destinations
+must pass request-readiness checks before the case starts. Manual `./lab up`
+settings are preserved. The unit setup audit covers every registered suite and
+requires new suites to declare their prerequisites.
+
 ## CWA and Audiobookshelf destinations
 
 `cwa-local` and `abs` are Compose profiles on top of `base`, adding real

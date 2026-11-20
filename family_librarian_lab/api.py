@@ -372,6 +372,11 @@ class FamilyLibrarianApi:
         _require_status(enabled, 200, "Matrix enable")
         return self.matrix_settings()
 
+    def metadata_providers(self) -> list[dict[str, Any]]:
+        response = self._request("GET", "/api/v1/admin/integrations/metadata/")
+        _require_status(response, 200, "metadata provider prerequisites")
+        return _list_field(response.body, "providers", "metadata provider prerequisites")
+
     def set_metadata_credential(self, provider_id: str, credential: str) -> ApiResponse:
         """Store a metadata provider's API key or token (``PUT .../integrations/metadata/{id}/credential``)."""
         return self._request(

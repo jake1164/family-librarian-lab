@@ -27,7 +27,7 @@ from urllib.request import urlopen
 from agent import common as lab_common, registry
 from agent.planning import RunPlan, RunReport
 from agent.simulators import matrix as matrix_fixture
-from agent.suites import CaseFunc, Suite, discover_suites, run_suites, select_suites
+from agent.suites import CaseFunc, Suite, SuiteRunResult, SuitesRunSummary, discover_suites, run_suites, select_suites
 
 from family_librarian_lab import clients, gutenberg_fixtures, question_cases, request_snapshot
 from family_librarian_lab.api import FamilyLibrarianApi
@@ -2055,6 +2055,81 @@ _LIVE_PROVIDERS_OFF_BY_DEFAULT = ("librivox",)
 #: with almost no work (CWA-L-08/09/10) spent ~10 s of a ~34 s run tearing down.
 _SCENARIO_STOP_TIMEOUT = ("--timeout", "2")
 
+# The automated lab owns these choices; manual lab.env settings must not
+# introduce live services, real devices, or a different inbound chat path.
+# A suite can still opt into its own controlled fixture through extra_env.
+_AUTOMATED_RUN_ENVIRONMENT = {
+    "FAMILY_LIBRARIAN_DEMO_PROVIDER_ENABLED": "true",
+    "FAMILY_LIBRARIAN_LOCAL_AUTH_ENABLED": "true",
+    "FAMILY_LIBRARIAN_OPENLIBRARY_ENABLED": "false",
+    "FAMILY_LIBRARIAN_GOOGLE_BOOKS_ENABLED": "false",
+    "FAMILY_LIBRARIAN_GOOGLE_BOOKS_API_KEY": "",
+    "FAMILY_LIBRARIAN_HARDCOVER_ENABLED": "false",
+    "FAMILY_LIBRARIAN_GUTENBERG_PROVIDER_ENABLED": "false",
+    "FAMILY_LIBRARIAN_LIBRIVOX_PROVIDER_ENABLED": "false",
+    "FAMILY_LIBRARIAN_CONVERSATION_ENABLED": "false",
+    "FAMILY_LIBRARIAN_CONVERSATION_WEB_ENABLED": "false",
+    "FAMILY_LIBRARIAN_CONVERSATION_MATRIX_ENABLED": "false",
+    "FAMILY_LIBRARIAN_MODEL_CAPTURE_REJECTED_REPLIES": "false",
+    "FAMILY_LIBRARIAN_PUBLIC_ORIGIN": "",
+    "FAMILY_LIBRARIAN_CWA_SMTP_HOST": "",
+    "FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL": "",
+    "FAMILY_LIBRARIAN_READER2_KINDLE_EMAIL": "",
+    "FAMILY_LIBRARIAN_INVITATIONS_LIFETIME_DAYS": "7",
+    "FAMILY_LIBRARIAN_INVITATIONS_REDEMPTION_ATTEMPTS_PER_MINUTE": "10",
+    clients.EXTERNAL_PROVIDER_QUESTION_FIXTURES_ENV: "0",
+}
+
+_REQUIRED_DEMO_SLUGS = (
+    "the-hobbit", "project-hail-mary", "a-wrinkle-in-time",
+    "pride-and-prejudice", "the-time-machine", "debt-of-honor", "jack-ryan-omnibus",
+    question_cases.CINDER_GATE, question_cases.ASHEN_CROWN, question_cases.EMBER_ROAD,
+    question_cases.WINDFALL_HOLLOW, question_cases.HOLLOWMERE, question_cases.SALTMARSH_LIGHT,
+)
+
+
+def _verify_catalog_prerequisites(api: FamilyLibrarianApi) -> dict[str, object]:
+    providers = {p["providerId"]: p for p in api.metadata_providers()}
+    required = {"demo", "openlibrary", "googlebooks", "hardcover", "gutendex", "librivox"}
+    missing = sorted(required - providers.keys())
+    if missing:
+        raise AssertionError(f"Required built-in providers are missing: {', '.join(missing)}.")
+    demo = providers["demo"]
+    if demo.get("isEnabled") is not True or demo.get("isMisconfigured") is not False:
+        raise AssertionError("The demo catalog is disabled or misconfigured; check the automated run environment.")
+    live = sorted(p for p, status in providers.items() if p != "demo" and status.get("isEnabled") is True)
+    if live:
+        raise AssertionError(f"Unexpected live providers enabled at test startup: {', '.join(live)}.")
+    formats = api.request_formats()
+    for media_type in ("ebook", "audiobook"):
+        status = formats.get(media_type)
+        # This base preflight has no destinations yet. Disabled is correct;
+        # actual readiness is checked after each scenario wires its destinations.
+        if (not isinstance(status, dict)
+                or not isinstance(status.get("isEnabled"), bool)
+                or not isinstance(status.get("isReady"), bool)):
+            raise AssertionError(f"The {media_type} request-format readiness response is missing or invalid.")
+    for slug in _REQUIRED_DEMO_SLUGS:
+        api.resolve_demo_work(slug)
+    return {"enabled_providers": ["demo"], "demo_slugs": list(_REQUIRED_DEMO_SLUGS)}
+
+
+def _verify_destination_readiness(api: FamilyLibrarianApi, profiles: Sequence[str]) -> None:
+    expected = []
+    if any(p in _CWA_SCENARIO_PROFILES for p in profiles):
+        expected.append("ebook")
+    if clients.ABS_PROFILE in profiles:
+        expected.append("audiobook")
+    if not expected:
+        return
+    formats = api.request_formats()
+    for media_type in expected:
+        status = formats.get(media_type)
+        if not isinstance(status, dict) or status.get("isReady") is not True:
+            reason = status.get("reason") if isinstance(status, dict) else "missing readiness response"
+            raise AssertionError(f"Scenario {media_type} destination is not ready after setup: {reason}.")
+
+
 def _disable_live_providers(api: FamilyLibrarianApi) -> None:
     for provider_id in _LIVE_PROVIDERS_OFF_BY_DEFAULT:
         response = api.set_provider_enabled(provider_id, False)
@@ -2207,6 +2282,7 @@ class _BaseScenario:
             self.matrix_household = wiring.matrix_household
             self.matrix_bot_user_id = wiring.matrix_bot_user_id
             self.matrix_reader = wiring.matrix_reader
+            _verify_destination_readiness(api, self._profiles)
         except BaseException:
             if not self._keep:
                 result = _compose(
@@ -2510,7 +2586,7 @@ class _BaseScenarioFactory:
     """
 
     def __init__(self, values: dict[str, str], *, keep: bool) -> None:
-        self._values = values
+        self._values = {**values, **_AUTOMATED_RUN_ENVIRONMENT}
         self._keep = keep
         self.active_profiles: tuple[str, ...] = ()
         # Set by a suite's own @SUITE.setup (ensure_shared_clamav(),
@@ -2537,6 +2613,9 @@ class _BaseScenarioFactory:
         # Set once by handle_run from ensure_shared_cwa(); None means every
         # CWA scenario starts its own CWA (FAMILY_LIBRARIAN_SHARED_CWA=false).
         self.shared_cwa_env: dict[str, str] | None = None
+        # Run-owned, independent of a suite replacing extra_env with TLS or
+        # question fixtures. Every scenario needs the scanner for readiness.
+        self.shared_scanner_env: dict[str, str] = {}
 
     def __call__(self, test_id: str) -> _BaseScenario:
         return _BaseScenario(
@@ -2544,11 +2623,35 @@ class _BaseScenarioFactory:
             test_id,
             keep=self._keep,
             profiles=self.active_profiles,
-            extra_env=self.extra_env,
+            extra_env={**self.shared_scanner_env, **self.extra_env},
             seed_readers=self.seed_readers,
             shared_database_env=None if self.local_database else self.shared_database_env,
             shared_cwa_env=self.shared_cwa_env,
         )
+
+
+def _run_prerequisites(factory: _BaseScenarioFactory, run_directory: Path) -> bool:
+    """Check FL's shared boot/auth/scanner/catalog contract in a disposable database before any suite case."""
+    scenario = _BaseScenario(
+        factory._values, "RUN-PREFLIGHT", keep=False,
+        extra_env=factory.shared_scanner_env, shared_database_env=factory.shared_database_env,
+    )
+    evidence: dict[str, object] = {"compose_project": scenario.project_name}
+    try:
+        with scenario:
+            evidence.update(_verify_catalog_prerequisites(scenario.api))
+    except (Exception, SystemExit) as error:
+        evidence.update(outcome="fail", error=_redact(str(error), factory._values))
+    else:
+        evidence["outcome"] = "pass"
+    evidence["artifacts_dir"] = str(scenario._result_directory) if scenario._result_directory else None
+    path = run_directory / "results-run-prerequisites.json"
+    path.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+    print(f"Run prerequisites {evidence['outcome']}: {path}", flush=True)
+    if evidence["outcome"] != "pass":
+        print(f"Stopping before suite cases: {evidence['error']}", file=sys.stderr, flush=True)
+        return False
+    return True
 
 
 def _scoped_for_run(suites: Sequence[Suite], factory: _BaseScenarioFactory) -> list[Suite]:
@@ -2561,12 +2664,19 @@ def _scoped_for_run(suites: Sequence[Suite], factory: _BaseScenarioFactory) -> l
     plain for-loop, no concurrency), so a single shared mutable attribute on
     the factory is safe."""
 
-    def _bind(func: CaseFunc, profiles: tuple[str, ...]) -> CaseFunc:
+    def _empty_setup() -> None:
+        pass
+
+    def _bind(func: CaseFunc, profiles: tuple[str, ...], *, reset: bool = False) -> CaseFunc:
         @functools.wraps(func)
         def wrapped(*args: object, **kwargs: object) -> object:
             previous = factory.active_profiles
             factory.active_profiles = profiles
             try:
+                if reset:
+                    factory.extra_env = {}
+                    factory.seed_readers = False
+                    factory.local_database = False
                 return func(*args, **kwargs)
             finally:
                 factory.active_profiles = previous
@@ -2580,7 +2690,7 @@ def _scoped_for_run(suites: Sequence[Suite], factory: _BaseScenarioFactory) -> l
             replace(
                 target,
                 cases=[replace(case, func=_bind(case.func, profiles)) for case in target.cases],
-                setup_fn=_bind(target.setup_fn, profiles) if target.setup_fn is not None else None,
+                setup_fn=_bind(target.setup_fn or _empty_setup, profiles, reset=True),
                 teardown_fn=_bind(target.teardown_fn, profiles) if target.teardown_fn is not None else None,
             )
         )
@@ -4036,7 +4146,7 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
     with lab_common.run_lock(label="lab run"):
         if not args.skip_build:
             _checkout_source(args.target)
-        values = _load_lab_env()
+        values = {**_load_lab_env(), **_AUTOMATED_RUN_ENVIRONMENT}
         _check_no_conflicting_containers(values)
         if not args.skip_build:
             build_project = lab_common.project_name()
@@ -4063,10 +4173,18 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         try:
             factory.shared_database_env = ensure_shared_postgres(values)
             factory.shared_cwa_env = ensure_shared_cwa(values)
-            summary = run_suites(
-                _scoped_for_run(suites, factory), results_dir=run_directory, label="Family Librarian Lab",
-                scenario_factory=factory,
-            )
+            factory.shared_scanner_env = ensure_shared_clamav()
+            if _run_prerequisites(factory, run_directory):
+                summary = run_suites(
+                    _scoped_for_run(suites, factory), results_dir=run_directory, label="Family Librarian Lab",
+                    scenario_factory=factory,
+                )
+            else:
+                summary = SuitesRunSummary(results=[SuiteRunResult(
+                    suite_name="run-prerequisites", setup_ok=False,
+                    setup_error="Run prerequisites failed; see results-run-prerequisites.json and its artifacts_dir.",
+                    expected=0, actual=0, failed=1,
+                )], failed=True)
         finally:
             _RUN_OWNS_SHARED_SERVICES = False
             # --keep leaves kept scenarios pointing at these, so keep them too.
@@ -4083,6 +4201,7 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
             "group": args.test_group,
             "case": args.case,
             "outcome": "fail" if failed else "pass",
+            "prerequisites": "results-run-prerequisites.json",
             "suites": [
                 {
                     "suite": result.suite_name,
