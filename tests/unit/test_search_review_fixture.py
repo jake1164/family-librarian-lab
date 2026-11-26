@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 import json
 import hashlib
 from http.client import HTTPConnection
@@ -10,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 import sys
 import threading
+from uuid import uuid4
 from zipfile import ZipFile
 
 import pytest
@@ -34,8 +36,9 @@ def running_fixture():
         thread.join(timeout=5)
 
 
-def call(base, path, body=None):
-    status, raw = _http(base + path, method="GET" if body is None else "POST", json_body=body)
+def call(base, path, body=None, *, idempotency_key=None):
+    headers = {"Idempotency-Key": idempotency_key or str(uuid4())} if path.endswith("/acquire") else None
+    status, raw = _http(base + path, method="GET" if body is None else "POST", json_body=body, headers=headers)
     return status, json.loads(raw) if raw else None
 
 
@@ -54,7 +57,91 @@ def test_sources_are_distinct_and_only_offer_the_verified_copy_after_the_alias_s
         assert status == 202 and job["state"] == "running"
         assert call(base, f"/source-a/acquire/{job['jobId']}")[1] == job
         control.configure("role-off")
-        assert control.state() == {"scenario": "role-off", "searches": [], "modelCalls": [], "acquisitions": []}
+        assert control.state() == {"scenario": "role-off", "searches": [], "modelCalls": [], "acquisitions": [], "acquireRequests": []}
+
+
+@pytest.mark.parametrize("mode", ["keep", "author-delivery"])
+def test_acquire_replay_returns_the_same_job_without_another_logical_acquisition(mode):
+    with running_fixture() as base:
+        control = SearchReviewControl(base)
+        control.configure("triage-" + mode)
+        call(base, "/source-a/search", {"mediaType": "ebook"})
+        body = {"requestId": "attempt-1", "candidateReference": "copy-b", "candidateRevision": "rev-1",
+                "acquireToken": None, "mediaType": "ebook"}
+        first = call(base, "/source-a/acquire", body, idempotency_key="attempt-1")
+        replay = call(base, "/source-a/acquire", dict(reversed(list(body.items()))), idempotency_key="attempt-1")
+        assert first[0] == 202 and replay == first
+        state = control.state()
+        assert len(state["acquisitions"]) == 1
+        assert len(state["acquireRequests"]) == 2
+
+
+def test_concurrent_acquire_replays_create_one_job_but_distinct_keys_remain_distinct():
+    with running_fixture() as base:
+        control = SearchReviewControl(base)
+        control.configure("triage-keep")
+        call(base, "/source-a/search", {"mediaType": "ebook"})
+        body = {"requestId": "attempt-1", "candidateReference": "copy-a"}
+        barrier = threading.Barrier(4)
+
+        def submit(_index):
+            barrier.wait(timeout=5)
+            return call(base, "/source-a/acquire", body, idempotency_key="attempt-1")
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            replies = list(pool.map(submit, range(4)))
+        assert all(reply == replies[0] and reply[0] == 202 for reply in replies)
+        second = call(base, "/source-a/acquire", body, idempotency_key="attempt-2")
+        assert second[0] == 202 and second[1]["jobId"] != replies[0][1]["jobId"]
+        state = control.state()
+        assert len(state["acquisitions"]) == 2 and len(state["acquireRequests"]) == 5
+
+
+@pytest.mark.parametrize("field,value", [("requestId", "other-attempt"), ("candidateReference", "copy-b"),
+                                      ("candidateRevision", "rev-2"), ("acquireToken", "changed"),
+                                      ("mediaType", "audiobook")])
+def test_reusing_an_acquire_key_for_changed_facts_conflicts_without_replacing_the_original(field, value):
+    with running_fixture() as base:
+        control = SearchReviewControl(base)
+        control.configure("triage-keep")
+        call(base, "/source-a/search", {"mediaType": "ebook"})
+        body = {"requestId": "attempt-1", "candidateReference": "copy-a", "candidateRevision": "rev-1",
+                "acquireToken": None, "mediaType": "ebook"}
+        first = call(base, "/source-a/acquire", body, idempotency_key="attempt-1")
+        conflict = call(base, "/source-a/acquire", body | {field: value}, idempotency_key="attempt-1")
+        assert conflict[0] == 409 and conflict[1]["code"] == "IDEMPOTENCY_CONFLICT"
+        assert call(base, "/source-a/acquire", body, idempotency_key="attempt-1") == first
+        assert len(control.state()["acquisitions"]) == 1
+
+
+def test_acquire_keys_are_scoped_to_source_and_reset_with_the_scenario():
+    with running_fixture() as base:
+        control = SearchReviewControl(base)
+        control.configure("triage-keep")
+        body = {"candidateReference": "copy-a"}
+        jobs = []
+        for source in ("source-a", "source-b"):
+            call(base, f"/{source}/search", {"mediaType": "ebook"})
+            status, job = call(base, f"/{source}/acquire", body, idempotency_key="attempt-1")
+            assert status == 202
+            jobs.append(job["jobId"])
+        assert jobs[0] != jobs[1] and len(control.state()["acquisitions"]) == 2
+        control.configure("triage-keep")
+        call(base, "/source-a/search", {"mediaType": "ebook"})
+        status, job = call(base, "/source-a/acquire", body, idempotency_key="attempt-1")
+        assert status == 202 and job["jobId"] not in jobs
+        assert len(control.state()["acquisitions"]) == len(control.state()["acquireRequests"]) == 1
+
+
+def test_acquire_requires_a_key_and_a_rejected_candidate_does_not_reserve_it():
+    with running_fixture() as base:
+        control = SearchReviewControl(base)
+        control.configure("triage-keep")
+        call(base, "/source-a/search", {"mediaType": "ebook"})
+        assert _http(base + "/source-a/acquire", method="POST", json_body={"candidateReference": "copy-a"})[0] == 400
+        assert call(base, "/source-a/acquire", {"candidateReference": "invented"}, idempotency_key="attempt-1")[0] == 404
+        assert call(base, "/source-a/acquire", {"candidateReference": "copy-a"}, idempotency_key="attempt-1")[0] == 202
+        assert len(control.state()["acquisitions"]) == 1
 
 
 def test_source_review_records_have_no_structured_title_or_author_and_retain_two_releases():

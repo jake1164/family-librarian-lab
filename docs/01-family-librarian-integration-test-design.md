@@ -442,6 +442,13 @@ catalog or model is needed. Every case starts with an empty application database
 and destination library and waits for a durable provider attempt before asserting
 submission or refusal.
 
+The controlled provider honors protocol-v2 `Idempotency-Key` replay: an identical
+request with the same key returns the existing job, while changed facts return
+`409`. Fixture `acquisitions` counts accepted logical jobs; `acquireRequests`
+retains every POST and its key for diagnostics. A repeated POST with a new key
+still counts as another acquisition, so exact-one assertions detect duplicate
+logical attempts while allowing recovery replays.
+
 | Cases | Assertion |
 | --- | --- |
 | CT-01..03 | Keep the original candidate, veto it at Strict, or prefer the other genuinely tied candidate. |

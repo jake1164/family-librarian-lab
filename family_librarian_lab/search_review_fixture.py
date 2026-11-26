@@ -58,6 +58,8 @@ class Fixture:
             self.searches: list[dict] = []
             self.model_calls: list[dict] = []
             self.acquisitions: list[dict] = []
+            self.acquire_requests: list[dict] = []
+            self.acquire_keys: dict[tuple[str, str], tuple[dict, dict]] = {}
             self.jobs: dict[str, dict] = {}
             self.outputs: dict[str, bytes] = {}
             self.offered: set[tuple[str, str]] = set()
@@ -65,7 +67,8 @@ class Fixture:
     def state(self) -> dict:
         with self.lock:
             return deepcopy({"scenario": self.scenario, "searches": self.searches,
-                             "modelCalls": self.model_calls, "acquisitions": self.acquisitions})
+                             "modelCalls": self.model_calls, "acquisitions": self.acquisitions,
+                             "acquireRequests": self.acquire_requests})
 
     def search(self, source: str, body: dict) -> dict:
         with self.lock:
@@ -394,7 +397,22 @@ def make_server(address: tuple[str, int]) -> ThreadingHTTPServer:
                     self.respond(200, fixture.search(parts[0], body))
                 elif parts[0] in ("source-a", "source-b") and parts[1:] == ["acquire"]:
                     with fixture.lock:
-                        fixture.acquisitions.append({"source": parts[0], "body": deepcopy(body)})
+                        key = self.headers.get("Idempotency-Key", "").strip()
+                        recorded = {"source": parts[0], "body": deepcopy(body), "idempotencyKey": key}
+                        fixture.acquire_requests.append(recorded)
+                        if not key:
+                            self.respond(400, {"code": "IDEMPOTENCY_KEY_REQUIRED"})
+                            return
+                        # The original submit and a recovery replay may overlap. Protocol v2
+                        # requires one job per key; keep lookup and acceptance under this lock.
+                        prior = fixture.acquire_keys.get((parts[0], key))
+                        if prior is not None:
+                            original, job = prior
+                            if original != body:
+                                self.respond(409, {"code": "IDEMPOTENCY_CONFLICT"})
+                            else:
+                                self.respond(202, job)
+                            return
                         if (parts[0], body.get("candidateReference")) not in fixture.offered:
                             self.respond(404, {"code": "UNKNOWN_CANDIDATE"})
                             return
@@ -413,6 +431,8 @@ def make_server(address: tuple[str, int]) -> ThreadingHTTPServer:
                             fixture.outputs[job_id] = artifact_excerpt_epub(fixture.scenario.removeprefix("excerpt-"))
                             job.update(status="Completed", state="completed", phase="completed", pollAfterSeconds=1)
                         fixture.jobs[job_id] = job
+                        fixture.acquire_keys[(parts[0], key)] = (deepcopy(body), job)
+                        fixture.acquisitions.append(recorded)
                         self.respond(202, job)
                 else:
                     self.respond(404)
