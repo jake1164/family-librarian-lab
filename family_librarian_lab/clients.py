@@ -413,6 +413,16 @@ class CwaClient:
         status, _ = _http(f"{self.host_base_url}/opds", basic_auth=(self.username, self.password))
         return status == 200
 
+    def answers(self, timeout: float = 15.0) -> bool:
+        """Whether CWA can serve a catalog search, which reads its library. No reply or a server error is a
+        no; any other status is a yes, so changed credentials are not mistaken for a hang."""
+        status, _ = _http(
+            f"{self.host_base_url}/opds/search/lab-health-check",
+            basic_auth=(self.username, self.password),
+            timeout=timeout,
+        )
+        return 0 < status < 500
+
     def find_book(self, title: str, author: str | None) -> str | None:
         """Mirrors FamilyLibrarian.Infrastructure.Publishing.CwaCatalogClient's
         own OPDS search + acquisition-link parsing -- an independent check

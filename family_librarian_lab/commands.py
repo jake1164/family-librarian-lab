@@ -1401,6 +1401,15 @@ def _redact(text: str, values: dict[str, str]) -> str:
     return text
 
 
+def _redact_configured_secrets(text: str, values: dict[str, str]) -> str:
+    """For logs from third-party services: also hides any other configured password, token, secret or key, such
+    as a real mail relay's."""
+    for name, secret in values.items():
+        if len(secret or "") >= 6 and re.search(r"PASSWORD|TOKEN|SECRET|API_KEY|PRIVATE_KEY", name):
+            text = text.replace(secret, "[REDACTED]")
+    return _redact(text, values)
+
+
 def _capture_result(values: dict[str, str], project_name: str, checks: dict[str, object], outcome: str) -> Path:
     run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{project_name}"
     run_directory = RESULTS_ROOT / run_id
@@ -1817,11 +1826,7 @@ def ensure_shared_cwa(values: dict[str, str]) -> dict[str, str] | None:
     """
     if not shared_cwa_enabled(values):
         return None
-    project_values = _shared_cwa_project_values(values)
-    profiles = (clients.CWA_PROFILE,)
-    _run_or_exit(project_values, SHARED_CWA_PROJECT, "down", "--volumes", "--remove-orphans", profiles=profiles)
-    _prepare_shared_cwa_ingest_dir(values)
-    _run_or_exit(project_values, SHARED_CWA_PROJECT, "up", "-d", "--wait", *SHARED_CWA_SERVICES, profiles=profiles)
+    _start_shared_cwa(values)
     return {
         "FAMILY_LIBRARIAN_SCENARIO_CWA_PROFILE": _DISABLED_CWA_PROFILE,
         "FAMILY_LIBRARIAN_SCENARIO_CWA_SFTP_KEY_PROFILE": _DISABLED_CWA_PROFILE,
@@ -1829,6 +1834,16 @@ def ensure_shared_cwa(values: dict[str, str]) -> dict[str, str] | None:
         "FAMILY_LIBRARIAN_CWA_INGEST_SOURCE": str(SHARED_CWA_INGEST_DIR),
         "FAMILY_LIBRARIAN_SHARED_CWA_ACTIVE": "1",
     }
+
+
+def _start_shared_cwa(values: dict[str, str]) -> None:
+    """A new CWA with empty volumes and an empty ingest folder: how every run begins, and how a stuck one is
+    replaced. Scenarios apply their own CWA settings each time, so nothing else has to be restored."""
+    project_values = _shared_cwa_project_values(values)
+    profiles = (clients.CWA_PROFILE,)
+    _run_or_exit(project_values, SHARED_CWA_PROJECT, "down", "--volumes", "--remove-orphans", profiles=profiles)
+    _prepare_shared_cwa_ingest_dir(values)
+    _run_or_exit(project_values, SHARED_CWA_PROJECT, "up", "-d", "--wait", *SHARED_CWA_SERVICES, profiles=profiles)
 
 
 def _prepare_shared_cwa_ingest_dir(values: dict[str, str]) -> None:
@@ -1873,20 +1888,126 @@ def _empty_cwa_library(
         )
 
 
-def reset_shared_cwa(values: dict[str, str]) -> None:
-    """Give the next case an empty, running CWA and an empty CWA mail relay.
+#: CWA can restart its own web process after a settings save, so one refused request does not mean it is stuck.
+_SHARED_CWA_ANSWER_ATTEMPTS = 4
+_SHARED_CWA_ANSWER_RETRY_SECONDS = 5.0
 
-    `up --wait` first: a previous case may have stopped CWA (fault cases do)
-    and failed before starting it again; it is a no-op when already running.
+#: Where the details of each CWA replaced during the current `run` were saved, for the run's own summary.
+_SHARED_CWA_REPLACEMENTS: list[Path] = []
+
+
+def reset_shared_cwa(values: dict[str, str]) -> None:
+    """Give the next case an empty, working CWA and an empty CWA mail relay.
+
+    A shared CWA that no longer works is replaced once. Otherwise a single hang fails every later case that needs
+    CWA. The case during which it stopped working keeps its own result.
     """
-    project_values = _shared_cwa_project_values(values)
-    profiles = (clients.CWA_PROFILE,)
-    _run_or_exit(project_values, SHARED_CWA_PROJECT, "up", "-d", "--wait", *SHARED_CWA_SERVICES, profiles=profiles)
-    _empty_cwa_library(project_values, SHARED_CWA_PROJECT, profiles, values)
+    problem = _shared_cwa_problem(values)
+    if problem:
+        details = _save_shared_cwa_diagnostics(values, problem)
+        _announce(f"WARNING: the shared CWA is not working: {problem}\nReplacing it. Details saved in {details}")
+        _SHARED_CWA_REPLACEMENTS.append(details)
+        try:
+            _start_shared_cwa(values)
+        # SystemExit too: preparing the ingest folder raises it, and it would otherwise end the whole run.
+        except (RuntimeError, SystemExit) as error:
+            raise AssertionError(f"The shared CWA could not be replaced: {error} Earlier details: {details}") from error
+        problem = _shared_cwa_problem(values)
+        if problem:
+            raise AssertionError(
+                f"The shared CWA still does not work after being replaced: {problem} Earlier details: {details}"
+            )
     mailpit = clients.MailpitClient(
         _client_host_base(values, clients.CWA_MAILPIT_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_MAILPIT_HOST_PORT")
     )
     mailpit.clear()
+
+
+def _shared_cwa_problem(values: dict[str, str]) -> str | None:
+    """Start the shared CWA if needed and empty its library. Returns why it cannot be used, or None.
+
+    `up --wait` first: a previous case may have stopped CWA (fault cases do) and failed before starting it again;
+    it is a no-op when already running. It also fails for a running container Docker has marked unhealthy.
+    """
+    project_values = _shared_cwa_project_values(values)
+    profiles = (clients.CWA_PROFILE,)
+    started = _compose(
+        project_values, SHARED_CWA_PROJECT, "up", "-d", "--wait", *SHARED_CWA_SERVICES,
+        profiles=profiles, capture=True,
+    )
+    if started.returncode:
+        last_lines = " | ".join(_redact(started.stderr, values).strip().splitlines()[-3:])
+        return f"`docker compose up --wait` failed (exit {started.returncode}): {last_lines}"
+    if not _shared_cwa_answers(values):
+        return "it did not answer a catalog search."
+    try:
+        _empty_cwa_library(project_values, SHARED_CWA_PROJECT, profiles, values)
+    except AssertionError as error:
+        return str(error)
+    return None
+
+
+def _shared_cwa_answers(values: dict[str, str]) -> bool:
+    """A container can pass its own health check while the catalog hangs, so ask the catalog itself."""
+    cwa = clients.CwaClient(
+        host_base_url=_client_host_base(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT")
+    )
+    for attempt in range(_SHARED_CWA_ANSWER_ATTEMPTS):
+        if cwa.answers():
+            return True
+        if attempt + 1 < _SHARED_CWA_ANSWER_ATTEMPTS:
+            time.sleep(_SHARED_CWA_ANSWER_RETRY_SECONDS)
+    return False
+
+
+def _save_shared_cwa_diagnostics(values: dict[str, str], problem: str) -> Path:
+    """Keep what is about to be destroyed: logs, and Docker's state including its recent health check results.
+    Collecting is best effort; failing to collect must not stop the replacement."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    directory = RESULTS_ROOT / f"{stamp}-shared-cwa-diagnostics"
+    project_values = _shared_cwa_project_values(values)
+
+    def compose_output(*arguments: str) -> str:
+        result = _compose(
+            project_values, SHARED_CWA_PROJECT, *arguments, profiles=(clients.CWA_PROFILE,), capture=True
+        )
+        return result.stdout + result.stderr
+
+    def container_state() -> str:
+        identifiers = _compose(
+            project_values, SHARED_CWA_PROJECT, "ps", "--all", "--quiet",
+            profiles=(clients.CWA_PROFILE,), capture=True,
+        ).stdout.split()
+        if not identifiers:
+            return "No containers.\n"
+        # Only .State: the rest of `inspect` carries the container's environment.
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Name}} {{json .State}}", *identifiers],
+            text=True, encoding="utf-8", errors="replace", capture_output=True, check=False,
+        )
+        return result.stdout + result.stderr
+
+    collectors = {
+        "problem.txt": lambda: problem + "\n",
+        "container-state.txt": container_state,
+        "compose-ps.json": lambda: compose_output("ps", "--all", "--format", "json"),
+        "compose-logs.txt": lambda: compose_output("logs", "--no-color", "--timestamps"),
+    }
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        for name, collect in collectors.items():
+            (directory / name).write_text(_redact_configured_secrets(collect(), values), encoding="utf-8")
+    except (OSError, subprocess.SubprocessError) as error:
+        _announce(f"Could not save all shared CWA details in {directory}: {error}")
+    return directory
+
+
+def _announce(message: str) -> None:
+    dashboard = lab_common.active_dashboard()
+    if dashboard is not None:
+        dashboard.print(message)
+    else:
+        print(message, file=sys.stderr, flush=True)
 
 
 def _stop_shared_cwa(values: dict[str, str]) -> None:
@@ -4141,8 +4262,10 @@ def _write_se_lab_report_record(
                 {
                     "metadata": {
                         "run_id": se_run_id,
-                        "lab_repo_branch": product_branch,
-                        "lab_repo_commit": product_commit,
+                        "lab_repo_branch": lab_root_branch,
+                        "lab_repo_commit": lab_root_commit,
+                        "product_branch": product_branch,
+                        "product_commit": product_commit,
                         "hostname": lab_common.current_hostname(),
                         "timestamp_utc": started_iso,
                         "completed_at_utc": completed_iso,
@@ -4200,6 +4323,7 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
         print("Aborted.", flush=True)
         return 1
     started_at = datetime.now(UTC)
+    _SHARED_CWA_REPLACEMENTS.clear()
     suites = select_suites(discover_suites(TESTS_ROOT), group=args.test_group, case=args.case)
     if not suites:
         selector = f" and case {args.case!r}" if args.case else ""
@@ -4270,6 +4394,8 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
             "case": args.case,
             "outcome": "fail" if failed else "pass",
             "prerequisites": "results-run-prerequisites.json",
+            "completed_at_utc": datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ"),
+            "shared_cwa_replacements": [path.name for path in _SHARED_CWA_REPLACEMENTS],
             "suites": [
                 {
                     "suite": result.suite_name,
@@ -4297,7 +4423,14 @@ def handle_run(args: argparse.Namespace, config: object) -> int:
             branch = lab_common.repo_current_branch() or "detached"
             commit = lab_common.repo_head_commit(short=True) or "unknown"
             run_report.add("Source", f"branch {branch}")
-            run_report.add("Lab commit", commit)
+            run_report.add("Product commit", commit)
+        run_report.add("Lab commit", lab_common.git_commit(REPO_ROOT, short=True) or "unknown")
+        if _SHARED_CWA_REPLACEMENTS:
+            run_report.add(
+                "Shared CWA replaced",
+                f"{len(_SHARED_CWA_REPLACEMENTS)} time(s); find out why: "
+                + ", ".join(f"results/{path.name}" for path in _SHARED_CWA_REPLACEMENTS),
+            )
         run_report.add("Started at UTC", started_at.strftime("%Y-%m-%dT%H:%M:%SZ"))
         run_report.add("Completed at UTC", completed_at.strftime("%Y-%m-%dT%H:%M:%SZ"))
         run_report.add("Duration", lab_common.format_duration(int((completed_at - started_at).total_seconds())))
@@ -4328,24 +4461,34 @@ def _resolve_run_directory(from_run: str | None) -> Path:
     return candidates[-1]
 
 
-def _find_case_artifact_dir(case_id: str) -> Path | None:
-    """Best-effort pointer to the case's own scenario-capture directory
-    (compose-logs.txt, api-trace.json) for deeper digging. Not exact: a
-    case can open its scenario under a suffixed internal id (e.g. CWA-S-02
-    is recorded as "CWA-S-02" but its own project is
-    "family-librarian-lab-cwa-s-02-key-<timestamp>"), so this matches by
-    substring and returns the most recently modified hit -- right in
-    practice shortly after the run finished, not a guaranteed exact match
-    long after `results/` has accumulated many runs."""
-    needle = case_id.lower()
+_CASE_STAMP_LENGTH = len("YYYYmmddTHHMMSS")
+
+
+def _find_case_artifact_dir(case_id: str, started: str, finished: str) -> Path | None:
+    """The folder this run saved for the case (compose-logs.txt, api-trace.json), or None.
+
+    Case folders are named "<time>-<project>" and results/ holds many runs, so only folders created between this
+    run's start and end count. A case that failed before its containers started saved none, and an older run's
+    folder for the same case would describe a different failure. A case can open its scenario under a suffixed id
+    (CWA-S-02 also uses "cwa-s-02-key"); the newest of this run's folders wins.
+    """
+    needle = f"-{LAB_PROJECT_PREFIX}-{case_id.lower()}-"
     matches = [
         path
         for path in RESULTS_ROOT.glob(f"*-{LAB_PROJECT_PREFIX}-*")
-        if path.is_dir() and needle in path.name.lower()
+        if path.is_dir() and needle in path.name.lower() and started <= path.name[:_CASE_STAMP_LENGTH] <= finished
     ]
-    if not matches:
-        return None
-    return max(matches, key=lambda path: path.stat().st_mtime)
+    return max(matches, key=lambda path: path.name, default=None)
+
+
+def _run_time_window(run_directory: Path, suite_run: dict) -> tuple[str, str]:
+    """When a run began and ended, as the second-precision stamps case folder names start with."""
+    finished = suite_run.get("completed_at_utc")
+    if not finished:
+        # Runs recorded before this field existed: their summary was written as they ended.
+        written = (run_directory / "results-suite-run.json").stat().st_mtime
+        finished = datetime.fromtimestamp(written, UTC).strftime("%Y%m%dT%H%M%S")
+    return run_directory.name[:_CASE_STAMP_LENGTH], str(finished)[:_CASE_STAMP_LENGTH]
 
 
 @registry.command(
@@ -4359,6 +4502,8 @@ def handle_report_failed(args: argparse.Namespace, config: object) -> int:
     if not suite_run_path.is_file():
         raise SystemExit(f"No results-suite-run.json in {run_directory}")
     suite_run = json.loads(suite_run_path.read_text(encoding="utf-8"))
+
+    started, finished = _run_time_window(run_directory, suite_run)
 
     wanted = {"fail"} | ({"skip"} if args.include_skipped else set())
     found = False
@@ -4380,9 +4525,11 @@ def handle_report_failed(args: argparse.Namespace, config: object) -> int:
             found = True
             case_id = case.get("name", "?")
             print(f"[{suite_name}] {str(status).upper()} {case_id}: {case.get('message', '')}")
-            artifact_dir = _find_case_artifact_dir(case_id)
+            artifact_dir = _find_case_artifact_dir(case_id, started, finished)
             if artifact_dir is not None:
                 print(f"    logs: {artifact_dir}")
+            else:
+                print("    logs: this run saved none for this case (it may have failed before its containers started)")
 
     if not found:
         suffix = "" if args.include_skipped else " (pass --include-skipped to also see skips)"

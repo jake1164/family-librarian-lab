@@ -139,6 +139,16 @@ must pass request-readiness checks before the case starts. Manual `./lab up`
 settings are preserved. The unit setup audit covers every registered suite and
 requires new suites to declare their prerequisites.
 
+One CWA is shared by the whole run, with its library emptied before each case. If it stops working (it will not
+start, Docker marks it unhealthy, a catalog search gets no answer, or its library cannot be emptied), the lab
+replaces it once so that one hang does not fail every later case. The case during which it stopped keeps its own
+result. Its logs and Docker state, including recent health checks, are saved first in
+`results/<time>-shared-cwa-diagnostics/`, and the run summary says how often CWA was replaced. A replacement is a
+reason to look at those files, even when every later case passes.
+
+`./lab report failed` links a case's log folder only if the reported run created it. A case that failed before its
+containers started has none. The run summary lists the product commit and the lab commit separately.
+
 ## CWA and Audiobookshelf destinations
 
 `cwa-local` and `abs` are Compose profiles on top of `base`, adding real

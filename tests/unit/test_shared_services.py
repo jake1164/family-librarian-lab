@@ -9,6 +9,8 @@ cannot pull ClamAV out from under the rest of the run.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from family_librarian_lab import commands
@@ -213,3 +215,129 @@ def test_shared_cwa_can_be_switched_off_in_lab_env(setting, enabled, monkeypatch
     assert commands.shared_cwa_enabled(values) is enabled
     if not enabled:
         assert commands.ensure_shared_cwa(values) is None
+
+
+# ---- replacing a shared CWA that stopped working -------------------------
+
+
+class _Done:
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+@pytest.fixture
+def cwa(monkeypatch, tmp_path):
+    """A shared CWA whose faults are chosen per test; a replacement clears them unless told otherwise."""
+    state = SimpleNamespace(
+        unhealthy=False, silent=False, stuck_library=False, replacement_fixes=True, replacement_error=None,
+        replaced=0, mail_cleared=0,
+    )
+
+    def compose(_values, _project, *arguments, **_kwargs):
+        if arguments[0] == "up" and state.unhealthy:
+            return _Done(1, stderr="container family-librarian-lab-shared-cwa-cwa-1 is unhealthy")
+        if arguments[0] == "logs":
+            return _Done(stdout="cwa-1 | relay password is hunter2-relay")
+        return _Done()
+
+    def replace_cwa(_values):
+        state.replaced += 1
+        if state.replacement_error:
+            raise state.replacement_error
+        if state.replacement_fixes:
+            state.unhealthy = state.silent = state.stuck_library = False
+
+    def empty(*_args):
+        if state.stuck_library:
+            raise AssertionError("Could not empty the shared CWA library (remaining='3'): database is locked")
+
+    class Mailpit:
+        def __init__(self, *_args) -> None:
+            pass
+
+        def clear(self) -> None:
+            state.mail_cleared += 1
+
+    monkeypatch.setattr(commands, "_compose", compose)
+    monkeypatch.setattr(commands, "_start_shared_cwa", replace_cwa)
+    monkeypatch.setattr(commands, "_shared_cwa_answers", lambda _: not state.silent)
+    monkeypatch.setattr(commands, "_empty_cwa_library", empty)
+    monkeypatch.setattr(commands.clients, "MailpitClient", Mailpit)
+    monkeypatch.setattr(commands, "RESULTS_ROOT", tmp_path)
+    monkeypatch.setattr(commands, "_SHARED_CWA_REPLACEMENTS", [])
+    return state
+
+
+def test_a_working_shared_cwa_is_not_replaced(cwa, tmp_path) -> None:
+    commands.reset_shared_cwa({})
+
+    assert (cwa.replaced, cwa.mail_cleared) == (0, 1)
+    assert commands._SHARED_CWA_REPLACEMENTS == []
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("fault, reason", [
+    ("unhealthy", "is unhealthy"),
+    ("silent", "did not answer a catalog search"),
+    ("stuck_library", "database is locked"),
+])
+def test_a_stuck_shared_cwa_is_replaced_once_after_its_details_are_saved(cwa, fault, reason) -> None:
+    setattr(cwa, fault, True)
+
+    commands.reset_shared_cwa({"FAMILY_LIBRARIAN_CWA_SMTP_PASSWORD": "hunter2-relay"})
+
+    assert (cwa.replaced, cwa.mail_cleared) == (1, 1)
+    [details] = commands._SHARED_CWA_REPLACEMENTS
+    assert reason in (details / "problem.txt").read_text()
+    logs = (details / "compose-logs.txt").read_text()
+    assert "hunter2-relay" not in logs and "[REDACTED]" in logs
+    assert (details / "container-state.txt").is_file()
+    # A diagnostics folder must not look like a run or a case folder to the code that searches for those.
+    assert "-suites-" not in details.name and commands.LAB_PROJECT_PREFIX not in details.name
+
+
+def test_a_cwa_that_is_still_stuck_after_replacement_fails_the_case(cwa) -> None:
+    cwa.silent = True
+    cwa.replacement_fixes = False
+
+    with pytest.raises(AssertionError, match="still does not work after being replaced.*shared-cwa-diagnostics"):
+        commands.reset_shared_cwa({})
+
+    assert (cwa.replaced, cwa.mail_cleared) == (1, 0)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("compose up failed"), SystemExit("could not prepare ingest")])
+def test_a_failed_replacement_fails_only_the_case(cwa, error) -> None:
+    cwa.unhealthy = True
+    cwa.replacement_error = error
+
+    # SystemExit would end the whole run; a case failure must be an ordinary exception.
+    with pytest.raises(AssertionError, match="could not be replaced"):
+        commands.reset_shared_cwa({})
+
+
+@pytest.mark.parametrize("replies, answers, requests", [
+    ([True], True, 1),
+    ([False, False, True], True, 3),
+    ([False] * 10, False, 4),
+])
+def test_cwa_gets_a_few_chances_to_answer(monkeypatch, replies, answers, requests) -> None:
+    asked: list[bool] = []
+
+    def reply(_self, timeout: float = 15.0) -> bool:
+        asked.append(True)
+        return replies[len(asked) - 1]
+
+    monkeypatch.setattr(commands.clients.CwaClient, "answers", reply)
+    monkeypatch.setattr(commands.time, "sleep", lambda _: None)
+
+    assert commands._shared_cwa_answers({}) is answers
+    assert len(asked) == requests
+
+
+@pytest.mark.parametrize(
+    "status, answers", [(200, True), (401, True), (404, True), (500, False), (503, False), (0, False)])
+def test_only_silence_or_a_server_error_means_cwa_is_not_answering(monkeypatch, status, answers) -> None:
+    monkeypatch.setattr(commands.clients, "_http", lambda *_, **__: (status, b""))
+
+    assert commands.clients.CwaClient(host_base_url="http://cwa").answers() is answers
