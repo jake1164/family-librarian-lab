@@ -451,6 +451,59 @@ class FamilyLibrarianApi:
         _require_status(response, 200, "Matrix unlink")
         return _object(response.body, "Matrix link status")
 
+    # -- first-time setup -------------------------------------------------
+
+    def set_kindle_guidance(self, *, sender_address: str | None, amazon_store: str | None = None) -> bool:
+        """Admin: the sender family members are told to approve, and the Amazon store their links open.
+        False when the product under test predates setup guidance."""
+        return self._put_setup_guidance(
+            "kindle", {"kindleSenderAddress": sender_address, "amazonStore": amazon_store}
+        )
+
+    def set_messaging_guidance(
+        self,
+        *,
+        server_name: str | None = None,
+        sign_in_instructions: str | None = None,
+        help_url: str | None = None,
+        web_app_url: str | None = None,
+    ) -> bool:
+        """Admin: how family members sign in to messaging. A blank server name means the bot ID's server."""
+        return self._put_setup_guidance(
+            "messaging",
+            {
+                "serverName": server_name,
+                "signInInstructions": sign_in_instructions,
+                "helpUrl": help_url,
+                "webAppUrl": web_app_url,
+            },
+        )
+
+    def set_show_element_help(self, enabled: bool) -> bool:
+        return self._put_setup_guidance("messaging/element-help", {"enabled": enabled})
+
+    def _put_setup_guidance(self, section: str, body: dict[str, object]) -> bool:
+        response = self._request("PUT", f"/api/v1/admin/setup-guidance/{section}", json_body=body)
+        # An older product has no such route: an unmatched write answers 404 or 405.
+        if response.status in (404, 405):
+            return False
+        _require_status(response, 200, f"setup guidance ({section})")
+        return True
+
+    def my_setup(self) -> dict[str, Any]:
+        """The signed-in account's own setup overview -- call on a reader's instance."""
+        response = self._request("GET", "/api/v1/me/setup/")
+        _require_status(response, 200, "setup overview")
+        return _object(response.body, "setup overview")
+
+    def mark_setup_seen(self) -> None:
+        response = self._request("POST", "/api/v1/me/setup/seen")
+        _require_status(response, 204, "setup seen")
+
+    def skip_setup_steps(self, steps: list[str]) -> None:
+        response = self._request("POST", "/api/v1/me/setup/skipped", json_body={"steps": steps})
+        _require_status(response, 204, "setup skip")
+
     def create_reader(self, email: str, password: str) -> "FamilyLibrarianApi":
         """Provision a member with an independent cookie jar; never trace credentials."""
         invitation = self._request("POST", "/api/v1/admin/invitations/",
@@ -616,8 +669,9 @@ class FamilyLibrarianApi:
     def gutenberg_sync(self) -> ApiResponse:
         """Trigger a Gutenberg catalog sync (incremental if the catalog is
         already ready, full otherwise -- GutenbergCatalogEndpoints' own
-        rule). 409 if one is already in progress; 502 on failure -- callers
-        decide what each status means for their scenario."""
+        rule). 202 once queued (older builds ran it in the request and
+        answered 200, or 502 on failure); 409 if one is already in progress.
+        Callers poll gutenberg_status() for the outcome."""
         return self._request("POST", "/api/v1/admin/gutenberg/sync", data=b"")
 
     def gutenberg_purge(self) -> ApiResponse:

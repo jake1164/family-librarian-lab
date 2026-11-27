@@ -877,6 +877,8 @@ class DestinationWiring:
     cwa_reader1: "FamilyLibrarianApi | None" = None
     cwa_reader2: "FamilyLibrarianApi | None" = None
     cwa_relay_is_real: bool = False
+    # The address CWA really sends Kindle mail from; family members are told to approve it.
+    cwa_relay_from_address: "str | None" = None
     matrix_household: "clients.MatrixTestClient | None" = None
     matrix_bot_user_id: "str | None" = None
     matrix_reader: "FamilyLibrarianApi | None" = None
@@ -948,6 +950,7 @@ def _wire_destinations(
     api: FamilyLibrarianApi,
     *,
     seed_readers: bool = True,
+    seed_newcomer: bool = False,
 ) -> DestinationWiring:
     """Configure Family Librarian to point at whichever extra destinations this
     scenario/deployment brought up -- the same call, used by both `up` (manual
@@ -968,7 +971,11 @@ def _wire_destinations(
     gate for SEC-01, not for Kindle -- so without this flag its BASE-02 case
     ("fresh deployment contains exactly the bootstrap administrator") failed
     the moment reader seeding started running unconditionally for every
-    cwa-local scenario, this suite included."""
+    cwa-local scenario, this suite included.
+
+    `seed_newcomer` is for manual `up` only: one more member with nothing set
+    up, for trying the first-time setup by hand. Suites that need a new member
+    create their own."""
     wiring = DestinationWiring()
 
     if any(profile in profiles for profile in _CWA_SCENARIO_PROFILES):
@@ -989,6 +996,7 @@ def _wire_destinations(
         # never gates on IsEnabled.
         relay = _cwa_relay_settings(values)
         wiring.cwa_relay_is_real = relay.is_real
+        wiring.cwa_relay_from_address = relay.from_address
         cwa_admin = clients.CwaAdminSession(host_base_url=wiring.cwa_client.host_base_url)
         cwa_admin.configure_mail_settings(
             smtp_host=relay.host,
@@ -1019,6 +1027,14 @@ def _wire_destinations(
             public_url=_public_url(values, clients.CWA_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_CWA_HOST_PORT"),
             ereader_service_account_username=clients.CWA_EREADER_SERVICE_ACCOUNT_USERNAME,
             ereader_service_account_password=clients.CWA_EREADER_SERVICE_ACCOUNT_PASSWORD,
+        )
+
+        _preset_setup_guidance(
+            api.set_kindle_guidance(
+                sender_address=relay.from_address or None,
+                amazon_store=values.get("FAMILY_LIBRARIAN_AMAZON_STORE") or None,
+            ),
+            "Kindle",
         )
 
         wiring.cwa_mailpit_client = clients.MailpitClient(
@@ -1154,10 +1170,38 @@ def _wire_destinations(
         wiring.matrix_household = household
         wiring.matrix_bot_user_id = bot_user_id
 
+        # The server name stays blank so the product derives it from the bot ID. Element X on a phone cannot use
+        # this plain-http lab homeserver, so its setup help is off; Element Web is offered instead.
+        if api.set_messaging_guidance(
+            sign_in_instructions=clients.MATRIX_SIGN_IN_INSTRUCTIONS,
+            web_app_url=_public_url(values, clients.ELEMENT_DEFAULT_HOST_PORT, "FAMILY_LIBRARIAN_ELEMENT_HOST_PORT"),
+        ):
+            api.set_show_element_help(False)
+        else:
+            _preset_setup_guidance(False, "messaging")
+
+        if seed_newcomer:
+            newcomer = clients.MatrixTestClient(matrix_base_url, clients.MATRIX_SERVER_NAME)
+            _register_or_login_matrix_user(
+                newcomer,
+                clients.MATRIX_NEWCOMER_USERNAME,
+                clients.MATRIX_NEWCOMER_PASSWORD,
+                registration_token=clients.MATRIX_REGISTRATION_TOKEN,
+            )
+
         if seed_readers:
             wiring.matrix_reader = api.ensure_reader(clients.CWA_READER1_EMAIL, clients.CWA_READER_DEFAULT_PASSWORD)
 
+    if seed_newcomer and (clients.CWA_PROFILE in profiles or clients.MATRIX_PROFILE in profiles):
+        api.ensure_reader(clients.NEWCOMER_EMAIL, clients.CWA_READER_DEFAULT_PASSWORD)
+
     return wiring
+
+
+def _preset_setup_guidance(applied: bool, section: str) -> None:
+    """`up` also deploys older product branches, which have nowhere to save guidance. Say so and carry on."""
+    if not applied:
+        print(f"This product build has no {section} setup guidance settings; skipped presetting them.", flush=True)
 
 
 def _print_connection_info(
@@ -1260,6 +1304,20 @@ def _print_connection_info(
                     "plain http: Element may warn about encryption; chat in an UNENCRYPTED direct message, "
                     "which is all the bot reads"
                 ),
+            )
+        )
+    if cwa_running or matrix_running:
+        matrix_note = (
+            f"; their messaging sign-in: {clients.MATRIX_NEWCOMER_USERNAME} / {clients.MATRIX_NEWCOMER_PASSWORD}"
+            if matrix_running
+            else ""
+        )
+        connections.append(
+            lab_common.ConnectionInfo(
+                "First-time setup test member",
+                credentials=f"{clients.NEWCOMER_EMAIL} / {clients.CWA_READER_DEFAULT_PASSWORD}{matrix_note}",
+                note="nothing set up yet, so the setup wizard opens on their first sign-in (once per account; "
+                "created by './lab up' on builds that have the wizard)",
             )
         )
     if sftp_wiring:
@@ -2199,6 +2257,8 @@ class _BaseScenario:
         self.smtp_client: clients.MailpitClient | None = None
         self.cwa_sftp_wiring: dict[str, object] | None = None
         self.cwa_mailpit_client: clients.MailpitClient | None = None
+        self.cwa_relay_is_real = False
+        self.cwa_relay_from_address: str | None = None
         self.cwa_reader1: FamilyLibrarianApi | None = None
         self.cwa_reader2: FamilyLibrarianApi | None = None
         self.matrix_household: clients.MatrixTestClient | None = None
@@ -2277,6 +2337,8 @@ class _BaseScenario:
             self.smtp_client = wiring.smtp_client
             self.cwa_sftp_wiring = wiring.sftp_wiring
             self.cwa_mailpit_client = wiring.cwa_mailpit_client
+            self.cwa_relay_is_real = wiring.cwa_relay_is_real
+            self.cwa_relay_from_address = wiring.cwa_relay_from_address
             self.cwa_reader1 = wiring.cwa_reader1
             self.cwa_reader2 = wiring.cwa_reader2
             self.matrix_household = wiring.matrix_household
@@ -2617,9 +2679,11 @@ class _BaseScenarioFactory:
         # question fixtures. Every scenario needs the scanner for readiness.
         self.shared_scanner_env: dict[str, str] = {}
 
-    def __call__(self, test_id: str) -> _BaseScenario:
+    def __call__(self, test_id: str, *, catcher_relay: bool = False) -> _BaseScenario:
+        """`catcher_relay` wires CWA to the lab catcher from the start, ignoring any real relay in lab.env, so the
+        real relay's settings are never applied to this scenario."""
         return _BaseScenario(
-            self._values,
+            _without_real_cwa_relay(self._values) if catcher_relay else self._values,
             test_id,
             keep=self._keep,
             profiles=self.active_profiles,
@@ -2628,6 +2692,10 @@ class _BaseScenarioFactory:
             shared_database_env=None if self.local_database else self.shared_database_env,
             shared_cwa_env=self.shared_cwa_env,
         )
+
+
+def _without_real_cwa_relay(values: dict[str, str]) -> dict[str, str]:
+    return {key: value for key, value in values.items() if not key.startswith("FAMILY_LIBRARIAN_CWA_SMTP_")}
 
 
 def _run_prerequisites(factory: _BaseScenarioFactory, run_directory: Path) -> bool:
@@ -2983,7 +3051,7 @@ def handle_up(args: argparse.Namespace, config: object) -> int:
 
         api = FamilyLibrarianApi(_host_base(values))
         api.authenticate(values["FAMILY_LIBRARIAN_ADMIN_EMAIL"], values["FAMILY_LIBRARIAN_ADMIN_PASSWORD"])
-        wiring = _wire_destinations(values, project_name, profiles, api)
+        wiring = _wire_destinations(values, project_name, profiles, api, seed_newcomer=True)
         _apply_lab_ai(api, values)
         _enable_builtin_sources(api, values)
         _apply_lab_metadata(api, values)

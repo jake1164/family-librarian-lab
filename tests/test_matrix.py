@@ -38,9 +38,11 @@ scenario once the app exposes a trigger for it"):
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any, Callable
+from urllib.parse import quote
 
 from agent.suites import suite
 
@@ -106,16 +108,18 @@ def _require_matrix(scenario) -> None:
         raise AssertionError("Scenario did not seed a Matrix-testing FL reader.")
 
 
-def _link_household_member(scenario) -> str:
+def _link_household_member(scenario, reader=None, link_input: str | None = None) -> str:
     """Drives the full verification-code round trip (request -> bot DM ->
     reply -> verified) and returns the DM room id, ready for a caller to
     read further messages (e.g. a later notification) from. Shared by
     MTX-03 (which proves this flow itself) and MTX-04 (which needs a
-    verified link as a precondition, not something it's re-proving)."""
-    household = scenario.matrix_household
-    reader = scenario.matrix_reader
+    verified link as a precondition, not something it's re-proving).
 
-    link_requested = reader.request_matrix_link(household.user_id)
+    `link_input` is what the member types; it defaults to the full Matrix ID."""
+    household = scenario.matrix_household
+    reader = reader or scenario.matrix_reader
+
+    link_requested = reader.request_matrix_link(link_input or household.user_id)
     if not link_requested.get("awaitingVerification"):
         raise AssertionError(f"Requesting a link did not report awaitingVerification: {link_requested!r}")
 
@@ -287,3 +291,144 @@ def request_status_change_reaches_both_smtp_and_a_linked_matrix_user(ctx, scenar
             }
 
     _run(ctx, "MTX-04", operation)
+
+
+@SUITE.case("MTX-05")
+def a_username_alone_links_the_account_on_the_bots_server(ctx, scenario_factory):
+    """Family members type only a username, often capitalized by a phone keyboard. The product has to turn it
+    into the ID the real homeserver knows, or the invitation never arrives."""
+    def operation() -> dict[str, object]:
+        with scenario_factory("MTX-05") as scenario:
+            _require_matrix(scenario)
+            reader = scenario.matrix_reader
+            typed = clients.MATRIX_HOUSEHOLD_USERNAME.capitalize()
+
+            _link_household_member(scenario, link_input=typed)
+
+            status = reader.matrix_link_status()
+            if status.get("username") != clients.MATRIX_HOUSEHOLD_USERNAME:
+                raise AssertionError(f"The linked account was not shown by its short username: {status!r}")
+            return {"typed": typed, "matrix_user_id": status.get("matrixUserId")}
+
+    _run(ctx, "MTX-05", operation)
+
+
+@SUITE.case("MTX-06")
+def a_new_member_is_offered_setup_with_working_guidance_until_it_is_done(ctx, scenario_factory):
+    """First-time setup against real services: a brand-new member is told the real server and bot, links using
+    only what that guidance and their username give them, and is then no longer asked."""
+    def operation() -> dict[str, object]:
+        with scenario_factory("MTX-06") as scenario:
+            _require_matrix(scenario)
+            newcomer = scenario.api.create_reader("mtx-06-newcomer@lab.test", clients.CWA_READER_DEFAULT_PASSWORD)
+
+            first = newcomer.my_setup()
+            if first.get("wizardSeen") or not first.get("shouldOpenWizard"):
+                raise AssertionError(f"A new member was not offered the setup wizard: {first!r}")
+            if _setup_step(first, "Messaging") != (True, False):
+                raise AssertionError(f"Messaging should be available and not set up yet: {first!r}")
+            guidance = first.get("messaging") or {}
+            expected = {"serverName": clients.MATRIX_SERVER_NAME, "botUserId": scenario.matrix_bot_user_id}
+            for key, value in expected.items():
+                if guidance.get(key) != value:
+                    raise AssertionError(f"Guidance {key} was {guidance.get(key)!r}, expected {value!r}.")
+            if not guidance.get("webAppUrl") or not guidance.get("signInInstructions"):
+                raise AssertionError(f"The preset sign-in guidance did not reach the member: {guidance!r}")
+            internal = f"{clients.MATRIX_INTERNAL_HOST}:{clients.MATRIX_INTERNAL_PORT}"
+            if internal in json.dumps(first):
+                raise AssertionError("The member's setup overview exposed the internal homeserver address.")
+
+            newcomer.mark_setup_seen()
+            seen = newcomer.my_setup()
+            if seen.get("shouldOpenWizard") or "Messaging" not in seen.get("reminderSteps", []):
+                raise AssertionError(f"After the first check, messaging should be a reminder only: {seen!r}")
+
+            _link_household_member(scenario, reader=newcomer, link_input=clients.MATRIX_HOUSEHOLD_USERNAME)
+
+            done = newcomer.my_setup()
+            if _setup_step(done, "Messaging") != (True, True) or "Messaging" in done.get("reminderSteps", []):
+                raise AssertionError(f"A verified link should count as set up: {done!r}")
+            return {"server_name": guidance.get("serverName"), "bot_user_id": guidance.get("botUserId")}
+
+    _run(ctx, "MTX-06", operation)
+
+
+@SUITE.case("MTX-07")
+def an_encrypted_message_before_verification_gets_an_explanation(ctx, scenario_factory):
+    """The bot cannot read encrypted messages. Before this, someone whose app encrypted the conversation typed the
+    code and heard nothing. Chat is off here, as on a new installation."""
+    def operation() -> dict[str, object]:
+        with scenario_factory("MTX-07") as scenario:
+            _require_matrix(scenario)
+            household = scenario.matrix_household
+            reader = scenario.matrix_reader
+
+            reader.request_matrix_link(household.user_id)
+            room = household.wait_for_invite(timeout=_INBOUND_TIMEOUT_SECONDS)
+            if room is None:
+                raise AssertionError("The bot never invited the household member to a DM room.")
+            household.join_room(room)
+            code_message = household.wait_for_message(
+                room_id=room, predicate=lambda _room, text: _VERIFICATION_CODE_PATTERN.search(text) is not None,
+                timeout=_INBOUND_TIMEOUT_SECONDS,
+            )
+            if code_message is None:
+                raise AssertionError("Never received the verification-code DM from the bot.")
+
+            # An encrypted event as the homeserver delivers it. The content is deliberately not real ciphertext:
+            # the bot must not try to read it.
+            household._request(  # noqa: SLF001
+                "PUT",
+                f"/_matrix/client/v3/rooms/{quote(room, safe='')}/send/m.room.encrypted/mtx07-{time.monotonic_ns()}",
+                {"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "lab-placeholder", "sender_key": "lab",
+                 "device_id": "LAB", "session_id": "lab"},
+            )
+            explained = household.wait_for_message(
+                room_id=room, predicate=lambda _room, text: "can't read encrypted messages" in text,
+                timeout=_INBOUND_TIMEOUT_SECONDS,
+            )
+            if explained is None:
+                raise AssertionError("The bot never explained that it cannot read an encrypted message.")
+            status = reader.matrix_link_status()
+            if status.get("isVerified"):
+                raise AssertionError(f"An unreadable message must not verify the link: {status!r}")
+
+            household.send_message(room, _VERIFICATION_CODE_PATTERN.search(code_message[1]).group(1))
+            deadline = time.monotonic() + _INBOUND_TIMEOUT_SECONDS
+            while not reader.matrix_link_status().get("isVerified"):
+                if time.monotonic() >= deadline:
+                    raise AssertionError("The plain-text code did not verify the link afterwards.")
+                time.sleep(0.5)
+            return {"explanation": explained[1]}
+
+    _run(ctx, "MTX-07", operation)
+
+
+@SUITE.case("MTX-08")
+def a_sixth_code_within_the_window_is_refused_with_an_explanation(ctx, scenario_factory):
+    """Each send invites whatever ID was typed, so the product limits one member to five in fifteen minutes."""
+    def operation() -> dict[str, object]:
+        with scenario_factory("MTX-08") as scenario:
+            _require_matrix(scenario)
+            reader = scenario.matrix_reader
+            for _ in range(5):
+                reader.request_matrix_link(scenario.matrix_household.user_id)
+
+            refused = reader._request(  # noqa: SLF001
+                "POST", "/api/v1/me/communications/matrix/",
+                json_body={"matrixUserId": scenario.matrix_household.user_id})
+            if refused.status != 429 or "which is the limit" not in json.dumps(refused.body):
+                raise AssertionError(f"The sixth code was not refused as a limit: {refused!r}")
+            if not reader.matrix_link_status().get("awaitingVerification"):
+                raise AssertionError("Reaching the limit must leave the last sent code waiting for its reply.")
+            return {"status": refused.status}
+
+    _run(ctx, "MTX-08", operation)
+
+
+def _setup_step(overview: dict[str, Any], name: str) -> tuple[bool, bool]:
+    """(available, set up) for one setup step."""
+    for step in overview.get("steps", []):
+        if step.get("step") == name:
+            return bool(step.get("isAvailable")), bool(step.get("isSet"))
+    raise AssertionError(f"The setup overview has no {name} step: {overview!r}")

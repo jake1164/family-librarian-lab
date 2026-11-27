@@ -166,6 +166,7 @@ def test_unavailable_download_is_a_failure_rather_than_book_content():
 @pytest.mark.parametrize("profile", [clients.CWA_PROFILE, clients.CWA_SFTP_PROFILE_PASSWORD])
 def test_both_ingest_transports_require_preservation_before_fl_is_wired(monkeypatch, profile):
     events = []
+    guidance = []
 
     class Admin:
         def __init__(self, **_kwargs):
@@ -189,6 +190,15 @@ def test_both_ingest_transports_require_preservation_before_fl_is_wired(monkeypa
             assert events == ["preserve"]
             events.append("wire-sftp")
 
+        def set_kindle_guidance(self, **kwargs):
+            guidance.append(kwargs)
+            return True
+
     monkeypatch.setattr(clients, "CwaAdminSession", Admin)
     commands._wire_destinations({"FAMILY_LIBRARIAN_SFTP_PASSWORD": "fixture-only"}, "fixture-only", (profile,), Api(), seed_readers=False)
     assert events == ["preserve", "wire-local" if profile == clients.CWA_PROFILE else "wire-sftp"]
+    # Only the local transport sets up Kindle delivery; members are told the sender CWA's relay really uses.
+    assert guidance == (
+        [{"sender_address": "cwa-kindle-lab@example.test", "amazon_store": None}]
+        if profile == clients.CWA_PROFILE else []
+    )

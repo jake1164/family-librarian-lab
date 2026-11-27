@@ -124,7 +124,8 @@ def _sync_to_completion(api, *, timeout_seconds: float = 90) -> None:
         raise AssertionError(
             "Gutenberg sync was refused because the source is disabled -- enable it first: "
             f"{triggered.body!r}")
-    if triggered.status not in (200, 409):
+    # 202: queued to run in the background. 200: older product builds, which ran it inside the request.
+    if triggered.status not in (200, 202, 409):
         raise AssertionError(f"Gutenberg sync trigger returned HTTP {triggered.status}: {triggered.body!r}")
     deadline = time.monotonic() + timeout_seconds
     while True:

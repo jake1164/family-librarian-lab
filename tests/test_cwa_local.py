@@ -745,6 +745,67 @@ def wrong_service_account_credentials_surface_a_real_login_failure(ctx, scenario
     _run(ctx, "KIN-02", operation)
 
 
+@SUITE.case("KIN-03")
+def the_sender_members_are_told_to_approve_is_the_one_kindle_mail_comes_from(ctx, scenario_factory):
+    """A wrong sender in the setup guidance fails silently at Amazon, so prove it against a real send through CWA."""
+    def operation() -> dict[str, object]:
+        # Wired to the catcher from the start, so nothing here changes the sender being checked.
+        with scenario_factory("KIN-03", catcher_relay=True) as scenario:
+            reader = scenario.cwa_reader1
+            if scenario.cwa_client is None or reader is None:
+                raise AssertionError("Scenario did not seed a Kindle-testing reader.")
+            if scenario.cwa_relay_is_real:
+                raise AssertionError("This case must be wired to the lab catcher, not a real relay.")
+            # Read back before anything is sent: the shared CWA may have held a real relay from an earlier case.
+            saved_relay = clients.CwaAdminSession(
+                host_base_url=scenario.cwa_client.host_base_url).configured_mail_server()
+            if saved_relay != clients.CWA_MAILPIT_INTERNAL_HOST:
+                raise AssertionError(f"CWA is not sending through the lab catcher (saved relay: {saved_relay!r}).")
+
+            overview = reader.my_setup()
+            sender = (overview.get("kindle") or {}).get("senderAddress")
+            if not sender or sender != scenario.cwa_relay_from_address:
+                raise AssertionError(
+                    f"Members are told to approve {sender!r}, but CWA sends from "
+                    f"{scenario.cwa_relay_from_address!r}."
+                )
+
+            reader.set_kindle_address(clients.CWA_READER1_KINDLE_FALLBACK)
+
+            scenario.seed_cwa_ingest(clean_epub(), "kin-03.epub")
+            if not _poll_cwa_book_ids(scenario.cwa_client, timeout_seconds=120):
+                raise AssertionError("CWA never listed the seeded book.")
+            work_id = scenario.api.resolve_demo_work()
+            scenario.cwa_mailpit_client.clear()
+
+            response = reader._request(  # noqa: SLF001
+                "POST", "/api/v1/me/delivery/kindle/send-existing",
+                json_body={"workId": work_id, "confirmLowConfidenceMatch": True})
+            if response.status != 200 or not response.body.get("succeeded"):
+                raise AssertionError(f"The library book could not be sent to the Kindle address: {response!r}")
+
+            message = scenario.cwa_mailpit_client.find_message(
+                to=clients.CWA_READER1_KINDLE_FALLBACK, timeout_seconds=120)
+            if message is None:
+                raise AssertionError("CWA never emailed the book to the Kindle address.")
+            actual = (message.get("From") or {}).get("Address")
+            if actual != sender:
+                raise AssertionError(f"Kindle mail came from {actual!r}, but members were told {sender!r}.")
+
+            if _setup_kindle_state(reader.my_setup()) != (True, True):
+                raise AssertionError("A saved Kindle address should count as set up.")
+            return {"sender": actual}
+
+    _run(ctx, "KIN-03", operation)
+
+
+def _setup_kindle_state(overview: dict[str, object]) -> tuple[bool, bool]:
+    for step in overview.get("steps", []):
+        if step.get("step") == "Kindle":
+            return bool(step.get("isAvailable")), bool(step.get("isSet"))
+    raise AssertionError(f"The setup overview has no Kindle step: {overview!r}")
+
+
 def _cwa_validation_errors(body: object) -> list[str]:
     if not isinstance(body, dict):
         return []

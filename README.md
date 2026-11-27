@@ -372,12 +372,29 @@ application container receives the settings. Without this value the app still
 records waiting provider jobs and serves the in-app attention queue, but sends
 no Matrix interaction alerts.
 
+### First-time setup
+
+`./lab up` also presets the **setup guidance** family members are shown: with `cwa-local`, the Kindle sender is
+the address CWA's relay really sends from (set `FAMILY_LIBRARIAN_AMAZON_STORE` in `lab.env` to try another Amazon
+store); with `matrix`, sign-in instructions and the Element Web address, with Element X phone help off because
+that app cannot use this plain-http homeserver. It also creates one member with nothing set up
+(`newmember@sydneyelvis.net`, plus a `newmember` Matrix account), printed as **First-time setup test member**.
+Signing in as them opens the setup wizard, once; `./lab base down` and `up` again resets it. A product build
+without the wizard still comes up: the presets are skipped with a message.
+
+These presets and the cases that depend on them (`KIN-03`, `MTX-05` to `MTX-07`) need a product build with the
+setup wizard. Phone apps and Amazon's own pages are not covered by the lab.
+
 Implemented: `MTX-01` (configure/test/enable against a real homeserver), `MTX-02` (a wrong
 bot access token surfaces a real connection failure, saved settings untouched), `MTX-03` (a
 household member links their Matrix ID via the verification-code flow — a real bot DM, a
 real reply, an exact-match check), `MTX-04` (the actual multi-provider claim: one
 `RequestStatusChanged` transition independently reaches both a real Mailpit inbox and a real
-Matrix DM for one requester with both providers enabled). See `tests/test_matrix.py`'s own
+Matrix DM for one requester with both providers enabled), `MTX-05` (a capitalized username alone links the
+account on the bot's server), `MTX-06` (a new member is offered setup, is shown the real server and bot, links
+using only that, and is then no longer asked) and `MTX-07` (an encrypted message before verification gets an
+explanation, and the plain-text code still works) and `MTX-08` (a sixth connection code within
+fifteen minutes is refused as a limit). See `tests/test_matrix.py`'s own
 module docstring for the full detail. Not covered, same blocker as `cwa-local`'s own
 `KIN-01`/`KIN-02` gap (nothing in the app yet triggers a real Kindle send, so nothing produces
 a real `DeliveryAttempt` to hang a confirmation ask off of): `KindleDeliveryConfirmationRequested`

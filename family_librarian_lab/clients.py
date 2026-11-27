@@ -24,6 +24,7 @@ state, and independently verify a published item actually landed in it.
 from __future__ import annotations
 
 import base64
+import html
 import http.client
 import http.cookiejar
 import json
@@ -100,6 +101,9 @@ CWA_EREADER_SERVICE_ACCOUNT_PASSWORD = "Admin123!"
 CWA_READER1_EMAIL = "reader1@sydneyelvis.net"
 CWA_READER2_EMAIL = "reader2@sydneyelvis.net"
 CWA_READER_DEFAULT_PASSWORD = "Admin123!"
+# `./lab up` only: a member with nothing set up, so signing in as them shows the first-time setup. The product
+# opens it once per account; `./lab base down` and `up` again gives a fresh one.
+NEWCOMER_EMAIL = "newmember@sydneyelvis.net"
 # Real Kindle "Send to Kindle" addresses are personal, Amazon-account-linked
 # secrets -- never hardcoded. FAMILY_LIBRARIAN_READER1_KINDLE_EMAIL/
 # _READER2_KINDLE_EMAIL in lab.env (gitignored) override these; left unset,
@@ -243,6 +247,13 @@ MATRIX_BOT_PASSWORD = "Admin123!"
 # not the cwa-local profile already created it).
 MATRIX_HOUSEHOLD_USERNAME = "reader1"
 MATRIX_HOUSEHOLD_PASSWORD = "Admin123!"
+# The newcomer's Matrix account (`./lab up` only), for walking through "Message the Librarian" by hand.
+MATRIX_NEWCOMER_USERNAME = "newmember"
+MATRIX_NEWCOMER_PASSWORD = "Admin123!"
+MATRIX_SIGN_IN_INSTRUCTIONS = (
+    "Lab: open the web app below and sign in with the lab messaging username and password that "
+    "'./lab up' printed. Chat in an unencrypted conversation."
+)
 
 # Element Web: a browser Matrix client so a person can sign in as the household
 # account and chat with the bot by hand. Part of the `matrix` profile (it is
@@ -540,6 +551,15 @@ def _cwa_preservation_form(page: str, flags: tuple[str, ...]) -> _CwaSettingsFor
     return matches[0]
 
 
+def _input_value(page: str, name: str) -> str | None:
+    """The value of the first input with this name, whatever order its attributes are written in."""
+    for tag in re.findall(r"<input\b[^>]*>", page, flags=re.IGNORECASE):
+        if re.search(rf"""(?<![-\w])name\s*=\s*["']{re.escape(name)}["']""", tag):
+            value = re.search(r"""(?<![-\w])value\s*=\s*(["'])(.*?)\1""", tag)
+            return html.unescape(value.group(2)) if value else None
+    return None
+
+
 @dataclass(slots=True)
 class CwaAdminSession:
     """Drives CWA's real admin web UI -- a stateful, CSRF-protected
@@ -602,6 +622,15 @@ class CwaAdminSession:
             return False
         self._csrf_token = post_login_token.group(1)
         return True
+
+    def configured_mail_server(self) -> str | None:
+        """The relay CWA has saved, read back from its form: a settings POST answering 200 does not show it applied."""
+        if not self.sign_in():
+            raise AssertionError("CWA admin sign-in failed while reading mail settings.")
+        status, page = self._get("/admin/mailsettings")
+        if status != 200:
+            raise AssertionError(f"CWA /admin/mailsettings returned HTTP {status}.")
+        return _input_value(page, "mail_server")
 
     def configure_preserved_artifacts(self) -> None:
         """Keep the approved source bytes through ingest and OPDS download."""
