@@ -141,9 +141,9 @@ class FamilyLibrarianApi:
 
     def test_cwa(self) -> dict[str, Any]:
         """Tests the *saved* CWA configuration (ingest + OPDS combined) and
-        records the result on the settings row -- the only probe that feeds
-        the enablement invariant (docs/01 §12.1.1): enabling CWA requires
-        LastTestSucceeded to be true for the currently saved configuration.
+        records the result on the settings row. Enabling CWA requires a pass
+        for the currently saved configuration (docs/01 §12.1.1); when none is
+        recorded, the enable request runs this same test itself.
         Unlike test_cwa_ingest()/test_cwa_opds(), this takes no request body --
         it always tests what's already saved, never a draft/candidate config."""
         response = self._request("POST", "/api/v1/admin/publishing/cwa/test", json_body={})
@@ -208,11 +208,12 @@ class FamilyLibrarianApi:
         return _object(response.body, "SMTP settings")
 
     def set_smtp_enabled(self, enabled: bool) -> ApiResponse:
-        """Unlike CWA/ABS's enable calls, this can legitimately return a
-        validation-problem 400 -- SmtpSettingsService.SetEnabledAsync
-        requires a passing test of the *currently saved* settings (SMTP-02),
-        so a caller proving that rejection needs the raw response, not an
-        auto-raised assertion."""
+        """Returns the raw response because enabling can legitimately return a
+        validation-problem 400. SMTP needs a passing test of the *currently
+        saved* settings; when none is recorded, SetEnabledAsync sends one to
+        the signed-in administrator's address and refuses if it fails
+        (SMTP-02), so a caller proving that rejection needs the raw response,
+        not an auto-raised assertion."""
         return self._request("PUT", "/api/v1/admin/communications/smtp/enabled", json_body={"enabled": enabled})
 
     def send_smtp_test(
@@ -242,7 +243,8 @@ class FamilyLibrarianApi:
         fromAddress/fromName have no fallback and must be supplied on every
         call; `password` is the one exception, falling back to the currently
         saved password when left None, so a caller that already saved a
-        password via set_smtp_password() need not resend it here.
+        password via set_smtp_password() need not resend it here. The result
+        is recorded only when the tested values match the saved ones.
         """
         response = self._request(
             "POST",
@@ -274,10 +276,10 @@ class FamilyLibrarianApi:
     ) -> dict[str, Any]:
         """One-shot SMTP setup for suites that only need it working, mirroring
         configure_cwa_local()/configure_audiobookshelf(): save settings, save
-        the password, prove a real test send against the saved config (the
-        enablement invariant SMTP-02 exercises directly -- SetEnabledAsync
-        refuses to enable without a fresh passing test of exactly what's
-        saved), then enable. The probe email itself lands in Mailpit, so a
+        the password, prove a real test send against the saved config, then
+        enable. Enabling would run that test itself (SMTP-02), but testing
+        first reports a broken setup clearly and keeps the probe at a
+        fixture address. The probe email itself lands in Mailpit, so a
         caller that wants a clean inbox for its own assertions should
         `scenario.smtp_client.clear()` after calling this, not before."""
         self.set_smtp_settings(
@@ -335,9 +337,10 @@ class FamilyLibrarianApi:
 
     def set_matrix_enabled(self, enabled: bool) -> ApiResponse:
         """Like set_smtp_enabled(), this can legitimately return a
-        validation-problem 400 -- MatrixSettingsService.SetEnabledAsync's own
-        enablement invariant -- so a caller proving that rejection needs the
-        raw response, not an auto-raised assertion."""
+        validation-problem 400 -- MatrixSettingsService.SetEnabledAsync tests
+        the saved connection when no pass is recorded and refuses if it
+        fails -- so a caller proving that rejection needs the raw response,
+        not an auto-raised assertion."""
         return self._request("PUT", "/api/v1/admin/communications/matrix/enabled", json_body={"enabled": enabled})
 
     def send_matrix_test(
@@ -359,8 +362,8 @@ class FamilyLibrarianApi:
     def configure_matrix(self, *, homeserver_url: str, bot_user_id: str, access_token: str) -> dict[str, Any]:
         """One-shot Matrix admin setup mirroring configure_smtp(): save
         settings, save the bot's access token, prove a real connection test
-        against the saved config (the enablement invariant every case
-        eventually depends on), then enable."""
+        against the saved config, then enable. Enabling would run that test
+        itself; testing first reports a broken setup clearly."""
         self.set_matrix_settings(homeserver_url=homeserver_url, bot_user_id=bot_user_id)
         self.set_matrix_access_token(access_token)
 
@@ -797,7 +800,9 @@ class FamilyLibrarianApi:
 
         # Enabling requires a passing test for this exact saved configuration
         # (docs/01 §12.1.1's enablement invariant) -- test_cwa_ingest()/
-        # test_cwa_opds() above don't count, they only probe drafts.
+        # test_cwa_opds() above don't count, they only probe drafts. Enabling
+        # would run this test itself; running it here reports a broken setup
+        # clearly.
         probe = self.test_cwa()
         if not probe.get("succeeded"):
             raise AssertionError(f"CWA connection test did not succeed before enabling: {probe!r}")
@@ -961,14 +966,12 @@ class FamilyLibrarianApi:
         )
         _require_status(token, 200, "Audiobookshelf API token")
 
-        # Unlike CWA, AudiobookshelfSettingsService.SetEnabledAsync does not
-        # itself require a passing test, so skipping this would still "enable"
-        # successfully -- but FormatReadinessService's request-creation gate
-        # requires LastTestSucceeded regardless, so a request would then be
-        # permanently rejected ("Test the connection...") despite IsEnabled
-        # already being true. Test the just-saved config for real before
-        # enabling, same as configure_cwa_local().
-        tested = self._request("POST", "/api/v1/admin/publishing/audiobookshelf/test", json_body={})
+        # Like CWA, enabling requires a passing test of the saved settings,
+        # which FormatReadinessService's request-creation gate also checks, and
+        # the enable request runs it if none is recorded. Testing the
+        # just-saved config here reports a broken setup clearly. The empty
+        # body means "test what is saved".
+        tested =self._request("POST", "/api/v1/admin/publishing/audiobookshelf/test", json_body={})
         _require_status(tested, 200, "Audiobookshelf connection test")
         probe = _object(tested.body, "Audiobookshelf connection test")
         if not probe.get("succeeded"):

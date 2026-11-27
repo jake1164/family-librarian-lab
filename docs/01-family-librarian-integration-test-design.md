@@ -249,7 +249,7 @@ The outbound SMTP provider (`feature/smtp-configuration`, the first slice of fam
 | ID | Scenario | Required assertions | Status |
 | --- | --- | --- | --- |
 | SMTP-01 | Configure, test, and enable delivers a real email | A real STARTTLS+AUTH send reaches Mailpit; verified via Mailpit's own API (not Family Librarian's report of success), including the authenticated SMTP-AUTH username; enabling then succeeds. | Implemented (`test_smtp.py`) |
-| SMTP-02 | Enabling requires a fresh passing test of the *currently saved* settings | Changing settings after a passing test (even to another value that would itself work) resets `LastTestSucceeded` and blocks enable until re-tested. | Implemented |
+| SMTP-02 | Enabling requires a passing test of the *currently saved* settings | A saved change resets `LastTestSucceeded`; a passing test of unsaved values is not recorded. Enable then tests the saved settings itself: a broken saved password is refused with SMTP still off; working settings enable, and Mailpit receives the test at the administrator's address from the saved From address. Re-enabling unchanged settings sends nothing. | Implemented |
 | SMTP-03 | Wrong SMTP-AUTH credentials surface a real authentication failure | A real `AuthenticationException` from MailKit is reported back through the test-send response; Mailpit never receives the message. | Implemented |
 | SMTP-04 | An unreachable host surfaces a real connection failure | A real `SocketException` (connection refused) is reported back through the test-send response, not an unhandled error. | Implemented |
 | — | `SmtpSecurityMode.SslOnConnect` (implicit TLS) | — | **Not covered**: Mailpit's own SMTP server only supports STARTTLS, not a separate implicit-TLS listener. |
@@ -311,7 +311,7 @@ Full detail lives in `test_matrix.py`'s own module docstring — read that befor
 
 These are required conformance tests, but they should not be declared green against the current implementation merely because the lab can work around the problem. The product architecture identifies these as current gaps.
 
-CWA-C-01 (CWA cannot be enabled unless both an ingest transport and a working OPDS connection are configured) is no longer listed here: `CwaSettingsService.GetConfigurationError` now requires `OpdsBaseUrl` and `LastTestSucceeded == true` before enablement (commit `0f0bfa2`), and `CWA-L-08..10` in `test_cwa_local.py` already exercise this at the API/HTTP layer. Covered by: `CWA-L-08..10`.
+CWA-C-01 (CWA cannot be enabled unless both an ingest transport and a working OPDS connection are configured) is no longer listed here: `CwaSettingsService` requires `OpdsBaseUrl` and a passing test of the saved settings before enablement (commit `0f0bfa2`), running that test during the enable request when none is recorded (`CWA-L-08`: a missing OPDS URL and a failing test both leave CWA off), and `CWA-L-08..10` in `test_cwa_local.py` already exercise this at the API/HTTP layer. Covered by: `CWA-L-08..10`.
 
 | ID | Required future behavior | Current reason it is not a green gate yet |
 | --- | --- | --- |

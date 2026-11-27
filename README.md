@@ -275,9 +275,11 @@ get a real, deterministic authentication failure out of the app rather than faki
 ```
 
 Implemented: `SMTP-01` (configure, real STARTTLS+AUTH test send, verified via Mailpit's
-own API, then enable), `SMTP-02` (enabling requires a fresh passing test of the
-*currently saved* settings — a settings change resets that, even to another value that
-would itself work), `SMTP-03` (wrong credentials surface a real authentication failure),
+own API, then enable), `SMTP-02` (enabling requires a passing test of the *currently
+saved* settings — any saved change discards an earlier pass, a test of unsaved values
+does not count, and the enable request tests the saved settings itself, refusing a
+broken password and otherwise delivering the test to the administrator),
+`SMTP-03` (wrong credentials surface a real authentication failure),
 `SMTP-04` (an unreachable host surfaces a real connection failure). Not covered, with
 reasons — see `tests/test_smtp.py`'s own module docstring for the full detail:
 `SmtpSecurityMode.SslOnConnect` (Mailpit's SMTP server only supports STARTTLS, not a

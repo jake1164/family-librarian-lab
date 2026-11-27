@@ -163,13 +163,31 @@ def configure_test_and_enable_delivers_a_real_authenticated_email(ctx, scenario_
     _run(ctx, "SMTP-01", operation)
 
 
+def _smtp_validation_errors(body: object) -> list[str]:
+    if not isinstance(body, dict):
+        return []
+    errors = body.get("errors")
+    if not isinstance(errors, dict):
+        return []
+    smtp_errors = errors.get("smtp")
+    return [str(message) for message in smtp_errors] if isinstance(smtp_errors, list) else []
+
+
+def _require_no_recorded_test(scenario, when: str) -> None:
+    status = scenario.api.smtp_settings()
+    if status.get("lastTestSucceeded") is not None:
+        raise AssertionError(f"Expected no recorded SMTP test result {when}: {status!r}")
+
+
 @SUITE.case("SMTP-02")
-def enabling_requires_a_fresh_passing_test_of_the_saved_settings(ctx, scenario_factory):
+def enabling_requires_a_passing_test_of_the_saved_settings(ctx, scenario_factory):
     def operation() -> dict[str, object]:
         with scenario_factory("SMTP-02") as scenario:
             if scenario.smtp_client is None:
                 raise AssertionError("Scenario did not bring up a Mailpit destination.")
-            scenario.smtp_client.clear()
+            admin_email = str(scenario.api.me().get("email") or "")
+            if not admin_email:
+                raise AssertionError("The signed-in administrator has no email address to receive the turn-on test.")
 
             _set_valid_settings(scenario)
             scenario.api.set_smtp_password(clients.SMTP_AUTH_PASSWORD)
@@ -177,35 +195,89 @@ def enabling_requires_a_fresh_passing_test_of_the_saved_settings(ctx, scenario_f
             if not first_test.get("succeeded"):
                 raise AssertionError(f"Initial SMTP test did not succeed: {first_test!r}")
 
-            # SmtpSettingsService.SetSettingsAsync resets LastTestSucceeded on
-            # every settings mutation (SmtpSettings.SetSettings ->
-            # ResetTestResult()) -- changing the From address, even to
-            # another value that would itself work fine, must re-block
-            # enable until re-tested against exactly this saved config.
-            _set_valid_settings(scenario, from_address="library-changed@example.test")
+            # Every saved change discards the recorded result (SmtpSettings.ResetTestResult()),
+            # so the pass above must not carry over to a saved password that does not work.
+            scenario.api.set_smtp_password("definitely-the-wrong-password")
+            _require_no_recorded_test(scenario, "after the saved password changed")
 
+            # Testing the right password without saving it proves nothing about what is saved,
+            # so the host reports the result but must not record it.
+            unsaved = scenario.api.send_smtp_test(
+                "smtp-02-unsaved@example.test",
+                host=clients.SMTP_INTERNAL_HOST,
+                port=clients.SMTP_INTERNAL_PORT,
+                security_mode="StartTls",
+                username=clients.SMTP_AUTH_USERNAME,
+                password=clients.SMTP_AUTH_PASSWORD,
+                from_address=_FROM_ADDRESS,
+                from_name=_FROM_NAME,
+            )
+            if not unsaved.get("succeeded"):
+                raise AssertionError(f"Test of the unsaved correct password did not succeed: {unsaved!r}")
+            if "not saved yet" not in str(unsaved.get("message", "")):
+                raise AssertionError(f"Expected the result to say the values are not saved: {unsaved!r}")
+            _require_no_recorded_test(scenario, "after testing unsaved values")
+
+            # Enabling runs its own test of the saved settings, so the broken saved password
+            # has to be refused by the real server.
+            scenario.smtp_client.clear()
             blocked = scenario.api.set_smtp_enabled(True)
             if blocked.status != 400:
                 raise AssertionError(
-                    f"Expected enabling SMTP right after a settings change (no fresh test) to be rejected; "
+                    f"Expected enabling SMTP with a broken saved password to be rejected; "
                     f"got HTTP {blocked.status} {blocked.body!r}"
                 )
+            blocked_errors = _smtp_validation_errors(blocked.body)
+            if not any("Email stayed off" in message for message in blocked_errors):
+                raise AssertionError(f"Expected the failed turn-on test message, got {blocked_errors!r}")
             status_after_block = scenario.api.smtp_settings()
             if status_after_block.get("isEnabled"):
                 raise AssertionError("SMTP reported enabled despite the enable request being rejected.")
+            if status_after_block.get("lastTestSucceeded") is not False:
+                raise AssertionError(f"The failed turn-on test was not recorded: {status_after_block!r}")
+            if scenario.smtp_client.find_message(to=admin_email, timeout_seconds=3.0) is not None:
+                raise AssertionError("Mailpit received a turn-on test despite the rejected authentication.")
 
-            retested = _send_test(
-                scenario, "smtp-02-second@example.test", from_address="library-changed@example.test"
-            )
-            if not retested.get("succeeded"):
-                raise AssertionError(f"Re-test of the changed settings did not succeed: {retested!r}")
+            # With working saved settings and no separate test, enabling tests them itself and
+            # sends that message to the administrator. The changed From address shows that the
+            # message was sent with what is saved now.
+            changed_from = "library-changed@example.test"
+            _set_valid_settings(scenario, from_address=changed_from)
+            scenario.api.set_smtp_password(clients.SMTP_AUTH_PASSWORD)
+            _require_no_recorded_test(scenario, "before enabling the repaired settings")
+            scenario.smtp_client.clear()
             allowed = scenario.api.set_smtp_enabled(True)
             if allowed.status != 200:
-                raise AssertionError(
-                    f"Enabling SMTP after a fresh passing test was rejected: HTTP {allowed.status} {allowed.body!r}"
-                )
+                raise AssertionError(f"Enabling working SMTP settings was rejected: HTTP {allowed.status} {allowed.body!r}")
+            status_after_enable = scenario.api.smtp_settings()
+            if not status_after_enable.get("isEnabled") or status_after_enable.get("lastTestSucceeded") is not True:
+                raise AssertionError(f"SMTP was not enabled with a recorded pass: {status_after_enable!r}")
+            delivered = scenario.smtp_client.find_message(to=admin_email, subject_contains="Family Librarian")
+            if delivered is None:
+                raise AssertionError("Mailpit never observed the turn-on test sent to the administrator.")
+            if delivered.get("Username") != clients.SMTP_AUTH_USERNAME:
+                raise AssertionError(f"The turn-on test was not authenticated as expected: {delivered!r}")
+            sender = (delivered.get("From") or {}).get("Address")
+            if sender != changed_from:
+                raise AssertionError(f"The turn-on test did not use the saved From address: {sender!r}")
 
-            return {"blocked_status": blocked.status, "allowed_status": allowed.status}
+            # A recorded pass for unchanged settings is enough: enabling again sends nothing.
+            disabled = scenario.api.set_smtp_enabled(False)
+            if disabled.status != 200:
+                raise AssertionError(f"Disabling SMTP was rejected: HTTP {disabled.status} {disabled.body!r}")
+            scenario.smtp_client.clear()
+            enabled_again = scenario.api.set_smtp_enabled(True)
+            if enabled_again.status != 200:
+                raise AssertionError(f"Re-enabling SMTP was rejected: HTTP {enabled_again.status} {enabled_again.body!r}")
+            if scenario.smtp_client.find_message(to=admin_email, timeout_seconds=3.0) is not None:
+                raise AssertionError("Re-enabling unchanged, already tested settings sent another test email.")
+
+            return {
+                "blocked_status": blocked.status,
+                "blocked_errors": blocked_errors,
+                "allowed_status": allowed.status,
+                "turn_on_test_message_id": delivered.get("ID"),
+            }
 
     _run(ctx, "SMTP-02", operation)
 

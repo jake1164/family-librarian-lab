@@ -389,7 +389,10 @@ def enabling_requires_opds_url_and_a_passing_test(ctx, scenario_factory):
             # requires a *passing* test for the *currently saved*
             # configuration) is actually enforced, not just satisfiable once
             # at setup. Changing a setting resets the recorded test result
-            # (CwaSettings.ResetTestResult()), which is what re-triggers it.
+            # (CwaSettings.ResetTestResult()), so the next enable request
+            # runs the test itself before it can succeed. CWA starts this
+            # case enabled, and a refused request does not switch it off, so
+            # it is disabled first to make "stays off" observable.
             settings = scenario.api.cwa_settings()
             local_ingest_path = settings.get("localIngestPath")
             opds_username = settings.get("opdsUsername")
@@ -413,10 +416,20 @@ def enabling_requires_opds_url_and_a_passing_test(ctx, scenario_factory):
                     },
                 )
 
-            def put_enabled() -> ApiResponse:
+            def put_enabled(enabled: bool = True) -> ApiResponse:
                 return scenario.api._request(  # noqa: SLF001
-                    "PUT", "/api/v1/admin/publishing/cwa/enabled", json_body={"enabled": True}
+                    "PUT", "/api/v1/admin/publishing/cwa/enabled", json_body={"enabled": enabled}
                 )
+
+            def require_disabled(when: str) -> dict[str, object]:
+                current = scenario.api.cwa_settings()
+                if current.get("isEnabled"):
+                    raise AssertionError(f"CWA reported enabled {when}: {current!r}")
+                return current
+
+            disabled = put_enabled(False)
+            if disabled.status != 200:
+                raise AssertionError(f"Could not disable CWA to set up the test: {disabled!r}")
 
             cleared = put_settings(opds_base_url=None)
             if cleared.status != 200:
@@ -428,29 +441,40 @@ def enabling_requires_opds_url_and_a_passing_test(ctx, scenario_factory):
             no_opds_errors = _cwa_validation_errors(rejected_no_opds.body)
             if not any("OPDS catalog URL is required" in message for message in no_opds_errors):
                 raise AssertionError(f"Expected the OPDS-required message, got {no_opds_errors!r}")
+            require_disabled("after enabling without an OPDS URL was rejected")
+
+            # Complete settings that cannot work: only a real test of what is saved can refuse these.
+            broken = put_settings(opds_base_url="http://cwa-does-not-exist.invalid:8083")
+            if broken.status != 200:
+                raise AssertionError(f"Could not save the unreachable OPDS URL: {broken!r}")
+            if require_disabled("after saving new settings").get("lastTestSucceeded") is not None:
+                raise AssertionError("A settings change did not discard the recorded CWA test result.")
+            rejected_failing = put_enabled()
+            if rejected_failing.status != 400:
+                raise AssertionError(f"Expected enabling with an unreachable OPDS URL to be rejected: {rejected_failing!r}")
+            failing_errors = _cwa_validation_errors(rejected_failing.body)
+            if not any("CWA stayed off. The connection test failed" in message for message in failing_errors):
+                raise AssertionError(f"Expected the failed turn-on test message, got {failing_errors!r}")
+            if require_disabled("after its turn-on test failed").get("lastTestSucceeded") is not False:
+                raise AssertionError("The failed turn-on test was not recorded.")
 
             restored = put_settings(opds_base_url=scenario.cwa_internal_url)
             if restored.status != 200:
                 raise AssertionError(f"Could not restore the OPDS URL: {restored!r}")
+            if require_disabled("after restoring the OPDS URL").get("lastTestSucceeded") is not None:
+                raise AssertionError("Restoring the settings did not discard the failed test result.")
 
-            rejected_untested = put_enabled()
-            if rejected_untested.status != 400:
-                raise AssertionError(f"Expected enabling before re-testing to be rejected: {rejected_untested!r}")
-            untested_errors = _cwa_validation_errors(rejected_untested.body)
-            if not any("Test the connection" in message for message in untested_errors):
-                raise AssertionError(f"Expected the untested-connection message, got {untested_errors!r}")
-
-            tested = scenario.api.test_cwa()
-            if not tested.get("succeeded"):
-                raise AssertionError(f"CWA connection test did not succeed after restoring settings: {tested!r}")
-
+            # No separate test: enabling runs it against the saved configuration and records the pass.
             enabled = put_enabled()
             if enabled.status != 200:
-                raise AssertionError(f"Expected enabling after a passing test to succeed: {enabled!r}")
+                raise AssertionError(f"Expected enabling working saved settings to succeed: {enabled!r}")
+            final_settings = scenario.api.cwa_settings()
+            if not final_settings.get("isEnabled") or final_settings.get("lastTestSucceeded") is not True:
+                raise AssertionError(f"CWA was not enabled with a recorded pass: {final_settings!r}")
 
             return {
                 "no_opds_errors": no_opds_errors,
-                "untested_errors": untested_errors,
+                "failing_test_errors": failing_errors,
                 "final_status": enabled.body,
             }
 
